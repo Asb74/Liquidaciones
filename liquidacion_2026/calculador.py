@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -43,8 +44,28 @@ def calcular_modelo_final(
     kilos_group = long.groupby(["semana", "grupo", "categoria"], as_index=False)["kilos"].sum()
     kilos_group = kilos_group[kilos_group["kilos"] > 0]
 
+    logging.info("----- KILOS DATAFRAME -----")
+    logging.info(f"Columnas: {kilos_group.columns.tolist()}")
+    logging.info(f"Shape: {kilos_group.shape}")
+    logging.info(f"Tipos:\n{kilos_group.dtypes}")
+    logging.info(f"Primeras filas:\n{kilos_group.head(5)}")
+    if "semana" in kilos_group.columns:
+        dup_kilos = kilos_group.groupby("semana").size()
+        logging.info(f"Registros por semana KILOS:\n{dup_kilos}")
+        logging.info(f"Semanas duplicadas KILOS:\n{dup_kilos[dup_kilos > 1]}")
+
     anecop = anecop_df.copy()
     anecop["precio_base"] = anecop["precio_base"].map(lambda v: Decimal(str(v)))
+
+    logging.info("----- ANECOP DATAFRAME -----")
+    logging.info(f"Columnas: {anecop.columns.tolist()}")
+    logging.info(f"Shape: {anecop.shape}")
+    logging.info(f"Tipos:\n{anecop.dtypes}")
+    logging.info(f"Primeras filas:\n{anecop.head(5)}")
+    if "semana" in anecop.columns:
+        dup_anecop = anecop.groupby("semana").size()
+        logging.info(f"Registros por semana ANECOP:\n{dup_anecop}")
+        logging.info(f"Semanas duplicadas ANECOP:\n{dup_anecop[dup_anecop > 1]}")
 
     kilos_semanas = set(kilos_group["semana"].astype(int).unique().tolist())
     anecop_semanas = set(anecop["semana"].astype(int).unique().tolist())
@@ -76,7 +97,15 @@ def calcular_modelo_final(
         )
     rel_df = pd.DataFrame(rel_rows)
 
-    merged = kilos_group.merge(rel_df, on=["semana", "grupo", "categoria"], how="left", validate="m:1")
+    try:
+        logging.info("Intentando merge de kilos_group con rel_df por ['semana', 'grupo', 'categoria']")
+        merged = kilos_group.merge(rel_df, on=["semana", "grupo", "categoria"], how="left", validate="m:1")
+    except Exception as e:
+        logging.error("ERROR EN MERGE")
+        logging.error(str(e))
+        logging.error("Claves únicas en derecha (semana, grupo, categoria):")
+        logging.error(rel_df.groupby(["semana", "grupo", "categoria"]).size())
+        raise
     merged["rel_final"] = merged["rel_final"].map(lambda x: Decimal(str(x)))
     merged["kilos_dec"] = merged["kilos"].map(lambda k: Decimal(str(k)))
     merged["rel_kilos"] = merged.apply(lambda r: q4(r["kilos_dec"] * r["rel_final"]), axis=1)
@@ -124,9 +153,21 @@ def calcular_modelo_final(
         .pivot(index="semana", columns="grupo", values="rel")
         .reset_index()
     )
-    assert df_rel["semana"].is_unique
+    if not df_rel["semana"].is_unique:
+        logging.error("ANECOP no tiene semanas únicas")
+        logging.error(df_rel.groupby("semana").size())
+        raise ValueError("Semanas duplicadas en ANECOP")
 
-    table = sem_kilos.merge(df_rel, on="semana", how="left")
+    try:
+        logging.info("Intentando merge por 'semana'")
+        table = sem_kilos.merge(df_rel, on="semana", how="left")
+    except Exception as e:
+        logging.error("ERROR EN MERGE")
+        logging.error(str(e))
+        logging.error("Claves únicas en derecha:")
+        if "semana" in df_rel.columns:
+            logging.error(df_rel.groupby("semana").size())
+        raise
 
     missing_rel_weeks = sorted(table.loc[table[["AAA", "AA", "A"]].isna().any(axis=1), "semana"].astype(int).tolist())
     if missing_rel_weeks:
