@@ -16,40 +16,57 @@ def calcular_fondo_globalgap(
     mnivel_df: pd.DataFrame,
     bon_global_df: pd.DataFrame,
 ) -> tuple[Decimal, pd.DataFrame]:
+    pesos_df = pesos_df.copy()
+    deepp_df = deepp_df.copy()
+    mnivel_df = mnivel_df.copy()
+
+    pesos_df.columns = pesos_df.columns.str.strip().str.lower()
+    deepp_df.columns = deepp_df.columns.str.strip().str.lower()
+    mnivel_df.columns = mnivel_df.columns.str.strip().str.lower()
+
+    calibres_cols = [c.lower() for c in CALIBRES]
+    if "kg_comercial" not in pesos_df.columns:
+        pesos_df["kg_comercial"] = pesos_df[calibres_cols].sum(axis=1)
+
     bon_base = parse_decimal(bon_global_df["Bonificacion"].iloc[0])
 
-    kilos_socio = pesos_df[["IDSocio", *CALIBRES]].copy()
-    kilos_socio["kilos_bonificables"] = kilos_socio[CALIBRES].sum(axis=1)
-    kilos_socio = kilos_socio.groupby("IDSocio", as_index=False, observed=True)["kilos_bonificables"].sum()
+    kilos_socio = pesos_df.groupby("idsocio", as_index=False).agg({"kg_comercial": "sum"})
+    kilos_socio = kilos_socio.rename(columns={"kg_comercial": "kilos_bonificables"})
 
-    deepp_unique = deepp_df.sort_values("IDSocio").drop_duplicates(subset=["IDSocio"], keep="first")
+    deepp_unique = deepp_df.drop_duplicates(subset=["idsocio"])[["idsocio", "nivelglobal"]]
 
     merged = kilos_socio.merge(
-        deepp_unique[["IDSocio", "NivelGlobal"]],
-        on="IDSocio",
+        deepp_unique,
+        on="idsocio",
         how="left",
         validate="m:1",
     )
-    merged = merged.merge(mnivel_df, left_on="NivelGlobal", right_on="Nivel", how="left", validate="m:1")
-    merged["Indice"] = pd.to_numeric(merged["Indice"], errors="coerce")
+    merged = merged.merge(
+        mnivel_df[["nivel", "indice"]],
+        left_on="nivelglobal",
+        right_on="nivel",
+        how="left",
+        validate="m:1",
+    )
+    merged["indice"] = pd.to_numeric(merged["indice"], errors="coerce")
 
     audit_rows: list[dict[str, object]] = []
 
     def resolve_indice(row: pd.Series) -> Decimal:
-        if pd.isna(row.get("NivelGlobal")):
-            audit_rows.append({"boleta": row["IDSocio"], "motivo": "boleta_sin_deepp", "nivelglobal": "", "indice_asignado": 0})
+        if pd.isna(row.get("nivelglobal")):
+            audit_rows.append({"boleta": row["idsocio"], "motivo": "boleta_sin_deepp", "nivelglobal": "", "indice_asignado": 0})
             return Decimal("0")
-        if pd.isna(row.get("Indice")):
+        if pd.isna(row.get("indice")):
             audit_rows.append(
                 {
-                    "boleta": row["IDSocio"],
+                    "boleta": row["idsocio"],
                     "motivo": "nivel_sin_indice",
-                    "nivelglobal": row.get("NivelGlobal", ""),
+                    "nivelglobal": row.get("nivelglobal", ""),
                     "indice_asignado": 0,
                 }
             )
             return Decimal("0")
-        return parse_decimal(row["Indice"])
+        return parse_decimal(row["indice"])
 
     merged["indice_decimal"] = merged.apply(resolve_indice, axis=1)
     merged["fondo_boleta"] = merged.apply(
