@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 import tkinter as tk
@@ -214,12 +215,29 @@ class LiquidacionApp(tk.Tk):
     def _on_export(self) -> None:
         if self._run_output is None:
             return
+
         src = self._run_output.files["perceco"]
         dst = filedialog.asksaveasfilename(defaultextension=".csv", initialfile=src.name)
         if not dst:
             return
-        Path(dst).write_bytes(src.read_bytes())
-        messagebox.showinfo("Exportación", f"Archivo exportado: {dst}")
+
+        destination = Path(dst)
+        destination.write_bytes(src.read_bytes())
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M")
+        audit_kilos_path = destination.parent / f"audit_aprovechamiento_por_semana_{stamp}.csv"
+        audit_gg_path = destination.parent / f"audit_globalgap_por_socio_{stamp}.csv"
+
+        self._run_output.auditoria["audit_kilos_semana_df"].to_csv(audit_kilos_path, index=False)
+        self._run_output.auditoria["audit_globalgap_socios_df"].to_csv(audit_gg_path, index=False)
+
+        messagebox.showinfo(
+            "Exportación",
+            "Archivos exportados:\n"
+            f"- {destination}\n"
+            f"- {audit_kilos_path}\n"
+            f"- {audit_gg_path}",
+        )
 
 
 def run_app() -> None:

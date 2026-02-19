@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import logging
 
 import pandas as pd
 
@@ -10,12 +11,15 @@ from .config import CALIBRES
 from .utils import parse_decimal
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 def calcular_fondo_globalgap(
     pesos_df: pd.DataFrame,
     deepp_df: pd.DataFrame,
     mnivel_df: pd.DataFrame,
     bon_global_df: pd.DataFrame,
-) -> tuple[Decimal, pd.DataFrame]:
+) -> tuple[Decimal, pd.DataFrame, pd.DataFrame]:
     pesos_df = pesos_df.copy()
     deepp_df = deepp_df.copy()
     mnivel_df = mnivel_df.copy()
@@ -31,7 +35,7 @@ def calcular_fondo_globalgap(
     bon_base = parse_decimal(bon_global_df["bonificacion"].iloc[0])
 
     kilos_socio = pesos_df.groupby("idsocio", as_index=False).agg({"kg_comercial": "sum"})
-    kilos_socio = kilos_socio.rename(columns={"kg_comercial": "kilos_bonificables"})
+    kilos_socio = kilos_socio.rename(columns={"kg_comercial": "kilos_gg"})
 
     deepp_unique = deepp_df.drop_duplicates(subset=["idsocio"])[["idsocio", "nivelglobal"]]
 
@@ -69,12 +73,20 @@ def calcular_fondo_globalgap(
         return parse_decimal(row["indice"])
 
     merged["indice_decimal"] = merged.apply(resolve_indice, axis=1)
-    merged["fondo_boleta"] = merged.apply(
-        lambda r: parse_decimal(r["kilos_bonificables"]) * bon_base * r["indice_decimal"], axis=1
+    merged["bonif_eur_kg"] = bon_base
+    merged["fondo_gg_eur"] = merged.apply(
+        lambda r: parse_decimal(r["kilos_gg"]) * r["bonif_eur_kg"] * r["indice_decimal"], axis=1
     )
 
-    total = sum(merged["fondo_boleta"], Decimal("0"))
-    audit_df = pd.DataFrame(audit_rows).drop_duplicates() if audit_rows else pd.DataFrame(
+    total = sum(merged["fondo_gg_eur"], Decimal("0"))
+    audit_inc_df = pd.DataFrame(audit_rows).drop_duplicates() if audit_rows else pd.DataFrame(
         columns=["boleta", "motivo", "nivelglobal", "indice_asignado"]
     )
-    return total, audit_df
+
+    audit_globalgap_socios_df = merged[
+        ["idsocio", "kilos_gg", "nivelglobal", "indice_decimal", "bonif_eur_kg", "fondo_gg_eur"]
+    ].rename(columns={"indice_decimal": "indice"})
+    LOGGER.info("Total kilos GG (comerciales): %s", sum(audit_globalgap_socios_df["kilos_gg"], Decimal("0")))
+    LOGGER.info("Fondo GG total: %s", total)
+
+    return total, audit_globalgap_socios_df, audit_inc_df
