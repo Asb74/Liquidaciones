@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import closing
 
 import pandas as pd
 
 from .config import CALIBRES, DESTRIOS
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SQLiteExtractorError(RuntimeError):
@@ -86,6 +89,7 @@ class SQLiteExtractor:
 
     @staticmethod
     def _read_sql(db_path: str, query: str, params: tuple | None = None) -> pd.DataFrame:
+        LOGGER.info("Abriendo SQLite en ruta: %s", db_path)
         try:
             with closing(sqlite3.connect(db_path)) as conn:
                 return pd.read_sql_query(query, conn, params=params)
