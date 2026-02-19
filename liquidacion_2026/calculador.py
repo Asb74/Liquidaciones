@@ -98,6 +98,10 @@ def calcular_precios_finales(
                     "categoria": "CAT1",
                     "precio_final": precio_cat1,
                     "kilos": kilos,
+                    "ingreso_teorico": ingreso_teorico_anecop,
+                    "fondo_gg": fondo_week,
+                    "ingreso_real": ingreso_real,
+                    "factor": factor,
                 }
             )
             salida.append(
@@ -107,6 +111,10 @@ def calcular_precios_finales(
                     "categoria": "CAT2",
                     "precio_final": precio_cat2,
                     "kilos": Decimal("0"),
+                    "ingreso_teorico": ingreso_teorico_anecop,
+                    "fondo_gg": fondo_week,
+                    "ingreso_real": ingreso_real,
+                    "factor": factor,
                 }
             )
             ingreso_reconstruido += _q4(kilos * precio_cat1)

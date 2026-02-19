@@ -20,7 +20,7 @@ class DBPaths:
 class PriceConfig:
     """Precios orientativos por grupo ANECOP y destríos."""
 
-    anecop: dict[str, Decimal]
+    anecop: dict[int, dict[str, Decimal]]
     destrios: dict[str, Decimal]
 
 
@@ -35,6 +35,7 @@ class LiquidacionConfig:
     prices: PriceConfig
     output_csv: Path
     audit_globalgap_csv: Path
+    log_file: Path
 
 
 DECIMAL_INTERNAL = Decimal("0.0001")
