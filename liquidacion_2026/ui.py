@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 import threading
-from decimal import Decimal
 from pathlib import Path
 from queue import Empty, Queue
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .app_service import RunOutput, build_config, configurar_logging, run
+from .utils import parse_decimal
 
 LOGGER = logging.getLogger(__name__)
 
@@ -133,17 +133,17 @@ class LiquidacionApp(tk.Tk):
             campana=int(self.campana_var.get()),
             empresa=int(self.empresa_var.get()),
             cultivo=self.cultivo_var.get(),
-            bruto_campana=Decimal(self.bruto_var.get()),
-            otros_fondos=Decimal(self.otros_fondos_var.get()),
-            ratio_categoria_ii=Decimal(self.ratio_ii_var.get()),
+            bruto_campana=parse_decimal(self.bruto_var.get()),
+            otros_fondos=parse_decimal(self.otros_fondos_var.get()),
+            ratio_categoria_ii=parse_decimal(self.ratio_ii_var.get()),
             anecop_path=Path(self.anecop_path_var.get()),
             db_fruta=Path(self.db_fruta_var.get()),
             db_calidad=Path(self.db_calidad_var.get()),
             db_eeppl=Path(self.db_eeppl_var.get()),
             precios_destrio={
-                "DesLinea": Decimal(self.precio_deslinea_var.get()),
-                "DesMesa": Decimal(self.precio_desmesa_var.get()),
-                "Podrido": Decimal(self.precio_podrido_var.get()),
+                "DesLinea": parse_decimal(self.precio_deslinea_var.get()),
+                "DesMesa": parse_decimal(self.precio_desmesa_var.get()),
+                "Podrido": parse_decimal(self.precio_podrido_var.get()),
             },
         )
 

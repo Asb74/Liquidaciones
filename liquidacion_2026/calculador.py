@@ -9,6 +9,7 @@ from decimal import Decimal
 import pandas as pd
 
 from .config import DESTRIOS, q4
+from .utils import parse_decimal
 from .utils_debug import debug_write
 from .validaciones import (
     validar_columnas_minimas_pesosfres,
@@ -61,7 +62,7 @@ def calcular_modelo_final(
         debug_write("KILOS GROUPBY SEMANA", kilos_group.groupby("semana").size())
 
     anecop = anecop_df.copy()
-    anecop["precio_base"] = anecop["precio_base"].map(lambda v: Decimal(str(v)))
+    anecop["precio_base"] = anecop["precio_base"].map(parse_decimal)
 
     logging.info("----- ANECOP DATAFRAME -----")
     logging.info(f"Columnas: {anecop.columns.tolist()}")
@@ -93,7 +94,7 @@ def calcular_modelo_final(
     ref = anecop[(anecop["semana"] == semana_ref) & (anecop["grupo"] == "AAA")]["precio_base"].iloc[0]
     validar_referencia(ref, semana_ref)
 
-    anecop["rel"] = anecop["precio_base"].map(lambda p: q4(Decimal(str(p)) / ref))
+    anecop["rel"] = anecop["precio_base"].map(lambda p: q4(parse_decimal(p) / ref))
 
     rel_rows = []
     for _, row in anecop.iterrows():
@@ -117,8 +118,8 @@ def calcular_modelo_final(
         logging.error("Claves únicas en derecha (semana, grupo, categoria):")
         logging.error(rel_df.groupby(["semana", "grupo", "categoria"]).size())
         raise
-    merged["rel_final"] = merged["rel_final"].map(lambda x: Decimal(str(x)))
-    merged["kilos_dec"] = merged["kilos"].map(lambda k: Decimal(str(k)))
+    merged["rel_final"] = merged["rel_final"].map(parse_decimal)
+    merged["kilos_dec"] = merged["kilos"].map(parse_decimal)
     merged["rel_kilos"] = merged.apply(lambda r: q4(r["kilos_dec"] * r["rel_final"]), axis=1)
 
     total_rel = sum(merged["rel_kilos"], Decimal("0"))
@@ -127,7 +128,7 @@ def calcular_modelo_final(
     destrios_long = pesos_df.melt(id_vars=["semana"], value_vars=DESTRIOS, var_name="destrio", value_name="kilos")
     destrios_long["kilos"] = pd.to_numeric(destrios_long["kilos"], errors="coerce").fillna(0)
     destrios_long["importe"] = destrios_long.apply(
-        lambda r: q4(Decimal(str(r["kilos"])) * precios_destrio[r["destrio"]]), axis=1
+        lambda r: q4(parse_decimal(r["kilos"]) * precios_destrio[r["destrio"]]), axis=1
     )
     ingreso_destrios_total = sum(destrios_long["importe"], Decimal("0"))
 
@@ -136,7 +137,7 @@ def calcular_modelo_final(
 
     final_rows = []
     for _, row in rel_df.iterrows():
-        precio = q4(Decimal(str(row["rel_final"])) * coef)
+        precio = q4(parse_decimal(row["rel_final"]) * coef)
         final_rows.append(
             {
                 "semana": int(row["semana"]),
@@ -186,13 +187,13 @@ def calcular_modelo_final(
     if missing_rel_weeks:
         raise ValueError(f"Hay semanas con kilos comerciales sin ANECOP: {missing_rel_weeks}")
 
-    table[["AAA", "AA", "A"]] = table[["AAA", "AA", "A"]].applymap(lambda v: q4(Decimal(str(v)) * coef))
+    table[["AAA", "AA", "A"]] = table[["AAA", "AA", "A"]].applymap(lambda v: q4(parse_decimal(v) * coef))
     table["coef_global"] = coef
     table["ref_semana"] = semana_ref
     table = table.rename(columns={"AAA": "precio_aaa_i", "AA": "precio_aa_i", "A": "precio_a_i"})
 
     metricas = {
-        "total_kg_comerciales": Decimal(str(merged["kilos"].sum())),
+        "total_kg_comerciales": parse_decimal(merged["kilos"].sum()),
         "ingreso_destrios_total": ingreso_destrios_total,
         "fondo_gg_total": fondo_gg_total,
         "neto_obj": neto_obj,

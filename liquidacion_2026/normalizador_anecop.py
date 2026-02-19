@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from .utils import parse_decimal
+
 _WEEK = re.compile(r"(\d{1,2})(?:\s*-\s*\d{1,2})?")
 
 
@@ -35,7 +37,7 @@ def _parse_week(value: object) -> int | None:
 def _num(value: object) -> Decimal:
     if pd.isna(value) or value == "":
         return Decimal("0")
-    return Decimal(str(value).replace(",", "."))
+    return parse_decimal(value)
 
 
 def _from_normalized_csv(path: Path) -> pd.DataFrame:

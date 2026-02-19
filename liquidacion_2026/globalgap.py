@@ -7,6 +7,7 @@ from decimal import Decimal
 import pandas as pd
 
 from .config import CALIBRES
+from .utils import parse_decimal
 
 
 def calcular_fondo_globalgap(
@@ -15,7 +16,7 @@ def calcular_fondo_globalgap(
     mnivel_df: pd.DataFrame,
     bon_global_df: pd.DataFrame,
 ) -> tuple[Decimal, pd.DataFrame]:
-    bon_base = Decimal(str(bon_global_df["Bonificacion"].iloc[0]))
+    bon_base = parse_decimal(bon_global_df["Bonificacion"].iloc[0])
 
     kilos_socio = pesos_df[["IDSocio", *CALIBRES]].copy()
     kilos_socio["kilos_bonificables"] = kilos_socio[CALIBRES].sum(axis=1)
@@ -48,11 +49,11 @@ def calcular_fondo_globalgap(
                 }
             )
             return Decimal("0")
-        return Decimal(str(row["Indice"]))
+        return parse_decimal(row["Indice"])
 
     merged["indice_decimal"] = merged.apply(resolve_indice, axis=1)
     merged["fondo_boleta"] = merged.apply(
-        lambda r: Decimal(str(r["kilos_bonificables"])) * bon_base * r["indice_decimal"], axis=1
+        lambda r: parse_decimal(r["kilos_bonificables"]) * bon_base * r["indice_decimal"], axis=1
     )
 
     total = sum(merged["fondo_boleta"], Decimal("0"))
