@@ -21,9 +21,19 @@ class SQLiteExtractor:
         self.eeppl_db = eeppl_db
 
     def fetch_pesosfres(self, campana: int, empresa: int, cultivo: str) -> pd.DataFrame:
-        cols = ["CAMPAÑA", "EMPRESA", "CULTIVO", "Apodo", "Boleta", "IDSocio", *CALIBRES, *DESTRIOS]
+        cal_select = [f"Cal{i} AS cal{i}" for i in range(12)]
         query = f"""
-            SELECT {', '.join(cols)}
+            SELECT
+                CAMPAÑA AS campaña,
+                EMPRESA AS empresa,
+                CULTIVO AS cultivo,
+                Apodo AS apodo,
+                Boleta AS boleta,
+                IDSocio AS idsocio,
+                {', '.join(cal_select)},
+                DesLinea AS deslinea,
+                DesMesa AS desmesa,
+                Podrido AS podrido
             FROM PesosFres
             WHERE CAMPAÑA = ? AND EMPRESA = ? AND CULTIVO = ?
         """
@@ -32,7 +42,7 @@ class SQLiteExtractor:
         if df.empty:
             raise SQLiteExtractorError("No hay datos en PesosFres para los filtros indicados.")
 
-        for col in [*[c.lower() for c in CALIBRES], *[d.lower() for d in DESTRIOS]]:
+        for col in [*CALIBRES, *DESTRIOS]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
         df["semana"] = pd.to_numeric(df["apodo"], errors="coerce").astype("Int64")
@@ -41,28 +51,21 @@ class SQLiteExtractor:
             invalid_rows = df.loc[invalid_mask, ["apodo", "boleta"]].head(5).to_dict("records")
             raise SQLiteExtractorError(
                 "Semana inválida: "
-                f"{int(invalid_mask.sum())} filas tienen Apodo no numérico en PesosFres. "
+                f"{int(invalid_mask.sum())} filas tienen apodo no numérico en PesosFres. "
                 f"Ejemplos: {invalid_rows}"
             )
-
-        # Compatibilidad hacia atrás con el resto del pipeline económico.
-        for col in CALIBRES:
-            df[col] = df[col.lower()]
-        for col in DESTRIOS:
-            df[col] = df[col.lower()]
-        df["Boleta"] = df["boleta"]
         return df
 
     def fetch_correspondencias_calibres(self) -> pd.DataFrame:
         return self._read_sql(self.calidad_db, "SELECT BASE, KAKIS FROM CorrespondenciasCalibres")
 
     def fetch_deepp(self) -> pd.DataFrame:
-        df = self._read_sql(self.eeppl_db, "SELECT Boleta, IDSocio, NivelGlobal FROM DEEPP")
+        df = self._read_sql(self.eeppl_db, "SELECT Boleta AS boleta, IDSocio AS idsocio, NivelGlobal AS nivelglobal FROM DEEPP")
         df.columns = df.columns.str.strip().str.lower()
         return df
 
     def fetch_mnivel_global(self) -> pd.DataFrame:
-        df = self._read_sql(self.eeppl_db, "SELECT Nivel, Indice FROM MNivelGlobal")
+        df = self._read_sql(self.eeppl_db, "SELECT Nivel AS nivel, Indice AS indice FROM MNivelGlobal")
         df.columns = df.columns.str.strip().str.lower()
         if not df.empty:
             df["indice"] = pd.to_numeric(df["indice"], errors="coerce").fillna(0)
@@ -70,14 +73,15 @@ class SQLiteExtractor:
 
     def fetch_bon_global(self, campana: int, cultivo: str, empresa: int) -> pd.DataFrame:
         query = """
-            SELECT CAMPAÑA, CULTIVO, EMPRESA, Bonificacion
+            SELECT CAMPAÑA AS campaña, CULTIVO AS cultivo, EMPRESA AS empresa, Bonificacion AS bonificacion
             FROM BonGlobal
             WHERE CAMPAÑA = ? AND CULTIVO = ? AND EMPRESA = ?
         """
         df = self._read_sql(self.fruta_db, query, (campana, cultivo, empresa))
         if df.empty:
             raise SQLiteExtractorError("No existe registro en BonGlobal para campaña/cultivo/empresa.")
-        df["Bonificacion"] = pd.to_numeric(df["Bonificacion"], errors="coerce").fillna(0)
+        df.columns = df.columns.str.strip().str.lower()
+        df["bonificacion"] = pd.to_numeric(df["bonificacion"], errors="coerce").fillna(0)
         return df
 
     @staticmethod

@@ -13,18 +13,18 @@ class ValidationError(ValueError):
 
 def validar_columnas_minimas_pesosfres(df: pd.DataFrame) -> None:
     requeridas = [
-        "Apodo",
+        "apodo",
         "semana",
-        "Boleta",
-        "Cal0",
-        "Cal1",
-        "Cal2",
-        "Cal6",
-        "Cal7",
-        "Cal8",
-        "DesLinea",
-        "DesMesa",
-        "Podrido",
+        "boleta",
+        "cal0",
+        "cal1",
+        "cal2",
+        "cal6",
+        "cal7",
+        "cal8",
+        "deslinea",
+        "desmesa",
+        "podrido",
     ]
     faltantes = [col for col in requeridas if col not in df.columns]
     if faltantes:
