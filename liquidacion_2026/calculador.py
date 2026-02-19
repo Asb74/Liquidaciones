@@ -9,6 +9,7 @@ from decimal import Decimal
 import pandas as pd
 
 from .config import DESTRIOS, q4
+from .utils_debug import debug_write
 from .validaciones import (
     validar_columnas_minimas_pesosfres,
     validar_cuadre,
@@ -53,6 +54,11 @@ def calcular_modelo_final(
         dup_kilos = kilos_group.groupby("semana").size()
         logging.info(f"Registros por semana KILOS:\n{dup_kilos}")
         logging.info(f"Semanas duplicadas KILOS:\n{dup_kilos[dup_kilos > 1]}")
+    debug_write("KILOS COLUMNS", kilos_group.columns.tolist())
+    debug_write("KILOS SHAPE", kilos_group.shape)
+    debug_write("KILOS HEAD", kilos_group.head())
+    if "semana" in kilos_group.columns:
+        debug_write("KILOS GROUPBY SEMANA", kilos_group.groupby("semana").size())
 
     anecop = anecop_df.copy()
     anecop["precio_base"] = anecop["precio_base"].map(lambda v: Decimal(str(v)))
@@ -66,6 +72,11 @@ def calcular_modelo_final(
         dup_anecop = anecop.groupby("semana").size()
         logging.info(f"Registros por semana ANECOP:\n{dup_anecop}")
         logging.info(f"Semanas duplicadas ANECOP:\n{dup_anecop[dup_anecop > 1]}")
+    debug_write("ANECOP COLUMNS", anecop.columns.tolist())
+    debug_write("ANECOP SHAPE", anecop.shape)
+    debug_write("ANECOP HEAD", anecop.head())
+    if "semana" in anecop.columns:
+        debug_write("ANECOP GROUPBY SEMANA", anecop.groupby("semana").size())
 
     kilos_semanas = set(kilos_group["semana"].astype(int).unique().tolist())
     anecop_semanas = set(anecop["semana"].astype(int).unique().tolist())
@@ -157,11 +168,13 @@ def calcular_modelo_final(
         logging.error("ANECOP no tiene semanas únicas")
         logging.error(df_rel.groupby("semana").size())
         raise ValueError("Semanas duplicadas en ANECOP")
+    debug_write("RIGHT DATASET UNIQUE CHECK", df_rel.groupby("semana").size())
 
     try:
         logging.info("Intentando merge por 'semana'")
         table = sem_kilos.merge(df_rel, on="semana", how="left")
     except Exception as e:
+        debug_write("MERGE ERROR", str(e))
         logging.error("ERROR EN MERGE")
         logging.error(str(e))
         logging.error("Claves únicas en derecha:")
