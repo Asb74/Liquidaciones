@@ -1,59 +1,35 @@
 # liquidacion_2026
 
-Sistema modular en **Python 3.11+** para normalización de precios y liquidación de la campaña 2026 de **kakis**, leyendo datos desde SQLite y exportando CSV compatible con Perceco.
+Aplicación de escritorio para calcular la liquidación final KAKIS por campaña usando matriz relativa ANECOP + coeficiente global único.
 
-## Estructura
-
-- `liquidacion_2026/config.py`: configuración y constantes.
-- `liquidacion_2026/extractor_sqlite.py`: acceso a SQLite.
-- `liquidacion_2026/correspondencia_calibres.py`: mapping de calibres a grupo económico.
-- `liquidacion_2026/globalgap.py`: cálculo de fondo GlobalGAP.
-- `liquidacion_2026/calculador.py`: motor de cálculo económico.
-- `liquidacion_2026/validaciones.py`: validaciones obligatorias.
-- `liquidacion_2026/exportador.py`: exportación de resultados.
-- `liquidacion_2026/main.py`: CLI y orquestación.
-
-## Requisitos
-
-- Python 3.11+
-- pandas
-
-## Instalación
+## Ejecutar
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python -m liquidacion_2026
 ```
 
-## Ejecución
+## Flujo de validación (campaña 2025)
 
-```bash
-python -m liquidacion_2026.main \
-  --campana 2026 \
-  --empresa "MI_EMPRESA" \
-  --cultivo "KAKIS" \
-  --db-fruta /ruta/DBfruta.sqlite \
-  --db-calidad /ruta/BdCalidad.sqlite \
-  --db-eeppl /ruta/DBEEPPL.sqlite \
-  --precios-anecop '{"45": {"AAA": 0.50, "AA": 0.42, "A": 0.35}}' \
-  --precios-destrio '{"DesLinea": -0.01, "DesMesa": -0.02, "Podrido": -0.05}' \
-  --output salida_liquidacion.csv \
-  --audit-globalgap auditoria_globalgap_no_match.csv
-```
+1. Abrir la aplicación con `python -m liquidacion_2026`.
+2. Cargar:
+   - Campaña `2025`
+   - Empresa `1`
+   - Cultivo `KAKIS`
+   - Bruto campaña (ejemplo real de campaña)
+   - Otros fondos (si aplica)
+   - Precios de destrío (DesLinea/DesMesa/Podrido)
+3. Seleccionar rutas de:
+   - `DBfruta.sqlite`
+   - `BdCalidad.sqlite`
+   - `DBEEPPL.sqlite`
+   - ANECOP (Excel ECOC tal cual o CSV normalizado `semana,grupo_anecop,kg,valor_fruta`)
+4. Pulsar **Ejecutar**.
+5. Revisar resumen auditable y validar que el descuadre absoluto sea <= 0.01.
+6. Exportar o revisar archivos en `salidas/`.
 
-## Validaciones implementadas
+## Salidas
 
-- Merge con `validate='m:1'`.
-- Control de duplicados en claves críticas.
-- Control de semanas sin precio orientativo.
-- Control de calibres sin mapping económico.
-- Control de ingreso teórico ANECOP igual a cero.
-- Cuadre económico final con tolerancia de 0.01.
-- Generación de `auditoria_globalgap_no_match.csv` para boletas sin nivel.
-
-## Notas de cálculo
-
-- Redondeo interno a 4 decimales con `Decimal`.
-- Redondeo de exportación a 2 decimales.
-- Salida final: `campaña, semana, calibre, categoria, precio_final`.
+- `salidas/precios_perceco_{campania}_{cultivo}.csv`
+- `salidas/auditoria_gg_boletas_no_match.csv`
+- `salidas/resumen_campania.csv`
+- `salidas/run_YYYYMMDD_HHMM.log`

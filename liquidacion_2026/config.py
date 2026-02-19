@@ -1,46 +1,41 @@
-"""Configuración del proceso de liquidación 2026."""
+"""Configuración y constantes de liquidación KAKIS 2025."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 
 @dataclass(frozen=True)
 class DBPaths:
-    """Rutas de bases de datos SQLite."""
-
     fruta: Path
     calidad: Path
     eeppl: Path
 
 
 @dataclass(frozen=True)
-class PriceConfig:
-    """Precios orientativos por grupo ANECOP y destríos."""
-
-    anecop: dict[int, dict[str, Decimal]]
-    destrios: dict[str, Decimal]
-
-
-@dataclass(frozen=True)
 class LiquidacionConfig:
-    """Parámetros de ejecución de la liquidación."""
-
     campana: int
-    empresa: str
+    empresa: int
     cultivo: str
+    bruto_campana: Decimal
+    otros_fondos: Decimal
+    ratio_categoria_ii: Decimal
+    precios_destrio: dict[str, Decimal]
+    anecop_path: Path
     db_paths: DBPaths
-    prices: PriceConfig
-    output_csv: Path
-    audit_globalgap_csv: Path
-    log_file: Path
+    output_dir: Path
+    export_decimals: int = 2
 
-
-DECIMAL_INTERNAL = Decimal("0.0001")
-DECIMAL_EXPORT = Decimal("0.01")
 
 CALIBRES = [f"Cal{i}" for i in range(12)]
 DESTRIOS = ["DesLinea", "DesMesa", "Podrido"]
-COLUMNS_KILOS = CALIBRES + DESTRIOS
+GRUPOS_COMERCIALES = ["AAA", "AA", "A"]
+CATEGORIAS_COMERCIALES = ["I", "II"]
+
+ROUND_INTERNAL = Decimal("0.0001")
+
+
+def q4(value: Decimal) -> Decimal:
+    return value.quantize(ROUND_INTERNAL, rounding=ROUND_HALF_UP)
