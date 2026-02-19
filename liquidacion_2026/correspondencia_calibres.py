@@ -1,21 +1,36 @@
-"""Normalización de correspondencias de calibres a grupos económicos."""
+"""Mapeo Cal0..Cal11 a grupo/categoría comercial."""
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 
-from .config import CALIBRES
+from .config import CALIBRES, GRUPOS_COMERCIALES
+
+_PATTERN = re.compile(r"^(AAA|AA|A)\s*(1[ªA]|2[ªA])$", re.IGNORECASE)
 
 
 def build_calibre_mapping(correspondencias_df: pd.DataFrame) -> pd.DataFrame:
-    """Construye mapping Cal0..Cal11 -> grupo económico AAA/AA/A usando columna KAKIS."""
+    rows: list[dict[str, str]] = []
     normalized = correspondencias_df.copy()
-    normalized["BASE"] = normalized["BASE"].astype(str).str.strip().str.upper()
-    normalized["grupo"] = normalized["KAKIS"].astype(str).str.strip().str.upper()
-    normalized = normalized[["BASE", "grupo"]].dropna()
+    normalized["BASE"] = normalized["BASE"].astype(str).str.strip().str.lower()
+    normalized["KAKIS"] = normalized["KAKIS"].astype(str).str.strip().str.upper()
 
-    cal_df = pd.DataFrame({"calibre": CALIBRES})
-    cal_df["BASE"] = [f"C{i}" for i in range(12)]
+    by_base = {row.BASE: row.KAKIS for row in normalized.itertuples(index=False)}
 
-    mapped = cal_df.merge(normalized, on="BASE", how="left", validate="m:1")
-    return mapped[["calibre", "grupo"]]
+    for idx, cal in enumerate(CALIBRES):
+        token = by_base.get(f"c{idx}", "")
+        match = _PATTERN.match(token)
+        if not match:
+            continue
+        grupo = match.group(1).upper()
+        if grupo not in GRUPOS_COMERCIALES:
+            continue
+        categoria = "I" if match.group(2).startswith("1") else "II"
+        rows.append({"calibre": cal, "grupo": grupo, "categoria": categoria})
+
+    mapped = pd.DataFrame(rows)
+    if mapped.empty:
+        raise ValueError("No se pudo construir mapping comercial AAA/AA/A con categorías I/II.")
+    return mapped

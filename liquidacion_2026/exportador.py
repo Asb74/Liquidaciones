@@ -1,4 +1,4 @@
-"""Exportación de resultados de liquidación."""
+"""Exportación de salidas de liquidación."""
 
 from __future__ import annotations
 
@@ -7,29 +7,49 @@ from pathlib import Path
 
 import pandas as pd
 
-from .config import DECIMAL_EXPORT
+
+def _round(value: object, decimals: int) -> Decimal:
+    quant = Decimal("1").scaleb(-decimals)
+    return Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP)
 
 
-def _to_export_decimal(value: object) -> Decimal:
-    return Decimal(str(value)).quantize(DECIMAL_EXPORT, rounding=ROUND_HALF_UP)
+def exportar_todo(
+    *,
+    precios_df: pd.DataFrame,
+    campana: int,
+    cultivo: str,
+    audit_df: pd.DataFrame,
+    resumen_metricas: dict[str, Decimal | int],
+    output_dir: Path,
+    export_decimals: int,
+) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
 
+    perceco_path = output_dir / f"precios_perceco_{campana}_{cultivo}.csv"
+    perceco = precios_df.copy()
+    perceco.insert(0, "campaña", campana)
+    perceco["precio_final"] = perceco["precio_final"].map(lambda x: _round(x, export_decimals))
+    perceco.to_csv(perceco_path, index=False)
 
-def exportar_resultado(df: pd.DataFrame, campana: int, output_path: Path) -> None:
-    """Exporta CSV final con formato compatible Perceco y columnas de resumen."""
-    out = df[
+    audit_path = output_dir / "auditoria_gg_boletas_no_match.csv"
+    audit_df.to_csv(audit_path, index=False)
+
+    resumen_path = output_dir / "resumen_campania.csv"
+    resumen = pd.DataFrame(
         [
-            "semana",
-            "calibre",
-            "categoria",
-            "precio_final",
-            "ingreso_teorico",
-            "fondo_gg",
-            "ingreso_real",
-            "factor",
+            {
+                "bruto": resumen_metricas.get("bruto", ""),
+                "fondo_gg": resumen_metricas["fondo_gg_total"],
+                "otros_fondos": resumen_metricas.get("otros_fondos", ""),
+                "destrios": resumen_metricas["ingreso_destrios_total"],
+                "neto_obj": resumen_metricas["neto_obj"],
+                "total_rel": resumen_metricas["total_rel"],
+                "coef": resumen_metricas["coef"],
+                "recon": resumen_metricas["recon"],
+                "descuadre": resumen_metricas["descuadre"],
+            }
         ]
-    ].copy()
-    out.insert(0, "campaña", campana)
-    for column in ["precio_final", "ingreso_teorico", "fondo_gg", "ingreso_real", "factor"]:
-        out[column] = out[column].map(_to_export_decimal)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    out.to_csv(output_path, index=False)
+    )
+    resumen.to_csv(resumen_path, index=False)
+
+    return {"perceco": perceco_path, "audit": audit_path, "resumen": resumen_path}
