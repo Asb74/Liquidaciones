@@ -48,6 +48,8 @@ class SQLiteExtractor:
         for col in [*CALIBRES, *DESTRIOS]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
+        df["kilos"] = df[CALIBRES].sum(axis=1)
+
         df["semana"] = pd.to_numeric(df["apodo"], errors="coerce").astype("Int64")
         invalid_mask = df["semana"].isna()
         if invalid_mask.any():

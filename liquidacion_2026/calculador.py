@@ -42,11 +42,11 @@ def calcular_modelo_final(
     validar_columnas_minimas_pesosfres(pesos_df)
 
     long = pesos_df.melt(id_vars=["semana", "boleta"], value_vars=[f"cal{i}" for i in range(12)], var_name="calibre", value_name="kilos")
-    long["kilos"] = pd.to_numeric(long["kilos"], errors="coerce").fillna(0)
+    long["kilos"] = pd.to_numeric(long["kilos"], errors="coerce").fillna(0).map(parse_decimal)
     long = long.merge(calibre_map, on="calibre", how="inner", validate="m:1")
 
     kilos_group = long.groupby(["semana", "grupo", "categoria"], as_index=False)["kilos"].sum()
-    kilos_group = kilos_group[kilos_group["kilos"] > 0]
+    kilos_group = kilos_group[kilos_group["kilos"] > Decimal("0")]
 
     logging.info("----- KILOS DATAFRAME -----")
     logging.info(f"Columnas: {kilos_group.columns.tolist()}")
@@ -125,9 +125,9 @@ def calcular_modelo_final(
     merged["rel_kilos"] = merged.apply(lambda r: q4(r["kilos_dec"] * r["rel_final"]), axis=1)
 
     destrios_long = pesos_df.melt(id_vars=["semana"], value_vars=DESTRIOS, var_name="destrio", value_name="kilos")
-    destrios_long["kilos"] = pd.to_numeric(destrios_long["kilos"], errors="coerce").fillna(0)
+    destrios_long["kilos"] = pd.to_numeric(destrios_long["kilos"], errors="coerce").fillna(0).map(parse_decimal)
     destrios_long["importe"] = destrios_long.apply(
-        lambda r: q4(parse_decimal(r["kilos"]) * precios_destrio[r["destrio"]]), axis=1
+        lambda r: q4(r["kilos"] * precios_destrio[r["destrio"]]), axis=1
     )
     importe_destrios = sum(destrios_long["importe"], Decimal("0"))
 
