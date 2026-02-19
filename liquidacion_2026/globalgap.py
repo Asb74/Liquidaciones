@@ -1,4 +1,4 @@
-"""Cálculo de Fondo GlobalGAP por boleta."""
+"""Cálculo de Fondo GlobalGAP por socio."""
 
 from __future__ import annotations
 
@@ -17,10 +17,18 @@ def calcular_fondo_globalgap(
 ) -> tuple[Decimal, pd.DataFrame]:
     bon_base = Decimal(str(bon_global_df["Bonificacion"].iloc[0]))
 
-    kilos_boleta = pesos_df[["Boleta", *CALIBRES]].copy()
-    kilos_boleta["kilos_bonificables"] = kilos_boleta[CALIBRES].sum(axis=1)
+    kilos_socio = pesos_df[["IDSocio", *CALIBRES]].copy()
+    kilos_socio["kilos_bonificables"] = kilos_socio[CALIBRES].sum(axis=1)
+    kilos_socio = kilos_socio.groupby("IDSocio", as_index=False, observed=True)["kilos_bonificables"].sum()
 
-    merged = kilos_boleta.merge(deepp_df, on="Boleta", how="left", validate="m:1")
+    deepp_unique = deepp_df.sort_values("IDSocio").drop_duplicates(subset=["IDSocio"], keep="first")
+
+    merged = kilos_socio.merge(
+        deepp_unique[["IDSocio", "NivelGlobal"]],
+        on="IDSocio",
+        how="left",
+        validate="m:1",
+    )
     merged = merged.merge(mnivel_df, left_on="NivelGlobal", right_on="Nivel", how="left", validate="m:1")
     merged["Indice"] = pd.to_numeric(merged["Indice"], errors="coerce")
 
@@ -28,12 +36,12 @@ def calcular_fondo_globalgap(
 
     def resolve_indice(row: pd.Series) -> Decimal:
         if pd.isna(row.get("NivelGlobal")):
-            audit_rows.append({"boleta": row["Boleta"], "motivo": "boleta_sin_deepp", "nivelglobal": "", "indice_asignado": 0})
+            audit_rows.append({"boleta": row["IDSocio"], "motivo": "boleta_sin_deepp", "nivelglobal": "", "indice_asignado": 0})
             return Decimal("0")
         if pd.isna(row.get("Indice")):
             audit_rows.append(
                 {
-                    "boleta": row["Boleta"],
+                    "boleta": row["IDSocio"],
                     "motivo": "nivel_sin_indice",
                     "nivelglobal": row.get("NivelGlobal", ""),
                     "indice_asignado": 0,

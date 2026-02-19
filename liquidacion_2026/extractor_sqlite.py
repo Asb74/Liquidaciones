@@ -21,7 +21,7 @@ class SQLiteExtractor:
         self.eeppl_db = eeppl_db
 
     def fetch_pesosfres(self, campana: int, empresa: int, cultivo: str) -> pd.DataFrame:
-        cols = ["CAMPAÑA", "EMPRESA", "CULTIVO", "Apodo", "Boleta", *CALIBRES, *DESTRIOS]
+        cols = ["CAMPAÑA", "EMPRESA", "CULTIVO", "Apodo", "Boleta", "IDSocio", *CALIBRES, *DESTRIOS]
         query = f"""
             SELECT {', '.join(cols)}
             FROM PesosFres
@@ -49,7 +49,7 @@ class SQLiteExtractor:
         return self._read_sql(self.calidad_db, "SELECT BASE, KAKIS FROM CorrespondenciasCalibres")
 
     def fetch_deepp(self) -> pd.DataFrame:
-        return self._read_sql(self.eeppl_db, "SELECT Boleta, NivelGlobal FROM DEEPP")
+        return self._read_sql(self.eeppl_db, "SELECT Boleta, IDSocio, NivelGlobal FROM DEEPP")
 
     def fetch_mnivel_global(self) -> pd.DataFrame:
         df = self._read_sql(self.eeppl_db, "SELECT Nivel, Indice FROM MNivelGlobal")
