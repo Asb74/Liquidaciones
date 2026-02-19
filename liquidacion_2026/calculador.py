@@ -19,6 +19,8 @@ from .validaciones import (
     validar_total_rel,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ResultadoCalculo:
@@ -122,18 +124,24 @@ def calcular_modelo_final(
     merged["kilos_dec"] = merged["kilos"].map(parse_decimal)
     merged["rel_kilos"] = merged.apply(lambda r: q4(r["kilos_dec"] * r["rel_final"]), axis=1)
 
-    total_rel = sum(merged["rel_kilos"], Decimal("0"))
-    validar_total_rel(total_rel)
-
     destrios_long = pesos_df.melt(id_vars=["semana"], value_vars=DESTRIOS, var_name="destrio", value_name="kilos")
     destrios_long["kilos"] = pd.to_numeric(destrios_long["kilos"], errors="coerce").fillna(0)
     destrios_long["importe"] = destrios_long.apply(
         lambda r: q4(parse_decimal(r["kilos"]) * precios_destrio[r["destrio"]]), axis=1
     )
-    ingreso_destrios_total = sum(destrios_long["importe"], Decimal("0"))
+    importe_destrios = sum(destrios_long["importe"], Decimal("0"))
 
-    neto_obj = q4(bruto_campana - fondo_gg_total - otros_fondos - ingreso_destrios_total)
-    coef = q4(neto_obj / total_rel)
+    neto_comercial = q4(bruto_campana - fondo_gg_total - otros_fondos - importe_destrios)
+
+    base_relativa = sum(merged["rel_kilos"], Decimal("0"))
+    validar_total_rel(base_relativa)
+
+    coef = q4(neto_comercial / base_relativa)
+
+    logger.info(f"Importe destríos: {importe_destrios}")
+    logger.info(f"Neto comercial: {neto_comercial}")
+    logger.info(f"Base relativa: {base_relativa}")
+    logger.info(f"Coef global: {coef}")
 
     final_rows = []
     for _, row in rel_df.iterrows():
@@ -154,7 +162,7 @@ def calcular_modelo_final(
         how="left",
         validate="m:1",
     )
-    recon = sum(recon_det.apply(lambda r: q4(r["kilos_dec"] * r["precio_final"]), axis=1), Decimal("0")) + ingreso_destrios_total
+    recon = sum(recon_det.apply(lambda r: q4(r["kilos_dec"] * r["precio_final"]), axis=1), Decimal("0")) + importe_destrios
     objetivo_validacion = bruto_campana - fondo_gg_total - otros_fondos
     descuadre = validar_cuadre(recon, objetivo_validacion)
 
@@ -194,10 +202,10 @@ def calcular_modelo_final(
 
     metricas = {
         "total_kg_comerciales": parse_decimal(merged["kilos"].sum()),
-        "ingreso_destrios_total": ingreso_destrios_total,
+        "ingreso_destrios_total": importe_destrios,
         "fondo_gg_total": fondo_gg_total,
-        "neto_obj": neto_obj,
-        "total_rel": total_rel,
+        "neto_obj": neto_comercial,
+        "total_rel": base_relativa,
         "coef": coef,
         "num_semanas_con_kilos": int(len(kilos_semanas)),
         "descuadre": descuadre,
