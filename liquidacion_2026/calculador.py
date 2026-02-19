@@ -118,11 +118,21 @@ def calcular_modelo_final(
     descuadre = validar_cuadre(recon, objetivo_validacion)
 
     sem_kilos = merged.groupby("semana", as_index=False)["kilos"].sum().rename(columns={"kilos": "total_kg_comercial_sem"})
-    table = sem_kilos.merge(
-        precios_df[precios_df["categoria"] == "I"].pivot(index="semana", columns="calibre", values="precio_final").reset_index(),
-        on="semana",
-        how="left",
+
+    df_rel = (
+        anecop[["semana", "grupo", "rel"]]
+        .pivot(index="semana", columns="grupo", values="rel")
+        .reset_index()
     )
+    assert df_rel["semana"].is_unique
+
+    table = sem_kilos.merge(df_rel, on="semana", how="left")
+
+    missing_rel_weeks = sorted(table.loc[table[["AAA", "AA", "A"]].isna().any(axis=1), "semana"].astype(int).tolist())
+    if missing_rel_weeks:
+        raise ValueError(f"Hay semanas con kilos comerciales sin ANECOP: {missing_rel_weeks}")
+
+    table[["AAA", "AA", "A"]] = table[["AAA", "AA", "A"]].applymap(lambda v: q4(Decimal(str(v)) * coef))
     table["coef_global"] = coef
     table["ref_semana"] = semana_ref
     table = table.rename(columns={"AAA": "precio_aaa_i", "AA": "precio_aa_i", "A": "precio_a_i"})
