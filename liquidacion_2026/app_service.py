@@ -50,14 +50,16 @@ def build_config(
     if cultivo.strip().upper() != "KAKIS":
         raise ValueError("Cultivo válido para este modelo: KAKIS.")
 
+    precios_destrio_dec = {clave: parse_decimal(valor) for clave, valor in precios_destrio.items()}
+
     return LiquidacionConfig(
         campana=campana,
         empresa=empresa,
         cultivo=cultivo.strip().upper(),
-        bruto_campana=bruto_campana,
-        otros_fondos=otros_fondos,
-        ratio_categoria_ii=ratio_categoria_ii,
-        precios_destrio=precios_destrio,
+        bruto_campana=parse_decimal(bruto_campana),
+        otros_fondos=parse_decimal(otros_fondos),
+        ratio_categoria_ii=parse_decimal(ratio_categoria_ii),
+        precios_destrio=precios_destrio_dec,
         anecop_path=anecop_path,
         db_paths=DBPaths(fruta=db_fruta, calidad=db_calidad, eeppl=db_eeppl),
         output_dir=Path("salidas"),
@@ -129,7 +131,13 @@ def run(config: LiquidacionConfig) -> RunOutput:
     extractor = SQLiteExtractor(str(config.db_paths.fruta), str(config.db_paths.calidad), str(config.db_paths.eeppl))
 
     anecop_df = cargar_anecop(config.anecop_path)
+    anecop_df["precio_base"] = anecop_df["precio_base"].apply(parse_decimal)
     pesos_df = extractor.fetch_pesosfres(config.campana, config.empresa, config.cultivo)
+    pesos_df["kilos"] = pesos_df["kilos"].apply(parse_decimal)
+
+    LOGGER.info(f"Tipo kilos: {type(pesos_df['kilos'].iloc[0])}")
+    LOGGER.info(f"Tipo precio_base: {type(anecop_df['precio_base'].iloc[0])}")
+
     calibre_map = build_calibre_mapping(extractor.fetch_correspondencias_calibres())
 
     deepp_df = extractor.fetch_deepp()
