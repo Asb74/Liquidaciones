@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 
 def parse_decimal(value: object) -> Decimal:
@@ -28,3 +29,10 @@ def parse_decimal(value: object) -> Decimal:
     except InvalidOperation as exc:
         raise ValueError(f"No se puede convertir a Decimal: {value}") from exc
 
+
+def resolve_path(user_path: str | Path, default_path: str | Path) -> Path:
+    """Resuelve path preferente de usuario, con fallback al valor por defecto."""
+    user = Path(user_path)
+    if user.exists():
+        return user
+    return Path(default_path)

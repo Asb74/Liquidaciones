@@ -10,7 +10,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .app_service import RunOutput, build_config, configurar_logging, run
-from .utils import parse_decimal
+from .config import DEFAULT_BDCALIDAD, DEFAULT_DBEEPPL, DEFAULT_DBFRUTA
+from .utils import parse_decimal, resolve_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,9 +41,9 @@ class LiquidacionApp(tk.Tk):
         self.precio_podrido_var = tk.StringVar(value="0")
 
         self.anecop_path_var = tk.StringVar()
-        self.db_fruta_var = tk.StringVar()
-        self.db_calidad_var = tk.StringVar()
-        self.db_eeppl_var = tk.StringVar()
+        self.db_fruta_var = tk.StringVar(value=DEFAULT_DBFRUTA)
+        self.db_calidad_var = tk.StringVar(value=DEFAULT_BDCALIDAD)
+        self.db_eeppl_var = tk.StringVar(value=DEFAULT_DBEEPPL)
 
         self.total_kg_var = tk.StringVar(value="-")
         self.destrios_var = tk.StringVar(value="-")
@@ -137,9 +138,9 @@ class LiquidacionApp(tk.Tk):
             otros_fondos=parse_decimal(self.otros_fondos_var.get()),
             ratio_categoria_ii=parse_decimal(self.ratio_ii_var.get()),
             anecop_path=Path(self.anecop_path_var.get()),
-            db_fruta=Path(self.db_fruta_var.get()),
-            db_calidad=Path(self.db_calidad_var.get()),
-            db_eeppl=Path(self.db_eeppl_var.get()),
+            db_fruta=resolve_path(self.db_fruta_var.get(), DEFAULT_DBFRUTA),
+            db_calidad=resolve_path(self.db_calidad_var.get(), DEFAULT_BDCALIDAD),
+            db_eeppl=resolve_path(self.db_eeppl_var.get(), DEFAULT_DBEEPPL),
             precios_destrio={
                 "deslinea": parse_decimal(self.precio_deslinea_var.get()),
                 "desmesa": parse_decimal(self.precio_desmesa_var.get()),
@@ -150,9 +151,11 @@ class LiquidacionApp(tk.Tk):
     def _on_run(self) -> None:
         try:
             config = self._build_config()
-            for p in [config.anecop_path, config.db_paths.fruta, config.db_paths.calidad, config.db_paths.eeppl]:
+            if not config.anecop_path.exists():
+                raise ValueError(f"No existe archivo: {config.anecop_path}")
+            for p in [config.db_paths.fruta, config.db_paths.calidad, config.db_paths.eeppl]:
                 if not p.exists():
-                    raise ValueError(f"No existe archivo: {p}")
+                    raise ValueError(f"No existe archivo SQLite: {p}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Parámetros inválidos", str(exc))
             return
