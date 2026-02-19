@@ -34,10 +34,15 @@ class SQLiteExtractor:
         for col in [*CALIBRES, *DESTRIOS]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        df["semana"] = pd.to_numeric(df["Apodo"], errors="coerce")
-        if df["semana"].isna().any():
-            raise SQLiteExtractorError("Existen valores no numéricos en Apodo. Semana inválida.")
-        df["semana"] = df["semana"].astype(int)
+        df["semana"] = pd.to_numeric(df["Apodo"], errors="coerce").astype("Int64")
+        invalid_mask = df["semana"].isna()
+        if invalid_mask.any():
+            invalid_rows = df.loc[invalid_mask, ["Apodo", "Boleta"]].head(5).to_dict("records")
+            raise SQLiteExtractorError(
+                "Semana inválida: "
+                f"{int(invalid_mask.sum())} filas tienen Apodo no numérico en PesosFres. "
+                f"Ejemplos: {invalid_rows}"
+            )
         return df
 
     def fetch_correspondencias_calibres(self) -> pd.DataFrame:
