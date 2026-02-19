@@ -8,7 +8,13 @@ from decimal import Decimal
 import pandas as pd
 
 from .config import DESTRIOS, q4
-from .validaciones import validar_cuadre, validar_referencia, validar_semanas_kilos_vs_anecop, validar_total_rel
+from .validaciones import (
+    validar_columnas_minimas_pesosfres,
+    validar_cuadre,
+    validar_referencia,
+    validar_semanas_kilos_vs_anecop,
+    validar_total_rel,
+)
 
 
 @dataclass
@@ -28,6 +34,8 @@ def calcular_modelo_final(
     fondo_gg_total: Decimal,
     ratio_categoria_ii: Decimal,
 ) -> ResultadoCalculo:
+    validar_columnas_minimas_pesosfres(pesos_df)
+
     long = pesos_df.melt(id_vars=["semana", "Boleta"], value_vars=[f"Cal{i}" for i in range(12)], var_name="calibre", value_name="kilos")
     long["kilos"] = pd.to_numeric(long["kilos"], errors="coerce").fillna(0)
     long = long.merge(calibre_map, on="calibre", how="inner", validate="m:1")

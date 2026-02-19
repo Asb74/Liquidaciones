@@ -11,6 +11,26 @@ class ValidationError(ValueError):
     pass
 
 
+def validar_columnas_minimas_pesosfres(df: pd.DataFrame) -> None:
+    requeridas = [
+        "Apodo",
+        "semana",
+        "Boleta",
+        "Cal0",
+        "Cal1",
+        "Cal2",
+        "Cal6",
+        "Cal7",
+        "Cal8",
+        "DesLinea",
+        "DesMesa",
+        "Podrido",
+    ]
+    faltantes = [col for col in requeridas if col not in df.columns]
+    if faltantes:
+        raise ValidationError(f"Faltan columnas mínimas en PesosFres: {faltantes}")
+
+
 def validar_tabla_no_vacia(df: pd.DataFrame, nombre: str) -> None:
     if df.empty:
         raise ValidationError(f"La tabla/dataset '{nombre}' está vacío.")
