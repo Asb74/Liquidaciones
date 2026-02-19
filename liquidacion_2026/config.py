@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+
+
+LOG_PATH = Path("log_ejecucion.txt")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_PATH, mode="w", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
 
 
 @dataclass(frozen=True)
