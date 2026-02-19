@@ -24,11 +24,11 @@ def calcular_fondo_globalgap(
     deepp_df.columns = deepp_df.columns.str.strip().str.lower()
     mnivel_df.columns = mnivel_df.columns.str.strip().str.lower()
 
-    calibres_cols = [c.lower() for c in CALIBRES]
+    calibres_cols = CALIBRES
     if "kg_comercial" not in pesos_df.columns:
         pesos_df["kg_comercial"] = pesos_df[calibres_cols].sum(axis=1)
 
-    bon_base = parse_decimal(bon_global_df["Bonificacion"].iloc[0])
+    bon_base = parse_decimal(bon_global_df["bonificacion"].iloc[0])
 
     kilos_socio = pesos_df.groupby("idsocio", as_index=False).agg({"kg_comercial": "sum"})
     kilos_socio = kilos_socio.rename(columns={"kg_comercial": "kilos_bonificables"})

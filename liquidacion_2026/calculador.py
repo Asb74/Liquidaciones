@@ -39,7 +39,7 @@ def calcular_modelo_final(
 ) -> ResultadoCalculo:
     validar_columnas_minimas_pesosfres(pesos_df)
 
-    long = pesos_df.melt(id_vars=["semana", "Boleta"], value_vars=[f"Cal{i}" for i in range(12)], var_name="calibre", value_name="kilos")
+    long = pesos_df.melt(id_vars=["semana", "boleta"], value_vars=[f"cal{i}" for i in range(12)], var_name="calibre", value_name="kilos")
     long["kilos"] = pd.to_numeric(long["kilos"], errors="coerce").fillna(0)
     long = long.merge(calibre_map, on="calibre", how="inner", validate="m:1")
 

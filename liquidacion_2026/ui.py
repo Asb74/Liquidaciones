@@ -141,9 +141,9 @@ class LiquidacionApp(tk.Tk):
             db_calidad=Path(self.db_calidad_var.get()),
             db_eeppl=Path(self.db_eeppl_var.get()),
             precios_destrio={
-                "DesLinea": parse_decimal(self.precio_deslinea_var.get()),
-                "DesMesa": parse_decimal(self.precio_desmesa_var.get()),
-                "Podrido": parse_decimal(self.precio_podrido_var.get()),
+                "deslinea": parse_decimal(self.precio_deslinea_var.get()),
+                "desmesa": parse_decimal(self.precio_desmesa_var.get()),
+                "podrido": parse_decimal(self.precio_podrido_var.get()),
             },
         )
 

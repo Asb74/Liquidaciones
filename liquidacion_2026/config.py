@@ -42,8 +42,8 @@ class LiquidacionConfig:
     export_decimals: int = 2
 
 
-CALIBRES = [f"Cal{i}" for i in range(12)]
-DESTRIOS = ["DesLinea", "DesMesa", "Podrido"]
+CALIBRES = [f"cal{i}" for i in range(12)]
+DESTRIOS = ["deslinea", "desmesa", "podrido"]
 GRUPOS_COMERCIALES = ["AAA", "AA", "A"]
 CATEGORIAS_COMERCIALES = ["I", "II"]
 
