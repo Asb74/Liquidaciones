@@ -7,10 +7,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from .utils import parse_decimal
+
 
 def _round(value: object, decimals: int) -> Decimal:
     quant = Decimal("1").scaleb(-decimals)
-    return Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP)
+    return parse_decimal(value).quantize(quant, rounding=ROUND_HALF_UP)
 
 
 def exportar_todo(
