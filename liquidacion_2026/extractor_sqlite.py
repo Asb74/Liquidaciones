@@ -28,33 +28,44 @@ class SQLiteExtractor:
             WHERE CAMPAÑA = ? AND EMPRESA = ? AND CULTIVO = ?
         """
         df = self._read_sql(self.fruta_db, query, (campana, empresa, cultivo))
+        df.columns = df.columns.str.strip().str.lower()
         if df.empty:
             raise SQLiteExtractorError("No hay datos en PesosFres para los filtros indicados.")
 
-        for col in [*CALIBRES, *DESTRIOS]:
+        for col in [*[c.lower() for c in CALIBRES], *[d.lower() for d in DESTRIOS]]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        df["semana"] = pd.to_numeric(df["Apodo"], errors="coerce").astype("Int64")
+        df["semana"] = pd.to_numeric(df["apodo"], errors="coerce").astype("Int64")
         invalid_mask = df["semana"].isna()
         if invalid_mask.any():
-            invalid_rows = df.loc[invalid_mask, ["Apodo", "Boleta"]].head(5).to_dict("records")
+            invalid_rows = df.loc[invalid_mask, ["apodo", "boleta"]].head(5).to_dict("records")
             raise SQLiteExtractorError(
                 "Semana inválida: "
                 f"{int(invalid_mask.sum())} filas tienen Apodo no numérico en PesosFres. "
                 f"Ejemplos: {invalid_rows}"
             )
+
+        # Compatibilidad hacia atrás con el resto del pipeline económico.
+        for col in CALIBRES:
+            df[col] = df[col.lower()]
+        for col in DESTRIOS:
+            df[col] = df[col.lower()]
+        df["Boleta"] = df["boleta"]
         return df
 
     def fetch_correspondencias_calibres(self) -> pd.DataFrame:
         return self._read_sql(self.calidad_db, "SELECT BASE, KAKIS FROM CorrespondenciasCalibres")
 
     def fetch_deepp(self) -> pd.DataFrame:
-        return self._read_sql(self.eeppl_db, "SELECT Boleta, IDSocio, NivelGlobal FROM DEEPP")
+        df = self._read_sql(self.eeppl_db, "SELECT Boleta, IDSocio, NivelGlobal FROM DEEPP")
+        df.columns = df.columns.str.strip().str.lower()
+        return df
 
     def fetch_mnivel_global(self) -> pd.DataFrame:
         df = self._read_sql(self.eeppl_db, "SELECT Nivel, Indice FROM MNivelGlobal")
+        df.columns = df.columns.str.strip().str.lower()
         if not df.empty:
-            df["Indice"] = pd.to_numeric(df["Indice"], errors="coerce").fillna(0)
+            df["indice"] = pd.to_numeric(df["indice"], errors="coerce").fillna(0)
         return df
 
     def fetch_bon_global(self, campana: int, cultivo: str, empresa: int) -> pd.DataFrame:
