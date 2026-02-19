@@ -136,16 +136,16 @@ def calcular_modelo_final(
     base_relativa = sum(merged["rel_kilos"], Decimal("0"))
     validar_total_rel(base_relativa)
 
-    coef = q4(neto_comercial / base_relativa)
+    coef = neto_comercial / base_relativa
 
     logger.info(f"Importe destríos: {importe_destrios}")
     logger.info(f"Neto comercial: {neto_comercial}")
     logger.info(f"Base relativa: {base_relativa}")
-    logger.info(f"Coef global: {coef}")
+    logger.info(f"Coef global sin redondear: {coef}")
 
     final_rows = []
     for _, row in rel_df.iterrows():
-        precio = q4(parse_decimal(row["rel_final"]) * coef)
+        precio = parse_decimal(row["rel_final"]) * coef
         final_rows.append(
             {
                 "semana": int(row["semana"]),
@@ -162,7 +162,7 @@ def calcular_modelo_final(
         how="left",
         validate="m:1",
     )
-    recon = sum(recon_det.apply(lambda r: q4(r["kilos_dec"] * r["precio_final"]), axis=1), Decimal("0")) + importe_destrios
+    recon = sum(recon_det.apply(lambda r: r["kilos_dec"] * r["precio_final"], axis=1), Decimal("0")) + importe_destrios
     objetivo_validacion = bruto_campana - fondo_gg_total - otros_fondos
     descuadre = validar_cuadre(recon, objetivo_validacion)
 
@@ -195,7 +195,7 @@ def calcular_modelo_final(
     if missing_rel_weeks:
         raise ValueError(f"Hay semanas con kilos comerciales sin ANECOP: {missing_rel_weeks}")
 
-    table[["AAA", "AA", "A"]] = table[["AAA", "AA", "A"]].applymap(lambda v: q4(parse_decimal(v) * coef))
+    table[["AAA", "AA", "A"]] = table[["AAA", "AA", "A"]].applymap(lambda v: parse_decimal(v) * coef)
     table["coef_global"] = coef
     table["ref_semana"] = semana_ref
     table = table.rename(columns={"AAA": "precio_aaa_i", "AA": "precio_aa_i", "A": "precio_a_i"})
