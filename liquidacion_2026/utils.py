@@ -27,8 +27,12 @@ def parse_decimal(value: object) -> Decimal:
     if value == "" or value.lower() in {"nan", "none"}:
         return Decimal("0")
 
-    value = value.replace(".", "")
-    value = value.replace(",", ".")
+    value = value.replace(" ", "")
+    if "," in value and "." not in value:
+        value = value.replace(",", ".")
+    elif "." in value and "," in value:
+        value = value.replace(".", "")
+        value = value.replace(",", ".")
 
     try:
         return Decimal(value)

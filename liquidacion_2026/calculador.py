@@ -112,23 +112,16 @@ def calcular_modelo_final(
 
     final_ii = final_i[final_i["categoria"] == "I"].copy()
     final_ii["categoria"] = "II"
-    final_ii["precio_final"] = final_ii["precio_final"].map(lambda p: q4(parse_decimal(p) * ratio_categoria_ii))
+    final_ii["precio_final_i"] = final_ii["precio_final"].map(parse_decimal)
+    final_ii["precio_final"] = final_ii["precio_final_i"].map(lambda p: q4(p * ratio_categoria_ii))
 
+    invalid = final_ii[final_ii["precio_final"] > final_ii["precio_final_i"]]
+    if not invalid.empty:
+        detail = invalid[["semana", "calibre", "precio_final_i", "precio_final"]].to_dict("records")
+        raise ValidationError(f"Precio categoría II superior a categoría I detectado: {detail}")
+
+    final_ii = final_ii.drop(columns=["precio_final_i"])
     precios_df = pd.concat([final_i, final_ii], ignore_index=True).sort_values(["semana", "calibre", "categoria"]).reset_index(drop=True)
-
-    precios_i = precios_df[precios_df["categoria"] == "I"].set_index(["semana", "calibre"])["precio_final"]
-    mask_ii = precios_df["categoria"] == "II"
-    precios_df.loc[mask_ii, "precio_final"] = precios_df.loc[mask_ii].apply(
-        lambda row: q4(parse_decimal(precios_i.loc[(row["semana"], row["calibre"])]) * ratio_categoria_ii),
-        axis=1,
-    )
-
-    check_df = precios_df.pivot(index=["semana", "calibre"], columns="categoria", values="precio_final").reset_index()
-    if "I" in check_df.columns and "II" in check_df.columns:
-        invalid = check_df[check_df["II"] > check_df["I"]]
-        if not invalid.empty:
-            detail = invalid[["semana", "calibre", "I", "II"]].to_dict("records")
-            raise ValidationError(f"Precio categoría II superior a categoría I detectado: {detail}")
 
     recon_det = merged.merge(
         precios_df.rename(columns={"calibre": "grupo"}),
