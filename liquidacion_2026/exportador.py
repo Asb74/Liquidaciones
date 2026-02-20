@@ -10,10 +10,6 @@ import pandas as pd
 from .utils import parse_decimal
 
 
-def _round(value: object, decimals: int) -> Decimal:
-    quant = Decimal("1").scaleb(-decimals)
-    return parse_decimal(value).quantize(quant, rounding=ROUND_HALF_UP)
-
 
 def format_decimal_es(value: Decimal) -> str:
     dec = parse_decimal(value)
@@ -48,19 +44,20 @@ def exportar_todo(
     precios_finales_path = output_dir / "precios_finales.csv"
     perceco = precios_df.copy()
     perceco.insert(0, "campaña", campana)
-    perceco["precio_final"] = perceco["precio_final"].map(lambda x: _round(x, export_decimals))
     perceco_es = _to_es_dataframe(perceco, export_decimals)
-    perceco_es.to_csv(perceco_path, index=False, sep=";", encoding="utf-8-sig")
-    perceco_es.to_csv(precios_finales_path, index=False, sep=";", encoding="utf-8-sig")
+    perceco_es["precio_final"] = perceco["precio_final"].map(lambda x: f"{parse_decimal(x):.5f}".replace(".", ","))
+    perceco_es.to_csv(perceco_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
+    perceco_es.to_csv(precios_finales_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
     audit_path = output_dir / "auditoria_gg_boletas_no_match.csv"
-    audit_df.to_csv(audit_path, index=False, sep=";", encoding="utf-8-sig")
+    audit_df.to_csv(audit_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
     audit_gg_socios_path = output_dir / "auditoria_globalgap_socios.csv"
     _to_es_dataframe(audit_globalgap_socios_df, export_decimals).to_csv(
         audit_gg_socios_path,
         index=False,
         sep=";",
+        decimal=",",
         encoding="utf-8-sig",
     )
 
@@ -69,6 +66,7 @@ def exportar_todo(
         audit_kilos_semana_path,
         index=False,
         sep=";",
+        decimal=",",
         encoding="utf-8-sig",
     )
 
@@ -77,6 +75,7 @@ def exportar_todo(
         resumen_semana_path,
         index=False,
         sep=";",
+        decimal=",",
         encoding="utf-8-sig",
     )
 
@@ -96,7 +95,7 @@ def exportar_todo(
             }
         ]
     )
-    _to_es_dataframe(resumen, export_decimals).to_csv(resumen_path, index=False, sep=";", encoding="utf-8-sig")
+    _to_es_dataframe(resumen, export_decimals).to_csv(resumen_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
     return {
         "perceco": perceco_path,
