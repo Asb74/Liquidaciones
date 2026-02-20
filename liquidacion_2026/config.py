@@ -1,4 +1,4 @@
-"""Configuración y constantes de liquidación KAKIS 2025."""
+"""Configuración y constantes de liquidación KAKIS."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from pathlib import Path
 
 
 LOG_PATH = Path("log_ejecucion.txt")
-DEFAULT_DBFRUTA = r"X:/BasesSQLite/DBfruta.sqlite"
-DEFAULT_BDCALIDAD = r"X:/BasesSQLite/BdCalidad.sqlite"
-DEFAULT_DBEEPPL = r"X:/BasesSQLite/DBEEPPL.sqlite"
+DEFAULT_DBFRUTA = r"X:\BasesSQLite\DBfruta.sqlite"
+DEFAULT_BDCALIDAD = r"X:\BasesSQLite\BdCalidad.sqlite"
+DEFAULT_DBEEPPL = r"X:\BasesSQLite\DBEEPPL.sqlite"
 
 logging.basicConfig(
     level=logging.INFO,

@@ -49,12 +49,7 @@ class SQLiteExtractor:
         for col in [*CALIBRES, *DESTRIOS]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        df["kilos_comerciales_float"] = df[CALIBRES].sum(axis=1)
-        df["kilos_comerciales"] = df["kilos_comerciales_float"].map(parse_decimal)
-        df["kilos_total"] = df.apply(
-            lambda row: row["kilos_comerciales"] + parse_decimal(row["deslinea"]) + parse_decimal(row["desmesa"]) + parse_decimal(row["podrido"]),
-            axis=1,
-        )
+        df["kilos_comerciales"] = df[CALIBRES].sum(axis=1)
 
         df["semana"] = pd.to_numeric(df["apodo"], errors="coerce").astype("Int64")
         invalid_mask = df["semana"].isna()
