@@ -133,9 +133,7 @@ def run(config: LiquidacionConfig) -> RunOutput:
     anecop_df = cargar_anecop(config.anecop_path)
     anecop_df["precio_base"] = anecop_df["precio_base"].apply(parse_decimal)
     pesos_df = extractor.fetch_pesosfres(config.campana, config.empresa, config.cultivo)
-    pesos_df["kilos"] = pesos_df["kilos"].apply(parse_decimal)
 
-    LOGGER.info(f"Tipo kilos: {type(pesos_df['kilos'].iloc[0])}")
     LOGGER.info(f"Tipo precio_base: {type(anecop_df['precio_base'].iloc[0])}")
 
     calibre_map = build_calibre_mapping(extractor.fetch_correspondencias_calibres())
