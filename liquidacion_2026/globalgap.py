@@ -86,7 +86,18 @@ def calcular_fondo_globalgap(
     audit_globalgap_socios_df = merged[
         ["idsocio", "kilos_gg", "nivelglobal", "indice_decimal", "bonif_eur_kg", "fondo_gg_eur"]
     ].rename(columns={"indice_decimal": "indice"})
-    LOGGER.info("Total kilos GG (comerciales): %s", sum(audit_globalgap_socios_df["kilos_gg"], Decimal("0")))
+    audit_globalgap_socios_df["kilos_gg"] = (
+        audit_globalgap_socios_df["kilos_gg"]
+        .map(lambda x: parse_decimal(x))
+    )
+    LOGGER.info(
+        "Tipos en kilos_gg: %s", audit_globalgap_socios_df["kilos_gg"].map(type).value_counts().to_dict()
+    )
+    total_kilos_gg = sum(
+        (parse_decimal(x) for x in audit_globalgap_socios_df["kilos_gg"]),
+        Decimal("0"),
+    )
+    LOGGER.info("Total kilos GG (comerciales): %s", total_kilos_gg)
     LOGGER.info("Fondo GG total: %s", total)
 
     return total, audit_globalgap_socios_df, audit_inc_df
