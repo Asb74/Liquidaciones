@@ -31,10 +31,10 @@ def exportar_todo(
     perceco = precios_df.copy()
     perceco.insert(0, "campaña", campana)
     perceco["precio_final"] = perceco["precio_final"].map(lambda x: _round(x, export_decimals))
-    perceco.to_csv(perceco_path, index=False)
+    perceco.to_csv(perceco_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
     audit_path = output_dir / "auditoria_gg_boletas_no_match.csv"
-    audit_df.to_csv(audit_path, index=False)
+    audit_df.to_csv(audit_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
     resumen_path = output_dir / "resumen_campania.csv"
     resumen = pd.DataFrame(
@@ -52,6 +52,6 @@ def exportar_todo(
             }
         ]
     )
-    resumen.to_csv(resumen_path, index=False)
+    resumen.to_csv(resumen_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
     return {"perceco": perceco_path, "audit": audit_path, "resumen": resumen_path}

@@ -14,6 +14,14 @@ from .utils import parse_decimal
 LOGGER = logging.getLogger(__name__)
 
 
+def _first_non_empty(values: pd.Series) -> str:
+    for value in values:
+        normalized = str(value).strip()
+        if normalized:
+            return normalized
+    return ""
+
+
 def calcular_fondo_globalgap(
     pesos_df: pd.DataFrame,
     deepp_df: pd.DataFrame,
@@ -23,81 +31,89 @@ def calcular_fondo_globalgap(
     pesos_df = pesos_df.copy()
     deepp_df = deepp_df.copy()
     mnivel_df = mnivel_df.copy()
+    bon_global_df = bon_global_df.copy()
 
     pesos_df.columns = pesos_df.columns.str.strip().str.lower()
     deepp_df.columns = deepp_df.columns.str.strip().str.lower()
     mnivel_df.columns = mnivel_df.columns.str.strip().str.lower()
+    bon_global_df.columns = bon_global_df.columns.str.strip().str.lower()
 
-    calibres_cols = CALIBRES
-    if "kg_comercial" not in pesos_df.columns:
-        pesos_df["kg_comercial"] = pesos_df[calibres_cols].sum(axis=1)
+    for col in CALIBRES:
+        pesos_df[col] = pesos_df[col].map(parse_decimal)
 
-    bon_base = parse_decimal(bon_global_df["bonificacion"].iloc[0])
+    pesos_df["kilos_comerciales"] = pesos_df[CALIBRES].sum(axis=1)
+    pesos_df["idsocio"] = pesos_df["idsocio"].astype(str).str.strip()
 
-    kilos_socio = pesos_df.groupby("idsocio", as_index=False).agg({"kg_comercial": "sum"})
-    kilos_socio = kilos_socio.rename(columns={"kg_comercial": "kilos_gg"})
+    kilos_socios_df = pesos_df.groupby("idsocio", as_index=False)["kilos_comerciales"].sum()
 
-    deepp_unique = deepp_df.drop_duplicates(subset=["idsocio"])[["idsocio", "nivelglobal"]]
+    deepp_df["idsocio"] = deepp_df["idsocio"].astype(str).str.strip()
+    deepp_df["boleta"] = deepp_df["boleta"].astype(str).str.strip()
+    deepp_df["certificacion"] = deepp_df["certificacion"].fillna("").astype(str).str.strip().str.upper()
+    deepp_gg = deepp_df[deepp_df["certificacion"] == "GLOBAL GAP"].copy()
 
-    merged = kilos_socio.merge(
-        deepp_unique,
-        on="idsocio",
-        how="left",
-        validate="m:1",
+    inconsistencias = (
+        deepp_gg.assign(nivelglobal_norm=deepp_gg["nivelglobal"].fillna("").astype(str).str.strip())
+        .groupby("idsocio")["nivelglobal_norm"]
+        .nunique()
     )
-    merged = merged.merge(
-        mnivel_df[["nivel", "indice"]],
-        left_on="nivelglobal",
-        right_on="nivel",
-        how="left",
-        validate="m:1",
-    )
-    merged["indice"] = pd.to_numeric(merged["indice"], errors="coerce")
+    socios_niveles_inconsistentes = inconsistencias[inconsistencias > 1].index.tolist()
+    if socios_niveles_inconsistentes:
+        LOGGER.info("Socios GG con más de un NivelGlobal en DEEPP: %s", socios_niveles_inconsistentes)
 
-    audit_rows: list[dict[str, object]] = []
-
-    def resolve_indice(row: pd.Series) -> Decimal:
-        if pd.isna(row.get("nivelglobal")):
-            audit_rows.append({"boleta": row["idsocio"], "motivo": "boleta_sin_deepp", "nivelglobal": "", "indice_asignado": 0})
-            return Decimal("0")
-        if pd.isna(row.get("indice")):
-            audit_rows.append(
-                {
-                    "boleta": row["idsocio"],
-                    "motivo": "nivel_sin_indice",
-                    "nivelglobal": row.get("nivelglobal", ""),
-                    "indice_asignado": 0,
-                }
-            )
-            return Decimal("0")
-        return parse_decimal(row["indice"])
-
-    merged["indice_decimal"] = merged.apply(resolve_indice, axis=1)
-    merged["bonif_eur_kg"] = bon_base
-    merged["fondo_gg_eur"] = merged.apply(
-        lambda r: parse_decimal(r["kilos_gg"]) * r["bonif_eur_kg"] * r["indice_decimal"], axis=1
+    deepp_socios = (
+        deepp_gg.groupby("idsocio", as_index=False)
+        .agg(
+            nivelglobal=("nivelglobal", _first_non_empty),
+            boleta_ref=("boleta", _first_non_empty),
+        )
     )
 
-    total = sum(merged["fondo_gg_eur"], Decimal("0"))
-    audit_inc_df = pd.DataFrame(audit_rows).drop_duplicates() if audit_rows else pd.DataFrame(
-        columns=["boleta", "motivo", "nivelglobal", "indice_asignado"]
+    mnivel_df["nivel"] = mnivel_df["nivel"].fillna("").astype(str).str.strip()
+    mnivel_df["indice"] = mnivel_df["indice"].map(parse_decimal)
+
+    merged_all = kilos_socios_df.merge(deepp_socios, on="idsocio", how="left")
+    merged_all = merged_all.merge(mnivel_df[["nivel", "indice"]], left_on="nivelglobal", right_on="nivel", how="left")
+    merged_all["indice"] = merged_all["indice"].map(parse_decimal)
+
+    bonificaciones = bon_global_df["bonificacion"].map(parse_decimal)
+    if bonificaciones.empty:
+        bon_eur = Decimal("0")
+    elif len(bonificaciones) > 1:
+        LOGGER.info("BonGlobal tiene %s filas; se usa media de bonificación para GG.", len(bonificaciones))
+        bon_eur = sum(bonificaciones, Decimal("0")) / Decimal(len(bonificaciones))
+    else:
+        bon_eur = bonificaciones.iloc[0]
+
+    merged_all["bon_eur"] = bon_eur
+    merged_all["fondo_eur"] = merged_all.apply(
+        lambda row: parse_decimal(row["kilos_comerciales"]) * parse_decimal(row["bon_eur"]) * parse_decimal(row["indice"]),
+        axis=1,
     )
 
-    audit_globalgap_socios_df = merged[
-        ["idsocio", "kilos_gg", "nivelglobal", "indice_decimal", "bonif_eur_kg", "fondo_gg_eur"]
-    ].rename(columns={"indice_decimal": "indice"})
-    audit_globalgap_socios_df["kilos_gg"] = (
-        audit_globalgap_socios_df["kilos_gg"]
-        .map(lambda x: parse_decimal(x))
-    )
-    LOGGER.info(
-        "Tipos en kilos_gg: %s", audit_globalgap_socios_df["kilos_gg"].map(type).value_counts().to_dict()
-    )
-    total_kilos_gg = sum(
-        (parse_decimal(x) for x in audit_globalgap_socios_df["kilos_gg"]),
-        Decimal("0"),
-    )
-    LOGGER.info("Total kilos GG (comerciales): %s", total_kilos_gg)
-    LOGGER.info("Fondo GG total: %s", total)
+    merged = merged_all[merged_all["idsocio"].isin(deepp_socios["idsocio"])].copy()
+    fondo_total = sum(merged["fondo_eur"], Decimal("0"))
 
-    return total, audit_globalgap_socios_df, audit_inc_df
+    boletas_pesos = set(pesos_df["boleta"].astype(str).str.strip())
+    boletas_gg = set(deepp_gg["boleta"].astype(str).str.strip())
+    boletas_no_match = sorted(boletas_pesos - boletas_gg)
+    socios_no_match = sorted(set(kilos_socios_df["idsocio"]) - set(deepp_socios["idsocio"]))
+
+    audit_rows: list[dict[str, str]] = []
+    audit_rows.extend({"tipo": "boleta_no_match", "id": boleta, "detalle": "boleta en pesos sin GLOBAL GAP"} for boleta in boletas_no_match)
+    audit_rows.extend({"tipo": "socio_no_match", "id": socio, "detalle": "socio en pesos sin GLOBAL GAP"} for socio in socios_no_match)
+    audit_rows.extend(
+        {"tipo": "socio_nivel_inconsistente", "id": socio, "detalle": "más de un nivelglobal en DEEPP"}
+        for socio in socios_niveles_inconsistentes
+    )
+    audit_df = pd.DataFrame(audit_rows, columns=["tipo", "id", "detalle"])
+
+    audit_globalgap_socios_df = merged[["idsocio", "nivelglobal", "indice", "bon_eur", "kilos_comerciales", "fondo_eur"]].copy()
+    audit_globalgap_socios_df["kilos_comerciales"] = audit_globalgap_socios_df["kilos_comerciales"].map(parse_decimal)
+    audit_globalgap_socios_df["indice"] = audit_globalgap_socios_df["indice"].map(parse_decimal)
+    audit_globalgap_socios_df["bon_eur"] = audit_globalgap_socios_df["bon_eur"].map(parse_decimal)
+    audit_globalgap_socios_df["fondo_eur"] = audit_globalgap_socios_df["fondo_eur"].map(parse_decimal)
+
+    LOGGER.info("Socios GG considerados: %s", len(audit_globalgap_socios_df))
+    LOGGER.info("Fondo GG total calculado: %s", fondo_total)
+
+    return fondo_total, audit_globalgap_socios_df, audit_df

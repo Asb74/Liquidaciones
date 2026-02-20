@@ -20,7 +20,7 @@ LOGGER = logging.getLogger(__name__)
 class LiquidacionApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Liquidación KAKIS 2025")
+        self.title("Liquidación KAKIS")
         self.geometry("1200x760")
 
         self._worker_queue: Queue[tuple[str, object]] = Queue()
@@ -30,7 +30,7 @@ class LiquidacionApp(tk.Tk):
         self._build_ui()
 
     def _create_vars(self) -> None:
-        self.campana_var = tk.StringVar(value="2025")
+        self.campana_var = tk.StringVar(value="2026")
         self.empresa_var = tk.StringVar(value="1")
         self.cultivo_var = tk.StringVar(value="KAKIS")
         self.bruto_var = tk.StringVar()
@@ -228,8 +228,12 @@ class LiquidacionApp(tk.Tk):
         audit_kilos_path = destination.parent / f"audit_aprovechamiento_por_semana_{stamp}.csv"
         audit_gg_path = destination.parent / f"audit_globalgap_por_socio_{stamp}.csv"
 
-        self._run_output.auditoria["audit_kilos_semana_df"].to_csv(audit_kilos_path, index=False)
-        self._run_output.auditoria["audit_globalgap_socios_df"].to_csv(audit_gg_path, index=False)
+        self._run_output.auditoria["audit_kilos_semana_df"].to_csv(
+            audit_kilos_path, index=False, sep=";", decimal=",", encoding="utf-8-sig"
+        )
+        self._run_output.auditoria["audit_globalgap_socios_df"].to_csv(
+            audit_gg_path, index=False, sep=";", decimal=",", encoding="utf-8-sig"
+        )
 
         messagebox.showinfo(
             "Exportación",

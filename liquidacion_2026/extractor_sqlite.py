@@ -9,6 +9,7 @@ from contextlib import closing
 import pandas as pd
 
 from .config import CALIBRES, DESTRIOS
+from .utils import parse_decimal
 
 LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +49,13 @@ class SQLiteExtractor:
         for col in [*CALIBRES, *DESTRIOS]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
+        df["kilos_comerciales_float"] = df[CALIBRES].sum(axis=1)
+        df["kilos_comerciales"] = df["kilos_comerciales_float"].map(parse_decimal)
+        df["kilos_total"] = df.apply(
+            lambda row: row["kilos_comerciales"] + parse_decimal(row["deslinea"]) + parse_decimal(row["desmesa"]) + parse_decimal(row["podrido"]),
+            axis=1,
+        )
+
         df["semana"] = pd.to_numeric(df["apodo"], errors="coerce").astype("Int64")
         invalid_mask = df["semana"].isna()
         if invalid_mask.any():
@@ -63,7 +71,20 @@ class SQLiteExtractor:
         return self._read_sql(self.calidad_db, "SELECT BASE, KAKIS FROM CorrespondenciasCalibres")
 
     def fetch_deepp(self) -> pd.DataFrame:
-        df = self._read_sql(self.eeppl_db, "SELECT Boleta AS boleta, IDSocio AS idsocio, NivelGlobal AS nivelglobal FROM DEEPP")
+        df = self._read_sql(
+            self.eeppl_db,
+            """
+            SELECT
+                Boleta AS boleta,
+                IDSocio AS idsocio,
+                Certificacion AS certificacion,
+                NivelGlobal AS nivelglobal,
+                CAMPAÑA AS campaña,
+                CULTIVO AS cultivo,
+                EMPRESA AS empresa
+            FROM DEEPP
+            """,
+        )
         df.columns = df.columns.str.strip().str.lower()
         return df
 
@@ -71,12 +92,21 @@ class SQLiteExtractor:
         df = self._read_sql(self.eeppl_db, "SELECT Nivel AS nivel, Indice AS indice FROM MNivelGlobal")
         df.columns = df.columns.str.strip().str.lower()
         if not df.empty:
-            df["indice"] = pd.to_numeric(df["indice"], errors="coerce").fillna(0)
+            df["indice"] = df["indice"].map(parse_decimal)
         return df
 
     def fetch_bon_global(self, campana: int, cultivo: str, empresa: int) -> pd.DataFrame:
-        query = """
-            SELECT CAMPAÑA AS campaña, CULTIVO AS cultivo, EMPRESA AS empresa, Bonificacion AS bonificacion
+        cols = self._table_columns(self.fruta_db, "BonGlobal")
+        has_categoria = "CATEGORIA" in cols
+        categoria_sql = "CATEGORIA AS categoria," if has_categoria else "'' AS categoria,"
+
+        query = f"""
+            SELECT
+                CAMPAÑA AS campaña,
+                CULTIVO AS cultivo,
+                EMPRESA AS empresa,
+                {categoria_sql}
+                Bonificacion AS bonificacion
             FROM BonGlobal
             WHERE CAMPAÑA = ? AND CULTIVO = ? AND EMPRESA = ?
         """
@@ -84,7 +114,15 @@ class SQLiteExtractor:
         if df.empty:
             raise SQLiteExtractorError("No existe registro en BonGlobal para campaña/cultivo/empresa.")
         df.columns = df.columns.str.strip().str.lower()
-        df["bonificacion"] = pd.to_numeric(df["bonificacion"], errors="coerce").fillna(0)
+        df["bonificacion"] = df["bonificacion"].map(parse_decimal)
+        if len(df) > 1:
+            LOGGER.info(
+                "BonGlobal devolvió %s filas para campaña=%s cultivo=%s empresa=%s (posibles categorías múltiples).",
+                len(df),
+                campana,
+                cultivo,
+                empresa,
+            )
         return df
 
     @staticmethod
@@ -95,3 +133,12 @@ class SQLiteExtractor:
                 return pd.read_sql_query(query, conn, params=params)
         except sqlite3.Error as exc:
             raise SQLiteExtractorError(f"Error SQLite en {db_path}: {exc}") from exc
+
+    @staticmethod
+    def _table_columns(db_path: str, table: str) -> set[str]:
+        try:
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        except sqlite3.Error as exc:
+            raise SQLiteExtractorError(f"Error leyendo esquema de tabla {table} en {db_path}: {exc}") from exc
+        return {str(row[1]).upper() for row in rows}

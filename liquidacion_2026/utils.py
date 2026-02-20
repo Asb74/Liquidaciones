@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import math
 from pathlib import Path
 
 
@@ -14,11 +15,16 @@ def parse_decimal(value: object) -> Decimal:
     if isinstance(value, Decimal):
         return value
 
-    if isinstance(value, (int, float)):
+    if isinstance(value, int):
+        return Decimal(str(value))
+
+    if isinstance(value, float):
+        if math.isnan(value):
+            return Decimal("0")
         return Decimal(str(value))
 
     value = str(value).strip()
-    if value == "":
+    if value == "" or value.lower() in {"nan", "none"}:
         return Decimal("0")
 
     value = value.replace(".", "")
