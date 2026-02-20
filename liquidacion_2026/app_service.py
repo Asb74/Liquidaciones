@@ -43,8 +43,6 @@ def build_config(
     db_eeppl: Path,
     precios_destrio: dict[str, Decimal],
 ) -> LiquidacionConfig:
-    if campana != 2025:
-        raise ValueError("Validación configurada para campaña 2025.")
     if empresa != 1:
         raise ValueError("Empresa válida para este modelo: 1.")
     if cultivo.strip().upper() != "KAKIS":
