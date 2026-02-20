@@ -107,30 +107,36 @@ def calcular_modelo_final(
     coef = neto_comercial / base_relativa
 
     final_i = rel_i.copy()
-    final_i["precio_final"] = final_i["rel_final"].map(lambda rel: parse_decimal(rel) * coef)
-    final_i = final_i.rename(columns={"grupo": "calibre"})[["semana", "calibre", "categoria", "precio_final"]]
+    final_i["precio_raw"] = final_i["rel_final"].map(lambda rel: parse_decimal(rel) * coef)
+    final_i["precio_final"] = final_i["precio_raw"].map(q4)
+    final_i = final_i.rename(columns={"grupo": "calibre"})[["semana", "calibre", "categoria", "precio_raw", "precio_final"]]
 
     final_ii = final_i[final_i["categoria"] == "I"].copy()
     final_ii["categoria"] = "II"
-    final_ii["precio_final_i"] = final_ii["precio_final"].map(parse_decimal)
-    final_ii["precio_final"] = final_ii["precio_final_i"].map(lambda p: q4(p * ratio_categoria_ii))
+    final_ii["precio_raw_i"] = final_ii["precio_raw"].map(parse_decimal)
+    final_ii["precio_raw"] = final_ii["precio_raw_i"].map(lambda p: p * ratio_categoria_ii)
+    final_ii["precio_final"] = final_ii["precio_raw"].map(q4)
 
-    invalid = final_ii[final_ii["precio_final"] > final_ii["precio_final_i"]]
+    invalid = final_ii[final_ii["precio_final"] > final_ii["precio_raw_i"]]
     if not invalid.empty:
-        detail = invalid[["semana", "calibre", "precio_final_i", "precio_final"]].to_dict("records")
+        detail = invalid[["semana", "calibre", "precio_raw_i", "precio_final"]].to_dict("records")
         raise ValidationError(f"Precio categoría II superior a categoría I detectado: {detail}")
 
-    final_ii = final_ii.drop(columns=["precio_final_i"])
-    precios_df = pd.concat([final_i, final_ii], ignore_index=True).sort_values(["semana", "calibre", "categoria"]).reset_index(drop=True)
+    final_ii = final_ii.drop(columns=["precio_raw_i"])
+    precios_det_df = pd.concat([final_i, final_ii], ignore_index=True).sort_values(["semana", "calibre", "categoria"]).reset_index(drop=True)
+    precios_df = precios_det_df.drop(columns=["precio_raw"])
 
     recon_det = merged.merge(
-        precios_df.rename(columns={"calibre": "grupo"}),
+        precios_det_df.rename(columns={"calibre": "grupo"}),
         on=["semana", "grupo", "categoria"],
         how="left",
         validate="m:1",
     )
-    recon = sum(recon_det.apply(lambda r: parse_decimal(r["kilos_dec"]) * parse_decimal(r["precio_final"]), axis=1), Decimal("0")) + importe_destrios
+    recon = sum(recon_det.apply(lambda r: parse_decimal(r["kilos_dec"]) * parse_decimal(r["precio_raw"]), axis=1), Decimal("0")) + importe_destrios
     objetivo_validacion = bruto_campana - fondo_gg_total - otros_fondos
+    logger.info(f"Recon sin redondeo: {recon}")
+    logger.info(f"Objetivo: {objetivo_validacion}")
+    logger.info(f"Descuadre: {recon-objetivo_validacion}")
     descuadre = validar_cuadre(recon, objetivo_validacion)
 
     sem_kilos = merged.groupby("semana", as_index=False)["kilos"].sum().rename(columns={"kilos": "total_kg_comercial_sem"})
