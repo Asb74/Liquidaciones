@@ -166,7 +166,7 @@ def run(config: LiquidacionConfig) -> RunOutput:
         Decimal("0"),
     )
     total_kilos_gg = sum(audit_globalgap_socios_df["kilos_comerciales"].map(parse_decimal), Decimal("0"))
-    fondo_gg_total_audit = sum(audit_globalgap_socios_df["fondo_eur"].map(parse_decimal), Decimal("0"))
+    fondo_gg_total_audit = sum(audit_globalgap_socios_df["fondo_soc"].map(parse_decimal), Decimal("0"))
 
     LOGGER.info("total_kilos_comercial_por_semana=%s", total_kilos_comercial_por_semana)
     LOGGER.info("total_kilos_gg=%s", total_kilos_gg)
@@ -205,7 +205,7 @@ def run(config: LiquidacionConfig) -> RunOutput:
         "audit_kilos_semana_df": _quantize_df(audit_kilos_semana_df, ["kilos"]),
         "audit_globalgap_socios_df": _quantize_df(
             audit_globalgap_socios_df,
-            ["kilos_comerciales", "indice", "bon_eur", "fondo_eur"],
+            ["kilos_comerciales", "indice", "bonificacion_eur", "fondo_soc"],
         ),
     }
 
