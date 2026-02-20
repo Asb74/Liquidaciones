@@ -43,8 +43,6 @@ def build_config(
     db_eeppl: Path,
     precios_destrio: dict[str, Decimal],
 ) -> LiquidacionConfig:
-    if empresa != 1:
-        raise ValueError("Empresa válida para este modelo: 1.")
     if cultivo.strip().upper() != "KAKIS":
         raise ValueError("Cultivo válido para este modelo: KAKIS.")
 
@@ -128,18 +126,22 @@ def _quantize_df(df: pd.DataFrame, columns: list[str], decimals: int = 4) -> pd.
 
 
 def run(config: LiquidacionConfig) -> RunOutput:
+    LOGGER.info(
+        "Inicio run liquidación | campaña=%s empresa=%s cultivo=%s bruto=%s otros=%s ratio_ii=%s",
+        config.campana,
+        config.empresa,
+        config.cultivo,
+        config.bruto_campana,
+        config.otros_fondos,
+        config.ratio_categoria_ii,
+    )
     extractor = SQLiteExtractor(str(config.db_paths.fruta), str(config.db_paths.calidad), str(config.db_paths.eeppl))
 
     anecop_df = cargar_anecop(config.anecop_path)
     anecop_df["precio_base"] = anecop_df["precio_base"].apply(parse_decimal)
     pesos_df = extractor.fetch_pesosfres(config.campana, config.empresa, config.cultivo)
     if "kilos_comerciales" not in pesos_df.columns:
-        pesos_df["kilos_comerciales"] = pesos_df[CALIBRES].apply(lambda row: sum((parse_decimal(v) for v in row), Decimal("0")), axis=1)
-    if "kilos_total" not in pesos_df.columns:
-        pesos_df["kilos_total"] = pesos_df.apply(
-            lambda row: parse_decimal(row["kilos_comerciales"]) + parse_decimal(row["deslinea"]) + parse_decimal(row["desmesa"]) + parse_decimal(row["podrido"]),
-            axis=1,
-        )
+        pesos_df["kilos_comerciales"] = pesos_df[CALIBRES].sum(axis=1)
 
     LOGGER.info(f"Tipo precio_base: {type(anecop_df['precio_base'].iloc[0])}")
 
@@ -167,8 +169,8 @@ def run(config: LiquidacionConfig) -> RunOutput:
         audit_kilos_semana_df.loc[audit_kilos_semana_df["concepto"] == "comercial", "kilos"].map(parse_decimal),
         Decimal("0"),
     )
-    total_kilos_gg = sum(audit_globalgap_socios_df["kilos_comerciales"].map(parse_decimal), Decimal("0"))
-    fondo_gg_total_audit = sum(audit_globalgap_socios_df["fondo_soc"].map(parse_decimal), Decimal("0"))
+    total_kilos_gg = sum(audit_globalgap_socios_df["kilos_comerciales_gg"].map(parse_decimal), Decimal("0"))
+    fondo_gg_total_audit = sum(audit_globalgap_socios_df["importe_gg"].map(parse_decimal), Decimal("0"))
 
     LOGGER.info("total_kilos_comercial_por_semana=%s", total_kilos_comercial_por_semana)
     LOGGER.info("total_kilos_gg=%s", total_kilos_gg)
@@ -198,6 +200,9 @@ def run(config: LiquidacionConfig) -> RunOutput:
         campana=config.campana,
         cultivo=config.cultivo,
         audit_df=audit_df,
+        audit_globalgap_socios_df=audit_globalgap_socios_df,
+        audit_kilos_semana_df=audit_kilos_semana_df,
+        resumen_df=resultado.resumen_df,
         resumen_metricas=resultado.resumen_metricas,
         output_dir=config.output_dir,
         export_decimals=config.export_decimals,
@@ -207,7 +212,7 @@ def run(config: LiquidacionConfig) -> RunOutput:
         "audit_kilos_semana_df": _quantize_df(audit_kilos_semana_df, ["kilos"]),
         "audit_globalgap_socios_df": _quantize_df(
             audit_globalgap_socios_df,
-            ["kilos_comerciales", "indice", "bonificacion_eur", "fondo_soc"],
+            ["kilos_comerciales_gg", "indice", "euro_kg", "importe_gg"],
         ),
     }
 

@@ -8,11 +8,11 @@ Aplicación de escritorio para calcular la liquidación final KAKIS por campaña
 python -m liquidacion_2026
 ```
 
-## Flujo de validación (campaña 2025)
+## Flujo de validación (cualquier campaña)
 
 1. Abrir la aplicación con `python -m liquidacion_2026`.
 2. Cargar:
-   - Campaña `2025`
+   - Campaña deseada (ej. `2026`)
    - Empresa `1`
    - Cultivo `KAKIS`
    - Bruto campaña (ejemplo real de campaña)

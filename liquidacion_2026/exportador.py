@@ -15,12 +15,29 @@ def _round(value: object, decimals: int) -> Decimal:
     return parse_decimal(value).quantize(quant, rounding=ROUND_HALF_UP)
 
 
+def format_decimal_es(value: Decimal) -> str:
+    dec = parse_decimal(value)
+    return format(dec, "f").replace(".", ",")
+
+
+def _to_es_dataframe(df: pd.DataFrame, decimals: int) -> pd.DataFrame:
+    out = df.copy()
+    quant = Decimal("1").scaleb(-decimals)
+    for col in out.columns:
+        if out[col].map(lambda x: isinstance(x, Decimal)).any():
+            out[col] = out[col].map(lambda x: format_decimal_es(parse_decimal(x).quantize(quant, rounding=ROUND_HALF_UP)))
+    return out
+
+
 def exportar_todo(
     *,
     precios_df: pd.DataFrame,
     campana: int,
     cultivo: str,
     audit_df: pd.DataFrame,
+    audit_globalgap_socios_df: pd.DataFrame,
+    audit_kilos_semana_df: pd.DataFrame,
+    resumen_df: pd.DataFrame,
     resumen_metricas: dict[str, Decimal | int],
     output_dir: Path,
     export_decimals: int,
@@ -28,13 +45,40 @@ def exportar_todo(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     perceco_path = output_dir / f"precios_perceco_{campana}_{cultivo}.csv"
+    precios_finales_path = output_dir / "precios_finales.csv"
     perceco = precios_df.copy()
     perceco.insert(0, "campaña", campana)
     perceco["precio_final"] = perceco["precio_final"].map(lambda x: _round(x, export_decimals))
-    perceco.to_csv(perceco_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
+    perceco_es = _to_es_dataframe(perceco, export_decimals)
+    perceco_es.to_csv(perceco_path, index=False, sep=";", encoding="utf-8-sig")
+    perceco_es.to_csv(precios_finales_path, index=False, sep=";", encoding="utf-8-sig")
 
     audit_path = output_dir / "auditoria_gg_boletas_no_match.csv"
-    audit_df.to_csv(audit_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
+    audit_df.to_csv(audit_path, index=False, sep=";", encoding="utf-8-sig")
+
+    audit_gg_socios_path = output_dir / "auditoria_globalgap_socios.csv"
+    _to_es_dataframe(audit_globalgap_socios_df, export_decimals).to_csv(
+        audit_gg_socios_path,
+        index=False,
+        sep=";",
+        encoding="utf-8-sig",
+    )
+
+    audit_kilos_semana_path = output_dir / "auditoria_kilos_semana.csv"
+    _to_es_dataframe(audit_kilos_semana_df, export_decimals).to_csv(
+        audit_kilos_semana_path,
+        index=False,
+        sep=";",
+        encoding="utf-8-sig",
+    )
+
+    resumen_semana_path = output_dir / "resumen_semana.csv"
+    _to_es_dataframe(resumen_df, export_decimals).to_csv(
+        resumen_semana_path,
+        index=False,
+        sep=";",
+        encoding="utf-8-sig",
+    )
 
     resumen_path = output_dir / "resumen_campania.csv"
     resumen = pd.DataFrame(
@@ -52,6 +96,14 @@ def exportar_todo(
             }
         ]
     )
-    resumen.to_csv(resumen_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
+    _to_es_dataframe(resumen, export_decimals).to_csv(resumen_path, index=False, sep=";", encoding="utf-8-sig")
 
-    return {"perceco": perceco_path, "audit": audit_path, "resumen": resumen_path}
+    return {
+        "perceco": perceco_path,
+        "precios_finales": precios_finales_path,
+        "audit": audit_path,
+        "audit_globalgap_socios": audit_gg_socios_path,
+        "audit_kilos_semana": audit_kilos_semana_path,
+        "resumen": resumen_path,
+        "resumen_semana": resumen_semana_path,
+    }
