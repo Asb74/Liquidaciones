@@ -29,7 +29,7 @@ bon_global_df = pd.DataFrame([{"bonificacion": q("0.1"), "campaña": 2026, "cult
 fondo, audit_socios, audit_inc = calcular_fondo_globalgap(pesos_df, deepp_df, mnivel_df, bon_global_df)
 assert fondo == q("1"), fondo
 assert "S2" not in set(audit_socios["idsocio"])
-assert "socio_no_match" in set(audit_inc["tipo"]) if not audit_inc.empty else False
+assert "socio_sin_gg" in set(audit_inc["tipo"]) if not audit_inc.empty else False
 
 calibre_map = pd.DataFrame([
     {"calibre": "cal0", "grupo": "AAA", "categoria": "I"},
