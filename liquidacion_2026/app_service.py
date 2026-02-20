@@ -49,6 +49,8 @@ def build_config(
         raise ValueError("Cultivo válido para este modelo: KAKIS.")
 
     precios_destrio_dec = {clave: parse_decimal(valor) for clave, valor in precios_destrio.items()}
+    ratio_categoria_ii = parse_decimal(ratio_categoria_ii)
+    LOGGER.info(f"ratio_categoria_ii normalizado: {ratio_categoria_ii}")
 
     return LiquidacionConfig(
         campana=campana,
@@ -56,7 +58,7 @@ def build_config(
         cultivo=cultivo.strip().upper(),
         bruto_campana=parse_decimal(bruto_campana),
         otros_fondos=parse_decimal(otros_fondos),
-        ratio_categoria_ii=parse_decimal(ratio_categoria_ii),
+        ratio_categoria_ii=ratio_categoria_ii,
         precios_destrio=precios_destrio_dec,
         anecop_path=anecop_path,
         db_paths=DBPaths(fruta=db_fruta, calidad=db_calidad, eeppl=db_eeppl),
