@@ -37,7 +37,9 @@ def _format_kilos_for_export(df: pd.DataFrame) -> pd.DataFrame:
 def _build_precios_finales_pivot(precios_df: pd.DataFrame) -> pd.DataFrame:
     salida = precios_df.copy()
     salida["precio_final"] = salida["precio_final"].map(lambda value: parse_decimal(value).quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP))
-    salida["columna"] = salida["calibre"].astype(str).str.strip() + salida["categoria"].astype(str).str.strip()
+    salida["columna"] = (
+        salida["calibre"].astype(str).str.strip().str.upper() + salida["categoria"].astype(str).str.strip().str.upper()
+    )
 
     pivot = (
         salida.pivot_table(index="semana", columns="columna", values="precio_final", aggfunc="first")
@@ -45,8 +47,8 @@ def _build_precios_finales_pivot(precios_df: pd.DataFrame) -> pd.DataFrame:
         .rename_axis(None, axis=1)
     )
 
-    columnas_finales = ["Semana", "AAAI", "AAI", "AI", "AAAII", "AAII", "AII"]
     pivot = pivot.rename(columns={"semana": "Semana"})
+    columnas_finales = ["Semana", "AAAI", "AAI", "AI", "AAAII", "AAII", "AII"]
     for columna in columnas_finales[1:]:
         if columna not in pivot.columns:
             pivot[columna] = pd.NA
