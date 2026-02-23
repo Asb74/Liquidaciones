@@ -101,9 +101,16 @@ def exportar_todo(
     precios_finales = _build_precios_finales_pivot(precios_df)
     for columna in precios_finales.columns[1:]:
         precios_finales[columna] = precios_finales[columna].map(
-            lambda value: "" if pd.isna(value) else f"{parse_decimal(value):.5f}".replace(".", ",")
+            lambda value: "" if pd.isna(value)
+            else f"{parse_decimal(value):.5f}".replace(".", ",")
         )
-    precios_finales.to_csv(precios_finales_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
+    precios_finales.to_csv(
+        precios_finales_path,
+        index=False,
+        sep=";",
+        decimal=",",
+        encoding="utf-8-sig",
+    )
 
     audit_path = output_dir / "auditoria_gg_boletas_no_match.csv"
     audit_df.to_csv(audit_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
