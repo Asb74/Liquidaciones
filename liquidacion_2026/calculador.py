@@ -99,6 +99,7 @@ def calcular_modelo_final(
     merged["rel_final"] = merged["rel_final"].map(parse_decimal)
     merged["kilos_dec"] = merged["kilos"].map(parse_decimal)
     merged["rel_kilos"] = merged.apply(lambda r: parse_decimal(r["kilos_dec"]) * parse_decimal(r["rel_final"]), axis=1)
+    rel_kilos_por_semana = merged.groupby("semana")["rel_kilos"].agg(lambda s: sum(s, Decimal("0"))).to_dict()
 
     destrios_long = pesos_df.melt(id_vars=["semana"], value_vars=DESTRIOS, var_name="destrio", value_name="kilos")
     destrios_long["kilos"] = pd.to_numeric(destrios_long["kilos"], errors="coerce").fillna(0).map(parse_decimal)
@@ -114,9 +115,27 @@ def calcular_modelo_final(
     validar_total_rel(base_relativa)
 
     coef = parse_decimal(neto_comercial) / parse_decimal(base_relativa)
+    kilos_comerciales_total = sum(merged["kilos_dec"], Decimal("0"))
+    logger.info(
+        "Auditoría coeficiente: neto_comercial=%s | base_relativa=%s | coef_sin_redondear=%s | "
+        "kilos_comerciales_total=%s | rel_kilos_por_semana=%s",
+        neto_comercial,
+        base_relativa,
+        coef,
+        kilos_comerciales_total,
+        rel_kilos_por_semana,
+    )
+    logger.info(
+        "Validación explícita de fórmula coef (sin redondeo): %s / %s = %s",
+        neto_comercial,
+        base_relativa,
+        parse_decimal(neto_comercial) / parse_decimal(base_relativa),
+    )
 
     final_i = rel_i.copy()
     final_i["precio_raw"] = final_i["rel_final"].map(lambda rel: parse_decimal(rel) * parse_decimal(coef))
+    for _, row in final_i[final_i["grupo"] == "AAA"].iterrows():
+        logger.info("Semana %s - Precio AAA I raw: %s", row["semana"], row["precio_raw"])
     final_i["precio_final"] = final_i["precio_raw"].map(round_final)
     final_i = final_i.rename(columns={"grupo": "calibre"})[["semana", "calibre", "categoria", "precio_raw", "precio_final"]]
 
