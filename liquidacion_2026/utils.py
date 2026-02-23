@@ -46,3 +46,7 @@ def resolve_path(user_path: str | Path, default_path: str | Path) -> Path:
     if user.exists():
         return user
     return Path(default_path)
+
+
+def format_kg_es(value: Decimal) -> str:
+    return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")

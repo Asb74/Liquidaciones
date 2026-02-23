@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .utils import parse_decimal
+from .utils import format_kg_es, parse_decimal
 
 
 
@@ -22,6 +22,15 @@ def _to_es_dataframe(df: pd.DataFrame, decimals: int) -> pd.DataFrame:
     for col in out.columns:
         if out[col].map(lambda x: isinstance(x, Decimal)).any():
             out[col] = out[col].map(lambda x: format_decimal_es(parse_decimal(x).quantize(quant, rounding=ROUND_HALF_UP)))
+    return out
+
+
+def _format_kilos_for_export(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in out.columns:
+        col_norm = str(col).lower()
+        if "kilo" in col_norm or "_kg" in col_norm or col_norm.startswith("kg"):
+            out[col] = out[col].map(lambda value: format_kg_es(parse_decimal(value)))
     return out
 
 
@@ -79,7 +88,8 @@ def exportar_todo(
     audit_df.to_csv(audit_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
     audit_gg_socios_path = output_dir / "auditoria_globalgap_socios.csv"
-    _to_es_dataframe(audit_globalgap_socios_df, export_decimals).to_csv(
+    audit_globalgap_socios_export = _format_kilos_for_export(_to_es_dataframe(audit_globalgap_socios_df, export_decimals))
+    audit_globalgap_socios_export.to_csv(
         audit_gg_socios_path,
         index=False,
         sep=";",
@@ -88,7 +98,8 @@ def exportar_todo(
     )
 
     audit_kilos_semana_path = output_dir / "auditoria_kilos_semana.csv"
-    _to_es_dataframe(audit_kilos_semana_df, export_decimals).to_csv(
+    audit_kilos_semana_export = _format_kilos_for_export(_to_es_dataframe(audit_kilos_semana_df, export_decimals))
+    audit_kilos_semana_export.to_csv(
         audit_kilos_semana_path,
         index=False,
         sep=";",
