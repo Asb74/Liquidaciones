@@ -1,4 +1,4 @@
-"""Cálculo de Fondo GlobalGAP por socio."""
+"""Cálculo de Fondo GlobalGAP replicando consulta Access."""
 
 from __future__ import annotations
 
@@ -19,16 +19,6 @@ def _normalizar_texto(value: object) -> str:
 
 def _normalizar_certificacion(value: object) -> str:
     return _normalizar_texto(value).upper()
-
-
-def _resolver_nivel_mode(series: pd.Series) -> str:
-    niveles = series.fillna("").astype(str).str.strip()
-    niveles = niveles[niveles != ""]
-    if niveles.empty:
-        return ""
-    freq = niveles.value_counts()
-    top = freq[freq == freq.max()].index.tolist()
-    return sorted(top)[0]
 
 
 def _build_bonificacion_map(bon_global_df: pd.DataFrame, mnivel_df: pd.DataFrame) -> tuple[dict[str, Decimal], Decimal]:
@@ -71,44 +61,50 @@ def calcular_fondo_globalgap(
     deepp.columns = deepp.columns.str.strip().str.lower()
     mnivel.columns = mnivel.columns.str.strip().str.lower()
 
-    pesos["idsocio"] = pesos["idsocio"].astype(str).str.strip()
-    if "kilos_comerciales" not in pesos.columns:
-        cal_cols = [f"cal{i}" for i in range(12)]
-        pesos["kilos_comerciales"] = pesos[cal_cols].sum(axis=1)
-    pesos["kilos_comerciales"] = pesos["kilos_comerciales"].map(parse_decimal)
+    for col in ["campaña", "cultivo", "boleta", "idsocio"]:
+        if col not in pesos.columns:
+            pesos[col] = ""
+        if col not in deepp.columns:
+            deepp[col] = ""
+        pesos[col] = pesos[col].astype(str).str.strip()
+        deepp[col] = deepp[col].astype(str).str.strip()
 
-    kilos_socios_df = pesos.groupby("idsocio", as_index=False)["kilos_comerciales"].sum()
+    for col in [*(f"cal{i}" for i in range(12)), "podrido", "deslinea", "desmesa"]:
+        pesos[col] = pesos[col].map(parse_decimal)
 
-    deepp["idsocio"] = deepp["idsocio"].astype(str).str.strip()
+    pesos["comercializado"] = pesos[[f"cal{i}" for i in range(12)]].sum(axis=1)
+    pesos["destrio"] = pesos[["podrido", "deslinea", "desmesa"]].sum(axis=1)
+
     deepp["certificacion_norm"] = deepp["certificacion"].map(_normalizar_certificacion)
     deepp["nivelglobal"] = deepp["nivelglobal"].map(_normalizar_texto)
-    gg_deepp = deepp[deepp["certificacion_norm"] == "GLOBAL GAP"].copy()
 
-    conflictos_rows: list[dict[str, str]] = []
-    if not gg_deepp.empty:
-        for idsocio, sdf in gg_deepp.groupby("idsocio"):
-            valores = sorted({v for v in sdf["nivelglobal"].tolist() if v})
-            if len(valores) > 1:
-                conflictos_rows.append(
-                    {
-                        "tipo": "conflicto_nivelglobal",
-                        "id": idsocio,
-                        "detalle": " | ".join(valores),
-                    }
-                )
+    join_cols = ["campaña", "cultivo", "boleta", "idsocio"]
+    joined = pesos.merge(
+        deepp[join_cols + ["certificacion", "certificacion_norm", "nivelglobal"]],
+        on=join_cols,
+        how="inner",
+    )
 
-    socios_gg = (
-        gg_deepp.groupby("idsocio", as_index=False)
+    gg_joined = joined[joined["certificacion_norm"] == "GLOBAL GAP"].copy()
+
+    if gg_joined.empty:
+        empty_cols = ["idsocio", "certificacion", "nivelglobal", "indice", "kilos_comerciales_gg", "kilos_destrio", "euro_kg", "importe_gg"]
+        return Decimal("0"), pd.DataFrame(columns=empty_cols), pd.DataFrame(columns=["tipo", "id", "detalle"])
+
+    grouped = (
+        gg_joined.groupby(["idsocio", "nivelglobal"], as_index=False)
         .agg(
-            certificacion=("certificacion_norm", "first"),
-            nivelglobal=("nivelglobal", _resolver_nivel_mode),
+            certificacion=("certificacion", "first"),
+            kilos_comerciales_gg=("comercializado", lambda s: sum(s.map(parse_decimal), Decimal("0"))),
+            kilos_destrio=("destrio", lambda s: sum(s.map(parse_decimal), Decimal("0"))),
         )
     )
 
     mnivel["nivel"] = mnivel["nivel"].map(_normalizar_texto)
     mnivel["indice"] = mnivel["indice"].map(parse_decimal)
-    socios_gg = socios_gg.merge(mnivel[["nivel", "indice"]], left_on="nivelglobal", right_on="nivel", how="left")
-    socios_gg["indice"] = socios_gg["indice"].map(parse_decimal)
+
+    grouped = grouped.merge(mnivel[["nivel", "indice"]], left_on="nivelglobal", right_on="nivel", how="left")
+    grouped["indice"] = grouped["indice"].map(parse_decimal)
 
     nivel_to_eurokg, bon_base = _build_bonificacion_map(bon_global_df, mnivel)
 
@@ -118,44 +114,35 @@ def calcular_fondo_globalgap(
             return parse_decimal(nivel_to_eurokg.get(nivel, Decimal("0")))
         return parse_decimal(bon_base) * parse_decimal(row["indice"])
 
-    socios_gg["euro_kg"] = socios_gg.apply(_euro_kg, axis=1)
-
-    audit_globalgap_socios_df = socios_gg.merge(kilos_socios_df, on="idsocio", how="left")
-    audit_globalgap_socios_df["kilos_comerciales_gg"] = audit_globalgap_socios_df["kilos_comerciales"].map(parse_decimal)
-    audit_globalgap_socios_df["importe_gg"] = audit_globalgap_socios_df.apply(
+    grouped["euro_kg"] = grouped.apply(_euro_kg, axis=1)
+    grouped["importe_gg"] = grouped.apply(
         lambda row: parse_decimal(row["kilos_comerciales_gg"]) * parse_decimal(row["euro_kg"]),
         axis=1,
     )
 
-    fondo_gg_total = sum(audit_globalgap_socios_df["importe_gg"], Decimal("0"))
+    fondo_gg_total = sum(grouped["importe_gg"].map(parse_decimal), Decimal("0"))
 
-    socios_pesos = set(kilos_socios_df["idsocio"])
-    socios_certificados = set(audit_globalgap_socios_df["idsocio"])
-    socios_no_gg = sorted(socios_pesos - socios_certificados)
-
-    audit_rows = conflictos_rows + [
-        {
-            "tipo": "socio_sin_gg",
-            "id": socio,
-            "detalle": "socio en pesos sin certificación GLOBAL GAP",
-        }
-        for socio in socios_no_gg
-    ]
-    audit_df = pd.DataFrame(audit_rows, columns=["tipo", "id", "detalle"])
-
-    if conflictos_rows:
-        LOGGER.warning(
-            "Conflictos de NivelGlobal resueltos por mode determinista para socios: %s",
-            [row["id"] for row in conflictos_rows],
-        )
-
-    kilos_gg_total = sum(audit_globalgap_socios_df["kilos_comerciales_gg"], Decimal("0"))
-    LOGGER.info("GlobalGAP socios considerados: %s", len(audit_globalgap_socios_df))
-    LOGGER.info("GlobalGAP kilos comerciales totales: %s", kilos_gg_total)
+    LOGGER.info("GlobalGAP grupos considerados (idsocio+nivel): %s", len(grouped))
     LOGGER.info("GlobalGAP fondo total: %s", fondo_gg_total)
 
-    audit_globalgap_socios_df = audit_globalgap_socios_df[
-        ["idsocio", "certificacion", "nivelglobal", "indice", "kilos_comerciales_gg", "euro_kg", "importe_gg"]
+    audit_globalgap_socios_df = grouped[
+        ["idsocio", "certificacion", "nivelglobal", "indice", "kilos_comerciales_gg", "kilos_destrio", "euro_kg", "importe_gg"]
     ].copy()
+
+    socios_pesos = set(pesos["idsocio"].astype(str).str.strip())
+    socios_certificados = set(audit_globalgap_socios_df["idsocio"].astype(str).str.strip())
+    socios_no_gg = sorted(socios_pesos - socios_certificados)
+
+    audit_df = pd.DataFrame(
+        [
+            {
+                "tipo": "socio_sin_gg",
+                "id": socio,
+                "detalle": "socio en pesos sin certificación GLOBAL GAP",
+            }
+            for socio in socios_no_gg
+        ],
+        columns=["tipo", "id", "detalle"],
+    )
 
     return fondo_gg_total, audit_globalgap_socios_df, audit_df
