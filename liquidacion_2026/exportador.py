@@ -25,6 +25,26 @@ def _to_es_dataframe(df: pd.DataFrame, decimals: int) -> pd.DataFrame:
     return out
 
 
+def _build_precios_finales_pivot(precios_df: pd.DataFrame) -> pd.DataFrame:
+    salida = precios_df.copy()
+    salida["precio_final"] = salida["precio_final"].map(lambda value: parse_decimal(value).quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP))
+    salida["columna"] = salida["calibre"].astype(str).str.strip() + salida["categoria"].astype(str).str.strip()
+
+    pivot = (
+        salida.pivot_table(index="semana", columns="columna", values="precio_final", aggfunc="first")
+        .reset_index()
+        .rename_axis(None, axis=1)
+    )
+
+    columnas_finales = ["Semana", "AAAI", "AAI", "AI", "AAAII", "AAII", "AII"]
+    pivot = pivot.rename(columns={"semana": "Semana"})
+    for columna in columnas_finales[1:]:
+        if columna not in pivot.columns:
+            pivot[columna] = pd.NA
+
+    return pivot[columnas_finales].sort_values("Semana").reset_index(drop=True)
+
+
 def exportar_todo(
     *,
     precios_df: pd.DataFrame,
@@ -47,7 +67,13 @@ def exportar_todo(
     perceco_es = _to_es_dataframe(perceco, export_decimals)
     perceco_es["precio_final"] = perceco["precio_final"].map(lambda x: f"{parse_decimal(x):.5f}".replace(".", ","))
     perceco_es.to_csv(perceco_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
-    perceco_es.to_csv(precios_finales_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
+
+    precios_finales = _build_precios_finales_pivot(precios_df)
+    for columna in precios_finales.columns[1:]:
+        precios_finales[columna] = precios_finales[columna].map(
+            lambda value: "" if pd.isna(value) else f"{parse_decimal(value):.5f}".replace(".", ",")
+        )
+    precios_finales.to_csv(precios_finales_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
     audit_path = output_dir / "auditoria_gg_boletas_no_match.csv"
     audit_df.to_csv(audit_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
