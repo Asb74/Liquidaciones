@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .app_service import RunOutput, build_config, configurar_logging, run
 from .config import DEFAULT_BDCALIDAD, DEFAULT_DBEEPPL, DEFAULT_DBFRUTA
-from .utils import parse_decimal, resolve_path
+from .utils import format_kg_es, parse_decimal, resolve_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ class LiquidacionApp(tk.Tk):
 
     def _render_result(self, output: RunOutput) -> None:
         m = output.resultado.resumen_metricas
-        self.total_kg_var.set(str(m["total_kg_comerciales"]))
+        self.total_kg_var.set(format_kg_es(parse_decimal(m["total_kg_comerciales"])))
         self.destrios_var.set(str(m["ingreso_destrios_total"]))
         self.fondo_var.set(str(m["fondo_gg_total"]))
         self.neto_var.set(str(m["neto_obj"]))
@@ -210,7 +210,13 @@ class LiquidacionApp(tk.Tk):
 
         self.tree.delete(*self.tree.get_children())
         for _, row in output.resultado.resumen_df.iterrows():
-            self.tree.insert("", tk.END, values=tuple(row.get(c, "") for c in self.tree["columns"]))
+            values = []
+            for c in self.tree["columns"]:
+                value = row.get(c, "")
+                if c == "total_kg_comercial_sem":
+                    value = format_kg_es(parse_decimal(value))
+                values.append(value)
+            self.tree.insert("", tk.END, values=tuple(values))
 
     def _on_export(self) -> None:
         if self._run_output is None:
@@ -228,12 +234,15 @@ class LiquidacionApp(tk.Tk):
         audit_kilos_path = destination.parent / f"audit_aprovechamiento_por_semana_{stamp}.csv"
         audit_gg_path = destination.parent / f"audit_globalgap_por_socio_{stamp}.csv"
 
-        self._run_output.auditoria["audit_kilos_semana_df"].to_csv(
-            audit_kilos_path, index=False, sep=";", decimal=",", encoding="utf-8-sig"
-        )
-        self._run_output.auditoria["audit_globalgap_socios_df"].to_csv(
-            audit_gg_path, index=False, sep=";", decimal=",", encoding="utf-8-sig"
-        )
+        audit_kilos_export = self._run_output.auditoria["audit_kilos_semana_df"].copy()
+        if "kilos" in audit_kilos_export.columns:
+            audit_kilos_export["kilos"] = audit_kilos_export["kilos"].map(lambda value: format_kg_es(parse_decimal(value)))
+        audit_kilos_export.to_csv(audit_kilos_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
+        audit_gg_export = self._run_output.auditoria["audit_globalgap_socios_df"].copy()
+        for col in ["kilos_comerciales_gg", "kilos_destrio"]:
+            if col in audit_gg_export.columns:
+                audit_gg_export[col] = audit_gg_export[col].map(lambda value: format_kg_es(parse_decimal(value)))
+        audit_gg_export.to_csv(audit_gg_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
         messagebox.showinfo(
             "Exportación",
