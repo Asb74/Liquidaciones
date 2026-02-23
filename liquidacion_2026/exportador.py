@@ -34,50 +34,11 @@ def _format_kilos_for_export(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _build_precios_finales_pivot(precios_df: pd.DataFrame) -> pd.DataFrame:
-    salida = precios_df.copy()
-
-    salida["calibre"] = salida["calibre"].astype(str).str.strip().str.upper()
-    salida["categoria"] = salida["categoria"].astype(str).str.strip().str.upper()
-
-    pivot = salida.pivot_table(
-        index="semana",
-        columns=["calibre", "categoria"],
-        values="precio_final",
-        aggfunc="first",
-    )
-
-    columnas_objetivo = {
-        "AAAI": ("AAA", "I"),
-        "AAI": ("AA", "I"),
-        "AI": ("A", "I"),
-        "AAAII": ("AAA", "II"),
-        "AAII": ("AA", "II"),
-        "AII": ("A", "II"),
-    }
-
-    resultado = pd.DataFrame(index=pivot.index)
-
-    for columna_salida, origen in columnas_objetivo.items():
-        resultado[columna_salida] = pivot.get(origen)
-
-    resultado = resultado.reset_index()
-
-    # Asegurar orden numérico real antes de convertir a texto
-    resultado["semana"] = resultado["semana"].astype(int)
-    resultado = resultado.sort_values("semana").reset_index(drop=True)
-
-    resultado = resultado.rename(columns={"semana": "Semana"})
-    resultado["Semana"] = "Sem " + resultado["Semana"].astype(str)
-
-    columnas_finales = ["Semana", "AAAI", "AAI", "AI", "AAAII", "AAII", "AII"]
-
-    return resultado[columnas_finales]
-
-
 def exportar_todo(
     *,
     precios_df: pd.DataFrame,
+    table_df: pd.DataFrame,
+    ratio_categoria_ii: Decimal,
     campana: int,
     cultivo: str,
     audit_df: pd.DataFrame,
@@ -98,7 +59,18 @@ def exportar_todo(
     perceco_es["precio_final"] = perceco["precio_final"].map(lambda x: f"{parse_decimal(x):.5f}".replace(".", ","))
     perceco_es.to_csv(perceco_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
-    precios_finales = _build_precios_finales_pivot(precios_df)
+    precios_finales = table_df.copy()
+    precios_finales = precios_finales.sort_values("semana").reset_index(drop=True)
+    ratio = parse_decimal(ratio_categoria_ii)
+    precios_finales["Semana"] = "Sem " + precios_finales["semana"].astype(int).astype(str)
+    precios_finales["AAAI"] = precios_finales["precio_aaa_i"].map(parse_decimal)
+    precios_finales["AAI"] = precios_finales["precio_aa_i"].map(parse_decimal)
+    precios_finales["AI"] = precios_finales["precio_a_i"].map(parse_decimal)
+    precios_finales["AAAII"] = precios_finales["AAAI"].map(lambda value: parse_decimal(value) * ratio)
+    precios_finales["AAII"] = precios_finales["AAI"].map(lambda value: parse_decimal(value) * ratio)
+    precios_finales["AII"] = precios_finales["AI"].map(lambda value: parse_decimal(value) * ratio)
+    precios_finales = precios_finales[["Semana", "AAAI", "AAI", "AI", "AAAII", "AAII", "AII"]]
+
     for columna in precios_finales.columns[1:]:
         precios_finales[columna] = precios_finales[columna].map(
             lambda value: "" if pd.isna(value)
