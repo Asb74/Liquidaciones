@@ -197,6 +197,8 @@ def run(config: LiquidacionConfig) -> RunOutput:
 
     files = exportar_todo(
         precios_df=resultado.precios_df,
+        table_df=resultado.resumen_df,
+        ratio_categoria_ii=config.ratio_categoria_ii,
         campana=config.campana,
         cultivo=config.cultivo,
         audit_df=audit_df,
