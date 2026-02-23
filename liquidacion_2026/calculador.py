@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 Q5 = Decimal("0.00001")
 
 
-def q5(value: Decimal) -> Decimal:
+def round_final(value: Decimal) -> Decimal:
     return value.quantize(Q5, rounding=ROUND_HALF_UP)
 
 
@@ -117,14 +117,14 @@ def calcular_modelo_final(
 
     final_i = rel_i.copy()
     final_i["precio_raw"] = final_i["rel_final"].map(lambda rel: parse_decimal(rel) * parse_decimal(coef))
-    final_i["precio_final"] = final_i["precio_raw"].map(q5)
+    final_i["precio_final"] = final_i["precio_raw"].map(round_final)
     final_i = final_i.rename(columns={"grupo": "calibre"})[["semana", "calibre", "categoria", "precio_raw", "precio_final"]]
 
     final_ii = final_i[final_i["categoria"] == "I"].copy()
     final_ii["categoria"] = "II"
     final_ii["precio_raw_i"] = final_ii["precio_raw"].map(parse_decimal)
     final_ii["precio_raw"] = final_ii["precio_raw_i"].map(lambda p: parse_decimal(p) * parse_decimal(ratio_categoria_ii))
-    final_ii["precio_final"] = final_ii["precio_raw"].map(q5)
+    final_ii["precio_final"] = final_ii["precio_raw"].map(round_final)
 
     invalid = final_ii[final_ii["precio_raw"] > final_ii["precio_raw_i"]]
     if not invalid.empty:
