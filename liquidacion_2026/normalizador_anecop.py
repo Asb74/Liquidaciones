@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -9,6 +10,8 @@ from pathlib import Path
 import pandas as pd
 
 from .utils import parse_decimal
+
+logger = logging.getLogger(__name__)
 
 _WEEK = re.compile(r"(\d{1,2})(?:\s*-\s*\d{1,2})?")
 
@@ -107,6 +110,13 @@ def cargar_anecop(path: Path) -> pd.DataFrame:
         kg5, p5 = data.get("5", (Decimal("0"), Decimal("0")))
         sum_aa = kg4 + kg5
         p_aa = Decimal("0") if sum_aa <= 0 else ((kg4 * p4) + (kg5 * p5)) / sum_aa
+        logger.info(
+            "Semana %s - AA media ponderada sin redondeo: numerador=%s, denominador=%s, resultado=%s",
+            semana,
+            (kg4 * p4) + (kg5 * p5),
+            sum_aa,
+            p_aa,
+        )
 
         kg6, p6 = data.get("6", (Decimal("0"), Decimal("0")))
         kg78, p78 = data.get("7/8", (Decimal("0"), Decimal("0")))
