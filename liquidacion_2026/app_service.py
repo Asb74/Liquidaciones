@@ -212,7 +212,7 @@ def run(config: LiquidacionConfig) -> RunOutput:
         "audit_kilos_semana_df": _quantize_df(audit_kilos_semana_df, ["kilos"]),
         "audit_globalgap_socios_df": _quantize_df(
             audit_globalgap_socios_df,
-            ["kilos_comerciales_gg", "indice", "euro_kg", "importe_gg"],
+            ["kilos_comerciales_gg", "kilos_destrio", "indice", "euro_kg", "importe_gg"],
         ),
     }
 
