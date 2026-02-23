@@ -54,6 +54,6 @@ res = calcular_modelo_final(
 
 df = res.precios_df.pivot(index=["semana", "calibre"], columns="categoria", values="precio_final").reset_index()
 for _, row in df.iterrows():
-    assert row["II"] == (row["I"] * q("0.5")).quantize(q("0.0001"))
+    assert row["II"] == (row["I"] * q("0.5")).quantize(q("0.00001"))
 
 print("OK checks_minimos")
