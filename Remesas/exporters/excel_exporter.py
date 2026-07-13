@@ -1,61 +1,168 @@
 from __future__ import annotations
+
+import logging
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
+
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.utils import get_column_letter
 
 from domain.calculation_models import LiquidationResult
-from domain.utils import format_currency_es, format_decimal_es, format_price_es, format_percentage_es
 
-def _money(value):
-    return format_currency_es(value) if value is not None else "Pendiente"
+logger = logging.getLogger(__name__)
 
-def _price(value):
-    return format_price_es(value) if value is not None else "Pendiente"
+SUMMARY_HEADERS = [
+    "Nº Socio",
+    "Socio",
+    "Variedad",
+    "Neto",
+    "I. Bruto",
+    "P. Comer.",
+    "Recolec.",
+    "C. Has.",
+    "B/P Cal.",
+    "B. Trans.",
+    "B. Glob.",
+    "Base Imponible",
+    "P.Medio",
+    "I.V.A",
+    "Ret.",
+    "Importe Total.",
+    "Concepto Liquidación",
+    "Cultivo",
+    "Com. Recol. (Pts/kg)(<11,65)",
+    "Com. Global (Pts/kg)(<2)",
+    "Com. Trans. (Pts/kg) (<1,7)",
+]
 
-def _pct(value):
-    return format_percentage_es(value) if value is not None else "Pendiente"
+INTEGER_FORMAT = '#,##0;-#,##0;-'
+MONEY_FORMAT = '#,##0.00;-#,##0.00;-'
+PRICE_FORMAT = '0.00000;-0.00000;-'
+PTS_KG_FORMAT = '0.00;-0.00;-'
+PERCENT_FORMAT = '0"%"'
+
+COLUMN_WIDTHS = {
+    "A": 12, "B": 35, "C": 18, "D": 14, "E": 15, "F": 12, "G": 14,
+    "H": 14, "I": 14, "J": 14, "K": 14, "L": 17, "M": 12, "N": 10,
+    "O": 10, "P": 17, "Q": 32, "R": 16, "S": 24, "T": 23, "U": 24,
+}
 
 
-SUMMARY_HEADERS = ["IdSocio","Socio","Variedad","Neto partidas","Neto comercial","Neto destrío","Neto podrido","Importe comercial","Importe destrío","Importe bruto","Recolección","Transporte","Calidad","GlobalGAP","Cuota Ha","Base imponible","% IVA","IVA","% Retención","Retención","Importe total","Precio medio comercial","Precio medio final"]
+def _number(value, field_name: str, *, required: bool = False):
+    if value is None:
+        if required:
+            raise ValueError(f"Falta el dato obligatorio: {field_name}")
+        logger.warning("Dato no informado para %s; se deja la celda vacía", field_name)
+        return None
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, bool):
+        raise ValueError(f"Valor numérico no válido para {field_name}: {value!r}")
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return Decimal(str(value).replace(",", "."))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"Valor numérico no válido para {field_name}: {value!r}") from exc
+
+
+def _validate_result(result: LiquidationResult) -> None:
+    if result is None:
+        raise ValueError("No existe un cálculo actual para exportar")
+    if not getattr(result, "member_results", None):
+        raise ValueError("El cálculo no contiene líneas para exportar")
+    for idx, member in enumerate(result.member_results, start=1):
+        if member.member_id in (None, ""):
+            raise ValueError(f"La línea {idx} no tiene IdSocio")
+        if not member.variety:
+            raise ValueError(f"La línea {idx} no tiene Variedad")
+        _number(member.net_kg, f"Neto línea {idx}", required=True)
+        for field_name in (
+            "gross_amount", "commercial_average_price", "collection_amount", "hectare_fee_amount",
+            "quality_amount", "transport_amount", "globalgap_amount", "taxable_base",
+            "final_average_price", "vat_rate", "withholding_rate", "total_amount",
+        ):
+            _number(getattr(member, field_name), f"{field_name} línea {idx}")
 
 
 def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
-    wb = Workbook(); ws = wb.active; ws.title = "Resumen"
-    ws.append([result.header.remesa_name]); ws.append(SUMMARY_HEADERS)
-    for m in result.member_results:
-        ws.append([m.member_id,m.member_name,m.variety,format_decimal_es(m.net_kg, 2),format_decimal_es(m.commercial_kg, 2),format_decimal_es(m.destruction_kg + m.table_destruction_kg, 2),format_decimal_es(m.rotten_kg, 2),_money(m.commercial_amount),_money(m.destruction_amount + m.table_destruction_amount),_money(m.gross_amount),_money(m.collection_amount),_money(m.transport_amount),_money(m.quality_amount),_money(m.globalgap_amount),_money(m.hectare_fee_amount),_money(m.taxable_base),_pct(m.vat_rate),_money(m.vat_amount),_pct(m.withholding_rate),_money(m.withholding_amount),_money(m.total_amount),_price(m.commercial_average_price),_price(m.final_average_price)])
-    ws.append(["TOTALES", "", "", format_decimal_es(result.totals.net_kg, 2), "", "", "", _money(result.totals.commercial_amount), "", _money(result.totals.gross_amount), _money(result.totals.collection_amount), _money(result.totals.transport_amount), _money(result.totals.quality_amount), _money(result.totals.globalgap_amount), _money(result.totals.hectare_fee_amount), _money(result.totals.taxable_base), "", _money(result.totals.vat_amount), "", _money(result.totals.withholding_amount), _money(result.totals.total_amount), "", ""])
-    _style(ws)
-    cal = wb.create_sheet("Calibres"); headers=["IdSocio","Socio","Variedad"]
-    for grade in (result.member_results[0].grades if result.member_results else []): headers += [f"Kilos {grade.label}", f"Precio {grade.label}", f"Importe {grade.label}"]
-    headers += ["Destrío línea","Destrío mesa","Podrido"]; cal.append(headers)
-    for m in result.member_results:
-        row=[m.member_id,m.member_name,m.variety]
-        for g in m.grades: row += [format_decimal_es(g.kg, 2), format_price_es(g.price), format_currency_es(g.amount)]
-        row += [format_decimal_es(m.destruction_kg, 2), format_decimal_es(m.table_destruction_kg, 2), format_decimal_es(m.rotten_kg, 2)]; cal.append(row)
-    _style(cal)
-    costs = wb.create_sheet("Entregas")
-    costs.append(["IdSocio","Socio","Variedad","Fecha","Registro","Neto","Coste_Recoleccion","SSocialRecoleccion","Manijeria","Recolección total calculada","Coste_Trans"]);
-    for m in result.member_results:
-        for d in m.source_deliveries:
-            collection = d.collection_cost + d.social_security_collection + d.foreman_cost
-            costs.append([m.member_id, m.member_name, m.variety, d.fecha, d.registro, format_decimal_es(d.neto, 2), format_currency_es(d.collection_cost), format_currency_es(d.social_security_collection), format_currency_es(d.foreman_cost), format_currency_es(collection), format_currency_es(d.transport_cost)])
-    _style(costs)
-    cfg=wb.create_sheet("Configuración")
-    for k,v in [("IdREMESA",result.header.remesa_id),("Nombre remesa",result.header.remesa_name),("Campaña",result.header.campana),("Empresa",result.header.empresa),("Cultivo",result.header.cultivo),("Fecha de pago",result.header.fecha_pago),("Periodo",f"{result.header.periodo_desde} - {result.header.periodo_hasta}"),("Tipo de liquidación",result.header.tipo_liquidacion),("Categoría",result.header.categoria),("Socio o todos",result.header.socio),("Variedades",", ".join(result.header.variedades)),("Fecha de generación",result.header.generated_at.strftime("%d/%m/%Y %H:%M"))]: cfg.append([k,v])
-    for k,v in result.header.options.items(): cfg.append([k, "Sí" if v else "No"])
-    for k,v in result.header.prices.items(): cfg.append([k, format_price_es(v)])
-    _style(cfg)
-    warn=wb.create_sheet("Advertencias"); warn.append(["Tipo","Socio","Variedad","Mensaje"])
-    for msg in result.warnings: warn.append(["Advertencia", "", "", msg])
-    _style(warn)
-    path.parent.mkdir(parents=True, exist_ok=True); wb.save(path); return path
+    _validate_result(result)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Resumen"
+    ws.append(SUMMARY_HEADERS)
+
+    for row_number, member in enumerate(result.member_results, start=2):
+        ws.append([
+            member.member_id,
+            member.member_name,
+            member.variety,
+            _number(member.net_kg, "Neto", required=True),
+            _number(member.gross_amount, "I. Bruto"),
+            _number(member.commercial_average_price, "P. Comer."),
+            _number(member.collection_amount, "Recolec."),
+            _number(member.hectare_fee_amount, "C. Has."),
+            _number(member.quality_amount, "B/P Cal."),
+            _number(member.transport_amount, "B. Trans."),
+            _number(member.globalgap_amount, "B. Glob."),
+            _number(member.taxable_base, "Base Imponible"),
+            _number(member.final_average_price, "P.Medio"),
+            _number(member.vat_rate, "I.V.A"),
+            _number(member.withholding_rate, "Ret."),
+            _number(member.total_amount, "Importe Total."),
+            result.header.remesa_name,
+            result.header.cultivo,
+            f'=IFERROR(166.386*G{row_number}/D{row_number},0)',
+            f'=IFERROR(166.386*K{row_number}/D{row_number},0)',
+            f'=IFERROR(166.386*J{row_number}/D{row_number},0)',
+        ])
+
+    total_row = ws.max_row + 1
+    ws.cell(total_row, 2, "TOTAL")
+    for column in (4, 5, 7, 8, 9, 10, 11, 12, 16):
+        letter = get_column_letter(column)
+        ws.cell(total_row, column, f"=SUM({letter}2:{letter}{total_row - 1})")
+
+    _style_summary(ws, total_row)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+    return path
 
 
-def _style(ws):
-    for cell in ws[1]: cell.font = Font(bold=True)
-    if ws.max_row >= 2:
-        for cell in ws[2]: cell.font = Font(bold=True)
-    ws.freeze_panes = "A3" if ws.title == "Resumen" else "A2"; ws.auto_filter.ref = ws.dimensions
-    for col in ws.columns:
-        ws.column_dimensions[col[0].column_letter].width = min(max(len(str(c.value or "")) for c in col)+2, 35)
+def _style_summary(ws, total_row: int) -> None:
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    for row in ws.iter_rows(min_row=2, max_row=total_row):
+        for cell in row:
+            cell.alignment = Alignment(vertical="center")
+
+    for cell in ws[total_row]:
+        cell.font = Font(bold=True)
+        cell.border = border
+
+    number_formats = {
+        "A": INTEGER_FORMAT,
+        "D": INTEGER_FORMAT,
+        "E": MONEY_FORMAT, "G": MONEY_FORMAT, "H": MONEY_FORMAT, "I": MONEY_FORMAT,
+        "J": MONEY_FORMAT, "K": MONEY_FORMAT, "L": MONEY_FORMAT, "P": MONEY_FORMAT,
+        "F": PRICE_FORMAT, "M": PRICE_FORMAT,
+        "N": PERCENT_FORMAT, "O": PERCENT_FORMAT,
+        "S": PTS_KG_FORMAT, "T": PTS_KG_FORMAT, "U": PTS_KG_FORMAT,
+    }
+    for column_letter, number_format in number_formats.items():
+        for cell in ws[column_letter][1:]:
+            cell.number_format = number_format
+
+    for column_letter, width in COLUMN_WIDTHS.items():
+        ws.column_dimensions[column_letter].width = width
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
