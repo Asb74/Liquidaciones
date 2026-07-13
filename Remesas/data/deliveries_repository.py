@@ -37,6 +37,8 @@ class DeliveriesRepository:
     def fetch(self, filters: DeliveryFilter) -> tuple[list[Delivery], Summary, float, int]:
         start = time.perf_counter()
         where_sql, params = self._build_where(filters)
+        if not self._has_column("PesosFres", "NetoPartida"):
+            raise RuntimeError("Falta la columna obligatoria PesosFres.NetoPartida")
         precal = "p.Precalibrado" if self._has_column("PesosFres", "Precalibrado") else "NULL"
         economic_cols = ["Coste_Recoleccion", "SSocialRecoleccion", "Manijeria", "Coste_Trans"]
         missing_economic = [c for c in economic_cols if not self._has_column("PesosFres", c)]
@@ -45,16 +47,16 @@ class DeliveriesRepository:
         extra_cols = [c for c in [*[f"Cal{i}" for i in range(12)], "DesLinea", "DesMesa", "Podrido"] if self._has_column("PesosFres", c)]
         extra_select = "".join(f", p.{c}" for c in extra_cols)
         base_from = "FROM PesosFres AS p LEFT JOIN eepp.DSocio AS s ON s.IdSocio = p.IdSocio"
-        count_sql = f"SELECT COUNT(*), COALESCE(SUM(COALESCE(p.Neto,0)),0), COUNT(DISTINCT p.IdSocio), COUNT(DISTINCT p.Variedad), MIN(p.Fcarga), MAX(p.Fcarga), 0, SUM(CASE WHEN p.Variedad IS NULL OR TRIM(p.Variedad)='' THEN 1 ELSE 0 END), SUM(CASE WHEN s.IdSocio IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN p.Categoria IS NULL OR TRIM(p.Categoria)='' THEN 1 ELSE 0 END) {base_from} WHERE {where_sql}"
+        count_sql = f"SELECT COUNT(*), COALESCE(SUM(CASE WHEN COALESCE(p.NetoPartida,0)=0 THEN COALESCE(p.Neto,0) ELSE p.NetoPartida END),0), COUNT(DISTINCT p.IdSocio), COUNT(DISTINCT p.Variedad), MIN(p.Fcarga), MAX(p.Fcarga), 0, SUM(CASE WHEN p.Variedad IS NULL OR TRIM(p.Variedad)='' THEN 1 ELSE 0 END), SUM(CASE WHEN s.IdSocio IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN p.Categoria IS NULL OR TRIM(p.Categoria)='' THEN 1 ELSE 0 END) {base_from} WHERE {where_sql}"
         stats = self.conn.execute(count_sql, params).fetchone()
-        sql = f"SELECT p.Fcarga, p.Reg, p.IdSocio, s.Nombre, p.Variedad, p.Categoria, p.Neto, p.Albaran, p.Boleta, p.Plataforma, p.Liquidado, {precal} AS Precalibrado, p.Coste_Recoleccion, p.SSocialRecoleccion, p.Manijeria, p.Coste_Trans{extra_select} {base_from} WHERE {where_sql} ORDER BY p.Fcarga, p.Reg LIMIT ?"
+        sql = f"SELECT p.Fcarga, p.Reg, p.IdSocio, s.Nombre, p.Variedad, p.Categoria, p.Neto, p.NetoPartida, p.Albaran, p.Boleta, p.Plataforma, p.Liquidado, {precal} AS Precalibrado, p.Coste_Recoleccion, p.SSocialRecoleccion, p.Manijeria, p.Coste_Trans{extra_select} {base_from} WHERE {where_sql} ORDER BY p.Fcarga, p.Reg LIMIT ?"
         rows = self.conn.execute(sql, [*params, filters.limit]).fetchall()
         elapsed = time.perf_counter() - start
         self.logger.info("Consulta entregas: registros=%s visibles=%s tiempo=%.3f", stats[0] if stats else 0, len(rows), elapsed)
         deliveries = []
         for r in rows:
             try:
-                deliveries.append(Delivery(format_display_date(r[0]), r[1], r[2], r[3], r[4], r[5], decimal_or_zero(r[6]), r[7], r[8], r[9], r[10], r[11], decimal_or_zero(r[12]), decimal_or_zero(r[13]), decimal_or_zero(r[14]), decimal_or_zero(r[15]), {c: r[16+i] for i, c in enumerate(extra_cols)}))
+                deliveries.append(Delivery(format_display_date(r[0]), r[1], r[2], r[3], r[4], r[5], decimal_or_zero(r[6]), r[8], r[9], r[10], r[11], decimal_or_zero(r[7]), r[12], decimal_or_zero(r[13]), decimal_or_zero(r[14]), decimal_or_zero(r[15]), decimal_or_zero(r[16]), {c: r[17+i] for i, c in enumerate(extra_cols)}))
             except ValueError as exc:
                 self.logger.warning("Valor económico no válido en entrega Reg=%r IdSocio=%r Variedad=%r: %s", r[1], r[2], r[4], exc)
                 raise

@@ -16,6 +16,8 @@ class AppConfig:
     window_height: int
     log_file: str
     log_level: str
+    hectare_fee_price_per_hectare: Decimal = Decimal("195")
+    hectare_fee_applicable_crops: tuple[str, ...] = ("CITRICOS", "MANDARINA")
 
 
 @dataclass(frozen=True)
@@ -54,12 +56,22 @@ class Delivery:
     boleta: Any
     plataforma: Any
     liquidado: Any
+    batch_net_kg: Decimal = Decimal("0")
     precalibrado: Any = None
     collection_cost: Decimal = Decimal("0")
     social_security_collection: Decimal = Decimal("0")
     foreman_cost: Decimal = Decimal("0")
     transport_cost: Decimal = Decimal("0")
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def net_kg(self) -> Decimal:
+        return self.neto
+
+    @property
+    def effective_net_kg(self) -> Decimal:
+        from domain.financial_rules import effective_net_kg
+        return effective_net_kg(self.neto, self.batch_net_kg)
 
 
 @dataclass
