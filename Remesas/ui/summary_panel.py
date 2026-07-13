@@ -1,6 +1,9 @@
 from __future__ import annotations
+from decimal import Decimal
 import tkinter as tk
 from tkinter import ttk
+
+from domain.utils import format_currency_es, format_decimal_es
 
 class SummaryPanel(ttk.LabelFrame):
     def __init__(self, master):
@@ -19,10 +22,12 @@ class SummaryPanel(ttk.LabelFrame):
         for k,v in vals.items(): self.vars[k].set(str(v))
         self.warn.delete("1.0","end"); self.warn.insert("1.0", "\n".join(s.warnings))
     def set_calculation(self, result):
-        self.economic_vars["kilos"].set(f"{result.net_kg:,.3f}")
-        self.economic_vars["comercial"].set(f"{result.commercial_amount:,.2f} €")
-        for key in ["recoleccion","transporte","calidad","globalgap","cuota","base","iva","retencion","total"]:
-            self.economic_vars[key].set("Pendiente")
+        totals = result.result.totals if result.result else None
+        self.economic_vars["kilos"].set(format_decimal_es(result.net_kg, 3))
+        self.economic_vars["comercial"].set(format_currency_es(result.commercial_amount))
+        mapping = {"recoleccion": getattr(totals, "collection_amount", None), "transporte": getattr(totals, "transport_amount", None), "calidad": getattr(totals, "quality_amount", None), "globalgap": getattr(totals, "globalgap_amount", None), "cuota": getattr(totals, "hectare_fee_amount", None), "base": getattr(totals, "taxable_base", None), "iva": getattr(totals, "vat_amount", None), "retencion": getattr(totals, "withholding_amount", None), "total": getattr(totals, "total_amount", None)}
+        for key, value in mapping.items():
+            self.economic_vars[key].set(format_currency_es(value) if value is not None else "Pendiente")
     def clear(self):
         for v in self.vars.values(): v.set("0")
         for v in self.economic_vars.values(): v.set("Pendiente")

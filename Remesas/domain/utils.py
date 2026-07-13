@@ -74,13 +74,24 @@ def format_display_date(value: Any) -> str:
         return text
 
 
-def to_decimal(value: Any) -> Decimal:
-    if value is None or value == "":
+def decimal_or_zero(value: Any) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, bool):
+        return Decimal("1") if value else Decimal("0")
+    text = str(value).strip()
+    if not text:
         return Decimal("0")
     try:
-        return Decimal(str(value).replace(",", "."))
-    except InvalidOperation:
-        return Decimal("0")
+        return Decimal(text.replace(",", "."))
+    except InvalidOperation as exc:
+        raise ValueError(f"Valor numérico no válido: {value!r}") from exc
+
+
+def to_decimal(value: Any) -> Decimal:
+    return decimal_or_zero(value)
 
 
 def format_integer_es(value: Decimal | int) -> str:

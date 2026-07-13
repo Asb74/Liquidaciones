@@ -36,6 +36,13 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
         for g in m.grades: row += [format_decimal_es(g.kg, 2), format_price_es(g.price), format_currency_es(g.amount)]
         row += [format_decimal_es(m.destruction_kg, 2), format_decimal_es(m.table_destruction_kg, 2), format_decimal_es(m.rotten_kg, 2)]; cal.append(row)
     _style(cal)
+    costs = wb.create_sheet("Entregas")
+    costs.append(["IdSocio","Socio","Variedad","Fecha","Registro","Neto","Coste_Recoleccion","SSocialRecoleccion","Manijeria","Recolección total calculada","Coste_Trans"]);
+    for m in result.member_results:
+        for d in m.source_deliveries:
+            collection = d.collection_cost + d.social_security_collection + d.foreman_cost
+            costs.append([m.member_id, m.member_name, m.variety, d.fecha, d.registro, format_decimal_es(d.neto, 2), format_currency_es(d.collection_cost), format_currency_es(d.social_security_collection), format_currency_es(d.foreman_cost), format_currency_es(collection), format_currency_es(d.transport_cost)])
+    _style(costs)
     cfg=wb.create_sheet("Configuración")
     for k,v in [("IdREMESA",result.header.remesa_id),("Nombre remesa",result.header.remesa_name),("Campaña",result.header.campana),("Empresa",result.header.empresa),("Cultivo",result.header.cultivo),("Fecha de pago",result.header.fecha_pago),("Periodo",f"{result.header.periodo_desde} - {result.header.periodo_hasta}"),("Tipo de liquidación",result.header.tipo_liquidacion),("Categoría",result.header.categoria),("Socio o todos",result.header.socio),("Variedades",", ".join(result.header.variedades)),("Fecha de generación",result.header.generated_at.strftime("%d/%m/%Y %H:%M"))]: cfg.append([k,v])
     for k,v in result.header.options.items(): cfg.append([k, "Sí" if v else "No"])
