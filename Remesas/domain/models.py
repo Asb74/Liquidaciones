@@ -54,6 +54,7 @@ class Delivery:
     plataforma: Any
     liquidado: Any
     precalibrado: Any = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from domain.models import AppConfig
+from domain.utils import format_file_timestamp
 
 
 def load_config(config_path: str | Path | None = None) -> AppConfig:
@@ -61,7 +62,7 @@ class ReadOnlyDatabase:
         for key, path in (("DBfruta", self.config.db_fruta), ("DBEEPPL", self.config.db_eepp)):
             try:
                 mtime = os.path.getmtime(path)
-                result[key] = f"OK - modificado {mtime:.0f}"
+                result[key] = f"OK - modificado {format_file_timestamp(mtime)}"
             except OSError:
                 result[key] = "No accesible"
         return result

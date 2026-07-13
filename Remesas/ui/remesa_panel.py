@@ -1,5 +1,6 @@
 from __future__ import annotations
 import tkinter as tk
+from domain.utils import format_display_date
 from tkinter import ttk
 
 class RemesaPanel(ttk.LabelFrame):
@@ -15,5 +16,8 @@ class RemesaPanel(ttk.LabelFrame):
     def data(self): return {k:v.get() for k,v in self.vars.items()} | {"observaciones": self.observaciones.get("1.0","end").strip()}
     def load(self, values: dict):
         mapping={"REMESA":"remesa","FECHARE":"fecha_pago","PERIODO1":"desde","PERIODO2":"hasta","TipoLiq":"tipo","CATEGORIA":"categoria","IdSocio":"socio"}
-        for src,dst in mapping.items(): self.vars[dst].set(str(values.get(src) or ""))
+        for src,dst in mapping.items():
+            value = values.get(src)
+            if src in {"FECHARE", "PERIODO1", "PERIODO2"}: value = format_display_date(value)
+            self.vars[dst].set(str(value or ""))
         self.observaciones.delete("1.0","end"); self.observaciones.insert("1.0", str(values.get("Observaciones") or ""))
