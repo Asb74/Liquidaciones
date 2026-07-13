@@ -9,11 +9,21 @@ class SummaryPanel(ttk.LabelFrame):
         for i,(label,key) in enumerate([("Nº entregas","entregas"),("Nº socios","socios"),("Nº variedades","variedades"),("Kilos netos","kilos"),("Primera fecha","primera"),("Última fecha","ultima"),("Liquidadas","liquidadas"),("Sin variedad","sin_variedad"),("Sin socio válido","sin_socio"),("Sin categoría","sin_categoria")]):
             ttk.Label(self,text=label).grid(row=i,column=0,sticky="w"); ttk.Label(self,textvariable=self.vars[key]).grid(row=i,column=1,sticky="e")
         self.warn=tk.Text(self,height=5,width=38); self.warn.grid(row=10,column=0,columnspan=2,sticky="ew",pady=4)
-        ttk.Label(self,text="Conceptos económicos: Pendiente").grid(row=11,column=0,columnspan=2,sticky="w")
+        self.economic_vars={k:tk.StringVar(value="Pendiente") for k in ["kilos","comercial","recoleccion","transporte","calidad","globalgap","cuota","base","iva","retencion","total"]}
+        self.econ=ttk.LabelFrame(self,text="Totales económicos"); self.econ.grid(row=11,column=0,columnspan=2,sticky="ew")
+        labels=[("Kilos netos","kilos"),("Importe comercial","comercial"),("Recolección","recoleccion"),("Transporte","transporte"),("Calidad","calidad"),("GlobalGAP","globalgap"),("Cuota Ha","cuota"),("Base imponible","base"),("IVA","iva"),("Retención","retencion"),("Total","total")]
+        for i,(label,key) in enumerate(labels):
+            ttk.Label(self.econ,text=label).grid(row=i,column=0,sticky="w"); ttk.Label(self.econ,textvariable=self.economic_vars[key]).grid(row=i,column=1,sticky="e")
     def set_summary(self,s):
         vals={"entregas":s.total_entregas,"socios":s.socios,"variedades":s.variedades,"kilos":f"{s.kilos_netos:,.2f}","primera":s.primera_fecha,"ultima":s.ultima_fecha,"liquidadas":s.liquidadas,"sin_variedad":s.sin_variedad,"sin_socio":s.sin_socio_valido,"sin_categoria":s.sin_categoria}
         for k,v in vals.items(): self.vars[k].set(str(v))
         self.warn.delete("1.0","end"); self.warn.insert("1.0", "\n".join(s.warnings))
+    def set_calculation(self, result):
+        self.economic_vars["kilos"].set(f"{result.net_kg:,.3f}")
+        self.economic_vars["comercial"].set(f"{result.commercial_amount:,.2f} €")
+        for key in ["recoleccion","transporte","calidad","globalgap","cuota","base","iva","retencion","total"]:
+            self.economic_vars[key].set("Pendiente")
     def clear(self):
         for v in self.vars.values(): v.set("0")
+        for v in self.economic_vars.values(): v.set("Pendiente")
         self.warn.delete("1.0","end")
