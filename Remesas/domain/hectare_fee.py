@@ -28,22 +28,24 @@ class HectareFeeCalculation:
 
 @dataclass(frozen=True)
 class HectareFeeResult:
-    status: CalculationStatus
+    member_id: int
     applicable_hectares: Decimal
     price_per_hectare: Decimal
-    total_fee: Decimal
+    total_member_fee: Decimal
     total_effective_kg: Decimal
     rate_per_kg: Decimal | None
-    applied_amount: Decimal
-    detected_amount: Decimal = Decimal("0")
-    rounding_adjustment: Decimal = Decimal("0")
+    line_effective_net_kg: Decimal
+    line_fee: Decimal
+    status: CalculationStatus
     warnings: tuple[str, ...] = ()
 
 
+def calculate_line_hectare_fee(line_effective_net_kg: Decimal, rate_per_kg: Decimal) -> Decimal:
+    return round_money(line_effective_net_kg * rate_per_kg)
+
+
 def allocate_hectare_fees(total_fee: Decimal, rate_per_kg: Decimal, lines: list[tuple[int, Decimal]]) -> tuple[dict[int, Decimal], Decimal]:
-    amounts = {idx: round_money(kg * rate_per_kg) for idx, kg in lines}
+    """Backward-compatible helper: calculate partial line fees without annual balancing."""
+    amounts = {idx: calculate_line_hectare_fee(kg, rate_per_kg) for idx, kg in lines}
     difference = total_fee - sum(amounts.values(), Decimal("0"))
-    if difference and lines:
-        target_idx = max(lines, key=lambda item: (item[1], -item[0]))[0]
-        amounts[target_idx] = amounts[target_idx] + difference
     return amounts, difference

@@ -17,7 +17,12 @@ class AppConfig:
     log_file: str
     log_level: str
     hectare_fee_price_per_hectare: Decimal = Decimal("195")
-    hectare_fee_applicable_crops: tuple[str, ...] = ("CITRICOS", "MANDARINA")
+    hectare_fee_delivery_crops: tuple[str, ...] = ("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA")
+    hectare_fee_applicable_remittance_crops: tuple[str, ...] = ("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA")
+
+    @property
+    def hectare_fee_applicable_crops(self) -> tuple[str, ...]:
+        return self.hectare_fee_applicable_remittance_crops
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,8 @@ from typing import Any
 
 from domain.utils import decimal_or_zero, round_money
 
+EFFECTIVE_NET_SQL = "CASE WHEN COALESCE({alias}.NetoPartida, 0) = 0 THEN COALESCE({alias}.Neto, 0) ELSE {alias}.NetoPartida END"
+
 
 def effective_net_kg(net_kg: Any, batch_net_kg: Any | None) -> Decimal:
     batch_value = decimal_or_zero(batch_net_kg)
