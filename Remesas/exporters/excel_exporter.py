@@ -11,6 +11,7 @@ from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 
 from domain.calculation_models import CalculationStatus, LiquidationResult
+from domain.audit import audit_latest_excel_row, current_audit
 from exporters.file_lock import FileLockedError, ensure_target_is_writable
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,12 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
     ws.append(SUMMARY_HEADERS)
 
     for row_number, member in enumerate(result.member_results, start=2):
+        hectare_excel_value = _hectare_fee_excel_value(member)
+        audit = current_audit()
+        if audit:
+            audit.audit_excel_row(member, hectare_excel_value)
+        else:
+            audit_latest_excel_row(member, hectare_excel_value)
         ws.append([
             member.member_id,
             member.member_name,
@@ -121,7 +128,7 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
             _number(member.gross_amount, "I. Bruto"),
             _number(member.commercial_average_price, "P. Comer."),
             _number(member.collection_amount, "Recolec."),
-            _hectare_fee_excel_value(member),
+            hectare_excel_value,
             _number(member.quality_amount, "B/P Cal."),
             _number(member.transport_amount, "B. Trans."),
             _number(member.globalgap_amount, "B. Glob."),
