@@ -67,7 +67,7 @@ class RemesasFrame(ttk.Frame):
     def _connect(self):
         try:
             self.conn=self.db.connect_fruta_with_eepp(); self.meta=ContextService(MetadataRepository(self.conn)); self.deliveries=DeliveriesService(DeliveriesRepository(self.conn)); self.remesas=RemesasService(RemesasRepository(self.conn))
-            self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.calculations=CalculationService(); self._refresh_action_states()
+            self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.calculations=CalculationService(self.conn, self.config); self._refresh_action_states()
         except Exception as exc: messagebox.showerror("Error",f"No se ha podido acceder a las bases SQLite: {exc}")
 
     def _context_changed(self):
@@ -253,12 +253,12 @@ class RemesasFrame(ttk.Frame):
         for i,(name,var) in enumerate(labels): ttk.Label(opts,text=("✓ " if var.get() else "✗ ")+name).grid(row=i//3,column=i%3,sticky="w",padx=12,pady=3)
         origin=ttk.LabelFrame(summary_tab,text="Datos de origen"); origin.grid(row=0,column=1,rowspan=2,sticky="nsew",padx=6,pady=6)
         if self.summary:
-            origin_rows=[("Entregas",self.summary.total_entregas),("Socios",self.summary.socios),("Variedades",self.summary.variedades),("Kilos netos",format_decimal_es(self.summary.kilos_netos,2)),("Primera fecha",self.summary.primera_fecha),("Última fecha",self.summary.ultima_fecha),("Entregas ya liquidadas",self.summary.liquidadas),("Registros con incidencias",self.summary.sin_variedad+self.summary.sin_socio_valido+self.summary.sin_categoria)]
+            origin_rows=[("Entregas",self.summary.total_entregas),("Socios",self.summary.socios),("Variedades",self.summary.variedades),("Kilos netos efectivos",format_decimal_es(self.summary.kilos_netos,2)),("Primera fecha",self.summary.primera_fecha),("Última fecha",self.summary.ultima_fecha),("Entregas ya liquidadas",self.summary.liquidadas),("Registros con incidencias",self.summary.sin_variedad+self.summary.sin_socio_valido+self.summary.sin_categoria)]
             for i,(k,v) in enumerate(origin_rows): ttk.Label(origin,text=k,font=("TkDefaultFont",9,"bold")).grid(row=i,column=0,sticky="w",padx=4,pady=3); ttk.Label(origin,text=v).grid(row=i,column=1,sticky="w",padx=4,pady=3)
         econ=ttk.LabelFrame(summary_tab,text="Totales económicos"); econ.grid(row=2,column=0,columnspan=2,sticky="nsew",padx=6,pady=6)
         ecols=("Concepto","Importe"); etree=ttk.Treeview(econ,columns=ecols,show="headings",height=10); [etree.heading(c,text=c) for c in ecols]; etree.column("Concepto",width=220); etree.column("Importe",width=180,anchor="e"); etree.pack(fill="both",expand=True)
         totals=calc.result.totals if calc and calc.result else None
-        concepts=[("Importe comercial", calc.commercial_amount if calc else None, None),("Recolección", getattr(totals,'collection_amount',None), None),("Transporte", getattr(totals,'transport_amount',None), None),("Calidad", getattr(totals,'quality_amount',None), None),("GlobalGAP", getattr(totals,'globalgap_amount',None), None),("Cuota Ha", getattr(totals,'hectare_fee_amount',None), None),("Base imponible", getattr(totals,'taxable_base',None), None),("IVA", getattr(totals,'vat_amount',None), None),("Retención", getattr(totals,'withholding_amount',None), None),("Total", getattr(totals,'total_amount',None), None)]
+        concepts=[("Kilos netos efectivos", totals.net_kg if totals else None, None),("Importe comercial", calc.commercial_amount if calc else None, None),("Recolección", getattr(totals,'collection_amount',None), None),("Transporte", getattr(totals,'transport_amount',None), None),("Calidad", getattr(totals,'quality_amount',None), None),("GlobalGAP", getattr(totals,'globalgap_amount',None), None),("Cuota Ha", getattr(totals,'hectare_fee_amount',None), None),("Base imponible", getattr(totals,'taxable_base',None), None),("IVA", getattr(totals,'vat_amount',None), None),("Retención", getattr(totals,'withholding_amount',None), None),("Total", getattr(totals,'total_amount',None), None)]
         for name,val,st in concepts: etree.insert("","end",values=(name,self._concept_text(val,st)),tags=("strong",) if name in {"Base imponible","Total"} else ())
         etree.tag_configure("strong",font=("TkDefaultFont",9,"bold"))
         warn=ttk.LabelFrame(summary_tab,text="Advertencias"); warn.grid(row=3,column=0,columnspan=2,sticky="nsew",padx=6,pady=6)
@@ -266,7 +266,7 @@ class RemesasFrame(ttk.Frame):
         for msg in ((calc.warnings if calc else []) or ["Cálculo pendiente de ejecutar."]): wlist.insert("end",msg)
         summary_tab.columnconfigure(0,weight=1); summary_tab.columnconfigure(1,weight=1); summary_tab.rowconfigure(2,weight=1)
 
-        mcols=("Nº socio","Socio","Variedad","Entregas","Neto partidas","Neto comercial","Neto destrío","Neto podrido","Importe comercial","Recolección","Transporte","Calidad","GlobalGAP","Cuota Ha","Base imponible","IVA","Retención","Total","Precio medio")
+        mcols=("Nº socio","Socio","Variedad","Entregas","Neto efectivo","Neto comercial","Neto destrío","Neto podrido","Importe comercial","Recolección","Transporte","Calidad","GlobalGAP","Cuota Ha","Base imponible","IVA","Retención","Total","Precio medio")
         mtree=ttk.Treeview(members_tab,columns=mcols,show="headings");
         for c in mcols: mtree.heading(c,text=c,command=lambda c=c: self._sort_tree(mtree,c)); mtree.column(c,width=120,anchor="e" if c not in {"Socio","Variedad"} else "w")
         my=ttk.Scrollbar(members_tab,orient="vertical",command=mtree.yview); mx=ttk.Scrollbar(members_tab,orient="horizontal",command=mtree.xview); mtree.configure(yscrollcommand=my.set,xscrollcommand=mx.set); mtree.grid(row=0,column=0,sticky="nsew"); my.grid(row=0,column=1,sticky="ns"); mx.grid(row=1,column=0,sticky="ew"); members_tab.rowconfigure(0,weight=1); members_tab.columnconfigure(0,weight=1)
@@ -281,7 +281,7 @@ class RemesasFrame(ttk.Frame):
                     if g.kilograms or g.price: dtree.insert("","end",values=(m.member_id,m.member_name,m.variety,"",g.label,"","","","","",format_decimal_es(g.kilograms,2),format_price_es(g.price),format_currency_es(g.amount)))
                 for d in m.source_deliveries:
                     collection = d.collection_cost + d.social_security_collection + d.foreman_cost
-                    dtree.insert("","end",values=(m.member_id,m.member_name,m.variety,d.registro,"Costes de entrada",format_currency_es(d.collection_cost),format_currency_es(d.social_security_collection),format_currency_es(d.foreman_cost),format_currency_es(collection),format_currency_es(d.transport_cost),format_decimal_es(d.neto,2),"",""))
+                    dtree.insert("","end",values=(m.member_id,m.member_name,m.variety,d.registro,"Costes de entrada",format_currency_es(d.collection_cost),format_currency_es(d.social_security_collection),format_currency_es(d.foreman_cost),format_currency_es(collection),format_currency_es(d.transport_cost),format_decimal_es(d.effective_net_kg,2),"",""))
         buttons=ttk.Frame(win); buttons.pack(fill="x",padx=8,pady=(0,8))
         ttk.Button(buttons,text="Cerrar",command=win.destroy).pack(side="right",padx=3)
         ttk.Button(buttons,text="Copiar resumen",command=lambda: (win.clipboard_clear(), win.clipboard_append(f"{data.get('remesa')} - {format_currency_es(calc.commercial_amount) if calc else 'Pendiente'}"))).pack(side="right",padx=3)

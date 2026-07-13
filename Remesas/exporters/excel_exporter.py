@@ -119,6 +119,11 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
             f'=IFERROR(166.386*J{row_number}/D{row_number},0)',
         ])
 
+    detail = wb.create_sheet("Detalle ajustes")
+    detail.append(["Nº Socio", "Socio", "Variedad", "Bon/Pen tarifa", "Fuente tarifa", "Hectáreas", "Precio/ha", "Cuota total socio", "Kilos efectivos totales", "Proporción €/kg", "Cuota parcial", "Ajuste redondeo"])
+    for member in result.member_results:
+        detail.append([member.member_id, member.member_name, member.variety, _number(member.quality_rate, "Bon/Pen tarifa"), member.quality_source, _number(member.applicable_hectares, "Hectáreas"), _number(member.hectare_fee_price, "Precio/ha"), _number(member.hectare_fee_total_member, "Cuota total socio"), _number(member.hectare_fee_total_effective_kg, "Kilos efectivos totales"), _number(member.hectare_fee_rate_per_kg, "Proporción €/kg"), _number(member.hectare_fee_amount, "Cuota parcial"), _number(member.hectare_fee_rounding_adjustment, "Ajuste redondeo")])
+
     total_row = ws.max_row + 1
     ws.cell(total_row, 2, "TOTAL")
     for column in (4, 5, 7, 8, 9, 10, 11, 12, 16):

@@ -15,8 +15,8 @@ class DeliveriesQueryTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); p=Path(self.tmp.name); self.fruta=p/'f.sqlite'; self.eepp=p/'e.sqlite'
         with sqlite3.connect(self.fruta) as c:
-            c.execute('CREATE TABLE PesosFres(CAMPAÑA TEXT, EMPRESA TEXT, CULTIVO TEXT, Fcarga TEXT, Reg INTEGER, IdSocio INTEGER, Variedad TEXT, Categoria TEXT, Neto REAL, Albaran TEXT, Boleta TEXT, Plataforma TEXT, Liquidado INTEGER, Coste_Recoleccion TEXT, SSocialRecoleccion TEXT, Manijeria TEXT, Coste_Trans TEXT)')
-            c.executemany('INSERT INTO PesosFres VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[('2026','01','NAR','2026-01-05 10:00',1,7,'V1','A',100,'A1','B1','P',0,'10','2','1','-3'),('2026','01','NAR','2026-01-06',2,8,'V2','B',50,'A2','B2','P',1,'20','4','2','5')])
+            c.execute('CREATE TABLE PesosFres(CAMPAÑA TEXT, EMPRESA TEXT, CULTIVO TEXT, Fcarga TEXT, Reg INTEGER, IdSocio INTEGER, Variedad TEXT, Categoria TEXT, Neto REAL, NetoPartida REAL, Albaran TEXT, Boleta TEXT, Plataforma TEXT, Liquidado INTEGER, Coste_Recoleccion TEXT, SSocialRecoleccion TEXT, Manijeria TEXT, Coste_Trans TEXT)')
+            c.executemany('INSERT INTO PesosFres VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[('2026','01','NAR','2026-01-05 10:00',1,7,'V1','A',100,0,'A1','B1','P',0,'10','2','1','-3'),('2026','01','NAR','2026-01-06',2,8,'V2','B',50,None,'A2','B2','P',1,'20','4','2','5')])
         with sqlite3.connect(self.eepp) as c:
             c.execute('CREATE TABLE DSocio(IdSocio INTEGER, Nombre TEXT)'); c.execute('INSERT INTO DSocio VALUES(7,"Socio 7")')
         cfg=AppConfig(str(self.fruta),str(self.eepp),'app','TEST',1,1,str(p/'x.log'),'INFO'); self.repo=DeliveriesRepository(ReadOnlyDatabase(cfg).connect_fruta_with_eepp())

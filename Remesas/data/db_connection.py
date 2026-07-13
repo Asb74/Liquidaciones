@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from domain.models import AppConfig
-from domain.utils import format_file_timestamp
+from domain.utils import decimal_or_zero, format_file_timestamp
 
 
 def load_config(config_path: str | Path | None = None) -> AppConfig:
@@ -23,6 +23,8 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         window_height=parser.getint("application", "window_height"),
         log_file=parser.get("logging", "file"),
         log_level=parser.get("logging", "level"),
+        hectare_fee_price_per_hectare=decimal_or_zero(parser.get("hectare_fee", "price_per_hectare", fallback="195")),
+        hectare_fee_applicable_crops=tuple(c.strip().upper() for c in parser.get("hectare_fee", "applicable_crops", fallback="CITRICOS,MANDARINA").split(",") if c.strip()),
     )
 
 

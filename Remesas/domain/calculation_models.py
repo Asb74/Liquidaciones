@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 class CalculationStatus(Enum):
     CALCULATED = "calculated"
     NOT_APPLICABLE = "not_applicable"
+    DISABLED = "disabled"
     PENDING = "pending"
     ERROR = "error"
 
@@ -89,6 +90,16 @@ class MemberLiquidation:
     quality_amount: Decimal | None = None
     globalgap_amount: Decimal | None = None
     hectare_fee_amount: Decimal | None = None
+    effective_net_kg: Decimal = Decimal("0")
+    quality_rate: Decimal = Decimal("0")
+    quality_source: str = "not_found"
+    applicable_hectares: Decimal = Decimal("0")
+    hectare_fee_price: Decimal = Decimal("0")
+    hectare_fee_total_member: Decimal = Decimal("0")
+    hectare_fee_total_effective_kg: Decimal = Decimal("0")
+    hectare_fee_rate_per_kg: Decimal | None = None
+    hectare_fee_status: CalculationStatus = CalculationStatus.NOT_APPLICABLE
+    hectare_fee_rounding_adjustment: Decimal = Decimal("0")
     taxable_base: Decimal | None = None
     vat_rate: Decimal | None = None
     vat_amount: Decimal | None = None
@@ -103,7 +114,7 @@ class MemberLiquidation:
 
     @property
     def net_kg(self) -> Decimal:
-        return self.net_deliveries
+        return self.effective_net_kg or self.net_deliveries
 
     @property
     def commercial_kg(self) -> Decimal:
