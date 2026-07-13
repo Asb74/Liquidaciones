@@ -1,7 +1,10 @@
 from __future__ import annotations
 from pathlib import Path
+from openpyxl import Workbook
+from openpyxl.styles import Font
+
 from domain.calculation_models import LiquidationResult
-from domain.utils import format_currency_es, format_decimal_es, format_integer_es, format_price_es, format_percentage_es
+from domain.utils import format_currency_es, format_decimal_es, format_price_es, format_percentage_es
 
 def _money(value):
     return format_currency_es(value) if value is not None else "Pendiente"
@@ -17,11 +20,6 @@ SUMMARY_HEADERS = ["IdSocio","Socio","Variedad","Neto partidas","Neto comercial"
 
 
 def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
-    try:
-        from openpyxl import Workbook
-        from openpyxl.styles import Font
-    except ImportError as exc:
-        raise RuntimeError("openpyxl no está instalado. Instale requirements.txt para exportar Excel.") from exc
     wb = Workbook(); ws = wb.active; ws.title = "Resumen"
     ws.append([result.header.remesa_name]); ws.append(SUMMARY_HEADERS)
     for m in result.member_results:
