@@ -3,8 +3,10 @@ from __future__ import annotations
 from decimal import Decimal
 import logging
 import sqlite3
+import time
 from typing import Sequence
 
+from domain.audit import current_audit
 from domain.financial_rules import EFFECTIVE_NET_SQL
 from domain.utils import decimal_or_zero
 
@@ -50,9 +52,26 @@ class HectareRepository:
               AND (dp.BAJA IS NULL OR TRIM(dp.BAJA) = '')
               AND CAST(dp.Año AS INTEGER) <= ?
         """
-        rows = self.conn.execute(sql, [member_id, str(campaign), str(company), year_limit]).fetchall()
+        params = [member_id, str(campaign), str(company), year_limit]
+        start = time.perf_counter()
+        rows = self.conn.execute(sql, params).fetchall()
+        elapsed_ms = (time.perf_counter() - start) * 1000
         if not rows:
-            rows = self.conn.execute(sql, [member_id, campaign, company, year_limit]).fetchall()
+            params = [member_id, campaign, company, year_limit]
+            start = time.perf_counter()
+            rows = self.conn.execute(sql, params).fetchall()
+            elapsed_ms = (time.perf_counter() - start) * 1000
+
+        audit = current_audit()
+        if audit:
+            audit.subsection("SUPERFICIE")
+            audit.audit_sql("superficie socio", sql, params, len(rows), elapsed_ms)
+            audit.line(f"Número de parcelas obtenidas: {len(rows)}")
+            audit.line("Detalle:")
+            for r in rows:
+                audit.line(f"Boleta={r[0]} Pol={r[2]} Par={r[3]} Rec={r[4]} SupCul={r[8]} CHA=-1 BAJA= Año={r[5]}")
+            audit.line(f"Superficie total: {sum((decimal_or_zero(r[8]) for r in rows), Decimal('0'))}")
+            audit.audit_filters("superficie", self._surface_filter_counts(member_id, campaign, company, year_limit))
 
         seen: dict[tuple, Decimal] = {}
         warnings: list[str] = []
@@ -88,7 +107,36 @@ class HectareRepository:
               AND UPPER(TRIM(p.CULTIVO)) IN ({placeholders})
         """
         params = [member_id, str(campaign), str(company), *delivery_crops]
+        start = time.perf_counter()
         value = self.conn.execute(sql, params).fetchone()[0]
+        elapsed_ms = (time.perf_counter() - start) * 1000
         if decimal_or_zero(value) == 0:
-            value = self.conn.execute(sql, [member_id, campaign, company, *delivery_crops]).fetchone()[0]
-        return decimal_or_zero(value)
+            params = [member_id, campaign, company, *delivery_crops]
+            start = time.perf_counter()
+            value = self.conn.execute(sql, params).fetchone()[0]
+            elapsed_ms = (time.perf_counter() - start) * 1000
+        total = decimal_or_zero(value)
+        audit = current_audit()
+        if audit:
+            audit.subsection("KILOS CAMPAÑA")
+            audit.audit_sql("kilos campaña socio", sql, params, 1, elapsed_ms)
+            audit.line("Detalle:")
+            for crop in delivery_crops:
+                crop_sql = f"SELECT COALESCE(SUM({EFFECTIVE_NET_SQL.format(alias='p')}), 0) FROM PesosFres AS p WHERE p.IdSocio=? AND p.CAMPAÑA=? AND p.EMPRESA=? AND UPPER(TRIM(p.CULTIVO))=?"
+                crop_value = self.conn.execute(crop_sql, [member_id, str(campaign), str(company), crop]).fetchone()[0]
+                audit.line(f"{crop}: {decimal_or_zero(crop_value)}")
+            audit.line(f"Kilos totales: {total}")
+        return total
+
+    def _surface_filter_counts(self, member_id: int, campaign: int | str, company: int | str, year_limit: int) -> dict[str, int]:
+        queries = [
+            ("Registros iniciales", "SELECT COUNT(*) FROM eepp.DEEPP AS d INNER JOIN eepp.DParcela AS dp ON TRIM(COALESCE(dp.Boleta, '')) = TRIM(COALESCE(d.Boleta, '')) WHERE d.IdSocio=?", [member_id]),
+            ("Tras campaña", "SELECT COUNT(*) FROM eepp.DEEPP AS d INNER JOIN eepp.DParcela AS dp ON TRIM(COALESCE(dp.Boleta, '')) = TRIM(COALESCE(d.Boleta, '')) WHERE d.IdSocio=? AND d.CAMPAÑA=?", [member_id, str(campaign)]),
+            ("Tras empresa", "SELECT COUNT(*) FROM eepp.DEEPP AS d INNER JOIN eepp.DParcela AS dp ON TRIM(COALESCE(dp.Boleta, '')) = TRIM(COALESCE(d.Boleta, '')) WHERE d.IdSocio=? AND d.CAMPAÑA=? AND d.EMPRESA=?", [member_id, str(campaign), str(company)]),
+            ("Tras CHA", "SELECT COUNT(*) FROM eepp.DEEPP AS d INNER JOIN eepp.DParcela AS dp ON TRIM(COALESCE(dp.Boleta, '')) = TRIM(COALESCE(d.Boleta, '')) WHERE d.IdSocio=? AND d.CAMPAÑA=? AND d.EMPRESA=? AND COALESCE(d.CHA,0)=-1", [member_id, str(campaign), str(company)]),
+            ("Tras BAJA", "SELECT COUNT(*) FROM eepp.DEEPP AS d INNER JOIN eepp.DParcela AS dp ON TRIM(COALESCE(dp.Boleta, '')) = TRIM(COALESCE(d.Boleta, '')) WHERE d.IdSocio=? AND d.CAMPAÑA=? AND d.EMPRESA=? AND COALESCE(d.CHA,0)=-1 AND (dp.BAJA IS NULL OR TRIM(dp.BAJA)='')", [member_id, str(campaign), str(company)]),
+            ("Tras antigüedad", "SELECT COUNT(*) FROM eepp.DEEPP AS d INNER JOIN eepp.DParcela AS dp ON TRIM(COALESCE(dp.Boleta, '')) = TRIM(COALESCE(d.Boleta, '')) WHERE d.IdSocio=? AND d.CAMPAÑA=? AND d.EMPRESA=? AND COALESCE(d.CHA,0)=-1 AND (dp.BAJA IS NULL OR TRIM(dp.BAJA)='') AND CAST(dp.Año AS INTEGER)<=?", [member_id, str(campaign), str(company), year_limit]),
+        ]
+        counts = {label: int(self.conn.execute(query, params).fetchone()[0] or 0) for label, query, params in queries}
+        counts["Registros finales"] = counts.get("Tras antigüedad", 0)
+        return counts
