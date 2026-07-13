@@ -98,15 +98,31 @@ def format_currency_es(value: Decimal) -> str:
     return f"{format_decimal_es(value, 2)} €"
 
 
-def format_price_es(value: Decimal, decimals: int = 4) -> str:
+def format_price_es(value: Decimal, decimals: int = 5) -> str:
     return format_decimal_es(value, decimals)
 
 
-def get_grade_labels(crop: str) -> list[str]:
+def round_money(value: Decimal) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def round_price(value: Decimal) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP)
+
+
+def format_percentage_es(value: Decimal, decimals: int = 2) -> str:
+    return f"{format_decimal_es(value, decimals)} %"
+
+
+def get_price_labels(crop: str) -> list[str]:
     normalized = _normalize_token(crop)
     if normalized in {"MANDARINA", "CLEMENTINA", "NARANJA", "CITRICOS", "CITRICO"}:
         return ["I AAA", "I AA", "I A", "I B", "I C", "I D", "II AAA", "II AA", "II A", "II B", "II C", "II D"]
     return [f"P{i}" for i in range(12)]
+
+
+def get_grade_labels(crop: str) -> list[str]:
+    return get_price_labels(crop)
 
 
 def safe_path_part(value: object) -> str:

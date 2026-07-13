@@ -3,7 +3,29 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from enum import Enum
 from typing import Any
+
+
+class CalculationStatus(Enum):
+    CALCULATED = "calculated"
+    NOT_APPLICABLE = "not_applicable"
+    PENDING = "pending"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class MoneyConcept:
+    amount: Decimal | None
+    status: CalculationStatus
+    warning: str = ""
+
+
+@dataclass(frozen=True)
+class FiscalRegime:
+    name: str
+    vat_rate: Decimal
+    withholding_rate: Decimal
 
 
 @dataclass(frozen=True)
@@ -26,12 +48,19 @@ class LiquidationHeader:
 
 
 @dataclass(frozen=True)
-class GradeLiquidation:
+class GradeBreakdown:
     code: str
     label: str
-    kg: Decimal
+    kilograms: Decimal
     price: Decimal
     amount: Decimal
+
+    @property
+    def kg(self) -> Decimal:
+        return self.kilograms
+
+
+GradeLiquidation = GradeBreakdown
 
 
 @dataclass(frozen=True)
@@ -40,36 +69,59 @@ class MemberLiquidation:
     member_name: str
     variety: str
     delivery_count: int
-    net_kg: Decimal
-    commercial_kg: Decimal
-    destruction_kg: Decimal
-    table_destruction_kg: Decimal
-    rotten_kg: Decimal
-    grades: list[GradeLiquidation]
+    net_deliveries: Decimal
+    net_commercial: Decimal
+    net_waste: Decimal
+    net_rotten: Decimal
+    grades: tuple[GradeBreakdown, ...]
     commercial_amount: Decimal
-    destruction_amount: Decimal
-    table_destruction_amount: Decimal
-    rotten_amount: Decimal
-    gross_amount: Decimal
-    collection_amount: Decimal
-    transport_amount: Decimal
-    quality_amount: Decimal
-    globalgap_amount: Decimal
-    hectare_fee_amount: Decimal
-    taxable_base: Decimal
-    vat_percent: Decimal
-    vat_amount: Decimal
-    withholding_percent: Decimal
-    withholding_amount: Decimal
-    total_amount: Decimal
+    destruction_amount: Decimal = Decimal("0")
+    table_destruction_amount: Decimal = Decimal("0")
+    rotten_amount: Decimal = Decimal("0")
+    gross_amount: Decimal = Decimal("0")
+    collection_amount: Decimal | None = None
+    transport_amount: Decimal | None = None
+    quality_amount: Decimal | None = None
+    globalgap_amount: Decimal | None = None
+    hectare_fee_amount: Decimal | None = None
+    taxable_base: Decimal | None = None
+    vat_rate: Decimal | None = None
+    vat_amount: Decimal | None = None
+    withholding_rate: Decimal | None = None
+    withholding_amount: Decimal | None = None
+    total_amount: Decimal | None = None
+    commercial_average_price: Decimal | None = None
+    final_average_price: Decimal | None = None
+    warnings: tuple[str, ...] = ()
+    statuses: dict[str, CalculationStatus] = field(default_factory=dict)
 
     @property
-    def final_average_price(self) -> Decimal:
-        return self.total_amount / self.net_kg if self.net_kg else Decimal("0")
+    def net_kg(self) -> Decimal:
+        return self.net_deliveries
 
     @property
-    def commercial_average_price(self) -> Decimal:
-        return self.commercial_amount / self.commercial_kg if self.commercial_kg else Decimal("0")
+    def commercial_kg(self) -> Decimal:
+        return self.net_commercial
+
+    @property
+    def destruction_kg(self) -> Decimal:
+        return self.net_waste
+
+    @property
+    def table_destruction_kg(self) -> Decimal:
+        return Decimal("0")
+
+    @property
+    def rotten_kg(self) -> Decimal:
+        return self.net_rotten
+
+    @property
+    def vat_percent(self) -> Decimal:
+        return self.vat_rate or Decimal("0")
+
+    @property
+    def withholding_percent(self) -> Decimal:
+        return self.withholding_rate or Decimal("0")
 
 
 @dataclass(frozen=True)
@@ -77,18 +129,47 @@ class LiquidationTotals:
     net_kg: Decimal
     commercial_amount: Decimal
     gross_amount: Decimal
-    taxable_base: Decimal
-    vat_amount: Decimal
-    withholding_amount: Decimal
-    total_amount: Decimal
+    collection_amount: Decimal | None
+    transport_amount: Decimal | None
+    quality_amount: Decimal | None
+    globalgap_amount: Decimal | None
+    hectare_fee_amount: Decimal | None
+    taxable_base: Decimal | None
+    vat_amount: Decimal | None
+    withholding_amount: Decimal | None
+    total_amount: Decimal | None
 
 
 @dataclass(frozen=True)
 class LiquidationResult:
     header: LiquidationHeader
-    member_results: list[MemberLiquidation]
+    member_results: tuple[MemberLiquidation, ...]
     totals: LiquidationTotals
-    warnings: list[str]
+    warnings: tuple[str, ...]
+
+    @property
+    def members(self) -> tuple[MemberLiquidation, ...]:
+        return self.member_results
+
+    @property
+    def delivery_count(self) -> int:
+        return sum(m.delivery_count for m in self.member_results)
+
+    @property
+    def member_count(self) -> int:
+        return len({m.member_id for m in self.member_results})
+
+    @property
+    def variety_count(self) -> int:
+        return len({m.variety for m in self.member_results if m.variety})
+
+    @property
+    def net_kg(self) -> Decimal:
+        return self.totals.net_kg
+
+    @property
+    def commercial_amount(self) -> Decimal:
+        return self.totals.commercial_amount
 
 
 @dataclass(frozen=True)

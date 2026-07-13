@@ -11,7 +11,7 @@ from data.metadata_repository import MetadataRepository
 from data.remesas_repository import RemesasRepository
 from domain.models import DeliveryFilter, Period, Remesa
 from domain.validators import parse_user_date, validate_context, validate_period
-from domain.utils import format_display_date, parse_yes_no, safe_path_part
+from domain.utils import format_currency_es, format_decimal_es, format_display_date, format_integer_es, format_price_es, parse_yes_no, safe_path_part
 from services.context_service import ContextService
 from services.deliveries_service import DeliveriesService
 from services.remesas_service import RemesasService
@@ -199,7 +199,7 @@ class RemesasFrame(ttk.Frame):
             self.current_calculation = self.calculations.calculate(deliveries, self._calculation_remesa())
             self.calculation_valid=True
             self.summary_panel.set_calculation(self.current_calculation)
-            self.status.set(f"Liquidación calculada: {self.current_calculation.member_count} socios, {self.current_calculation.net_kg:,.3f} kg, importe comercial {self.current_calculation.commercial_amount:,.2f} €")
+            self.status.set(f"Liquidación calculada: {self.current_calculation.member_count} socios, {format_decimal_es(self.current_calculation.net_kg, 3)} kg, importe comercial {format_currency_es(self.current_calculation.commercial_amount)}")
             self._refresh_action_states()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
@@ -216,34 +216,75 @@ class RemesasFrame(ttk.Frame):
             self.calculation_valid=False; self.status.set("Los parámetros han cambiado. Vuelva a calcular la liquidación.")
         self._refresh_action_states()
 
-    def _pending(self, value):
-        return "Pendiente de implementar" if value is None else f"{value:,.2f} €"
+    def _concept_text(self, value, status=None):
+        if value is not None:
+            return format_currency_es(value)
+        if status and getattr(status, "value", "") == "not_applicable":
+            return "No aplica"
+        if status and getattr(status, "value", "") == "error":
+            return "Error"
+        return "Pendiente"
+
+    def _sort_tree(self, tree, col, reverse=False):
+        data = [(tree.set(k, col), k) for k in tree.get_children("")]
+        def key(item):
+            text = str(item[0]).replace(".", "").replace(",", ".").replace(" €", "").replace(" %", "")
+            try: return float(text)
+            except ValueError: return str(item[0]).lower()
+        data.sort(key=key, reverse=reverse)
+        for index, (_, k) in enumerate(data): tree.move(k, "", index)
+        tree.heading(col, command=lambda: self._sort_tree(tree, col, not reverse))
 
     def _preview(self):
         if not self.deliveries_panel.visible_rows():
             return
-        win=tk.Toplevel(self); win.title("Vista previa de liquidación"); win.transient(self.winfo_toplevel()); win.grab_set(); win.geometry("1200x700"); win.resizable(True, True)
+        win=tk.Toplevel(self); win.title("Vista previa de liquidación"); win.transient(self.winfo_toplevel()); win.grab_set(); win.geometry("1280x760"); win.resizable(True, True)
         nb=ttk.Notebook(win); nb.pack(fill="both", expand=True, padx=8, pady=8)
-        head=ttk.Frame(nb); detail=ttk.Frame(nb); nb.add(head,text="Resumen"); nb.add(detail,text="Detalle")
-        ctx=self.context_panel.context(); data=self.remesa_panel.data(); selected=', '.join(self.selected.get(0,'end')) or "Todas"
-        options=', '.join(name for name,var in self.option_vars.items() if var.get()) or "Ninguna"
-        rows=[("Nombre de remesa",data.get('remesa')), ("Campaña",ctx.campana), ("Empresa",ctx.empresa), ("Cultivo",ctx.cultivo), ("Periodo",f"{format_display_date(data.get('desde'))} - {format_display_date(data.get('hasta'))}"), ("Fecha de pago",format_display_date(data.get('fecha_pago'))), ("Tipo de liquidación",data.get('tipo')), ("Categoría",data.get('categoria')), ("Socio",data.get('socio') or "Todos"), ("Variedades",selected), ("Opciones activadas",options)]
-        for i,(k,v) in enumerate(rows): ttk.Label(head,text=k,font=("TkDefaultFont",9,"bold")).grid(row=i,column=0,sticky="nw",padx=4,pady=2); ttk.Label(head,text=v,wraplength=800).grid(row=i,column=1,sticky="w",padx=4,pady=2)
-        s=self.summary
-        base=12
-        if s:
-            for j,(k,v) in enumerate([("Número de entregas",s.total_entregas),("Número de socios",s.socios),("Número de variedades",s.variedades),("Kilos netos",f"{s.kilos_netos:,.2f}"),("Primera fecha",s.primera_fecha),("Última fecha",s.ultima_fecha),("Entregas ya marcadas como liquidadas",s.liquidadas),("Registros sin variedad",s.sin_variedad),("Registros sin socio válido",s.sin_socio_valido),("Registros sin categoría",s.sin_categoria)]): ttk.Label(head,text=k,font=("TkDefaultFont",9,"bold")).grid(row=base+j,column=0,sticky="w",padx=4,pady=2); ttk.Label(head,text=v).grid(row=base+j,column=1,sticky="w",padx=4,pady=2)
-        calc=self.current_calculation
-        econ=[("Importe comercial calculado", f"{calc.commercial_amount:,.2f} €" if calc else "Pendiente de implementar"),("Recolección","Pendiente de implementar"),("Transporte","Pendiente de implementar"),("Calidad","Pendiente de implementar"),("GlobalGAP","Pendiente de implementar"),("Cuota por hectárea","Pendiente de implementar"),("Base imponible","Pendiente de implementar"),("IVA","Pendiente de implementar"),("Retención","Pendiente de implementar"),("Total","Pendiente de implementar")]
-        for j,(k,v) in enumerate(econ): ttk.Label(head,text=k,font=("TkDefaultFont",9,"bold")).grid(row=base+11+j,column=0,sticky="w",padx=4,pady=2); ttk.Label(head,text=v).grid(row=base+11+j,column=1,sticky="w",padx=4,pady=2)
-        cols=("Socio","Nombre","Variedad","Nº entregas","Kilos netos","Importe comercial","Recolección","Transporte","Calidad","GlobalGAP","Cuota Ha","Base imponible","IVA","Retención","Total")
-        tree=ttk.Treeview(detail,columns=cols,show="headings"); [tree.heading(c,text=c) for c in cols]; [tree.column(c,width=120,anchor="w") for c in cols]
-        y=ttk.Scrollbar(detail,orient="vertical",command=tree.yview); x=ttk.Scrollbar(detail,orient="horizontal",command=tree.xview); tree.configure(yscrollcommand=y.set,xscrollcommand=x.set)
-        tree.grid(row=0,column=0,sticky="nsew"); y.grid(row=0,column=1,sticky="ns"); x.grid(row=1,column=0,sticky="ew"); detail.rowconfigure(0,weight=1); detail.columnconfigure(0,weight=1)
-        if calc:
-            for l in calc.lines: tree.insert("","end",values=(l.member_id,l.member_name,l.variety,l.delivery_count,f"{l.net_kg:,.3f}",f"{l.commercial_amount:,.2f}","Pendiente de implementar","Pendiente de implementar","Pendiente de implementar","Pendiente de implementar","Pendiente de implementar","Pendiente de implementar","Pendiente de implementar","Pendiente de implementar","Pendiente de implementar"))
-        else:
-            for vals in self.deliveries_panel.visible_rows(): tree.insert("","end",values=(vals[2],vals[3],vals[4],1,vals[6],"Pendiente de implementar",*(["Pendiente de implementar"]*9)))
+        summary_tab=ttk.Frame(nb); members_tab=ttk.Frame(nb); detail_tab=ttk.Frame(nb)
+        nb.add(summary_tab,text="Resumen"); nb.add(members_tab,text="Socios"); nb.add(detail_tab,text="Detalle")
+        ctx=self.context_panel.context(); data=self.remesa_panel.data(); selected=', '.join(self.selected.get(0,'end')) or "Todas"; calc=self.current_calculation
+
+        ident=ttk.LabelFrame(summary_tab,text="Identificación"); ident.grid(row=0,column=0,sticky="nsew",padx=6,pady=6)
+        rows=[("Remesa",data.get('remesa')), ("Campaña",ctx.campana), ("Empresa",ctx.empresa), ("Cultivo",ctx.cultivo), ("Periodo",f"{format_display_date(data.get('desde'))} - {format_display_date(data.get('hasta'))}"), ("Fecha de pago",format_display_date(data.get('fecha_pago'))), ("Tipo de liquidación",data.get('tipo')), ("Categoría",data.get('categoria')), ("Socio",data.get('socio') or "Todos"), ("Variedades",selected)]
+        for i,(k,v) in enumerate(rows):
+            r=i//2; c=(i%2)*2; ttk.Label(ident,text=k,font=("TkDefaultFont",9,"bold")).grid(row=r,column=c,sticky="w",padx=4,pady=2); ttk.Label(ident,text=v,wraplength=360).grid(row=r,column=c+1,sticky="w",padx=4,pady=2)
+        opts=ttk.LabelFrame(summary_tab,text="Opciones aplicadas"); opts.grid(row=1,column=0,sticky="ew",padx=6,pady=6)
+        labels=[("Recolección",self.apply_collection_var), ("Transporte",self.apply_transport_var), ("Calidad",self.apply_quality_var), ("GlobalGAP",self.apply_globalgap_var), ("Cuota por hectárea",self.apply_hectare_fee_var), ("Precalibrado",self.apply_precalibrated_var)]
+        for i,(name,var) in enumerate(labels): ttk.Label(opts,text=("✓ " if var.get() else "✗ ")+name).grid(row=i//3,column=i%3,sticky="w",padx=12,pady=3)
+        origin=ttk.LabelFrame(summary_tab,text="Datos de origen"); origin.grid(row=0,column=1,rowspan=2,sticky="nsew",padx=6,pady=6)
+        if self.summary:
+            origin_rows=[("Entregas",self.summary.total_entregas),("Socios",self.summary.socios),("Variedades",self.summary.variedades),("Kilos netos",format_decimal_es(self.summary.kilos_netos,2)),("Primera fecha",self.summary.primera_fecha),("Última fecha",self.summary.ultima_fecha),("Entregas ya liquidadas",self.summary.liquidadas),("Registros con incidencias",self.summary.sin_variedad+self.summary.sin_socio_valido+self.summary.sin_categoria)]
+            for i,(k,v) in enumerate(origin_rows): ttk.Label(origin,text=k,font=("TkDefaultFont",9,"bold")).grid(row=i,column=0,sticky="w",padx=4,pady=3); ttk.Label(origin,text=v).grid(row=i,column=1,sticky="w",padx=4,pady=3)
+        econ=ttk.LabelFrame(summary_tab,text="Totales económicos"); econ.grid(row=2,column=0,columnspan=2,sticky="nsew",padx=6,pady=6)
+        ecols=("Concepto","Importe"); etree=ttk.Treeview(econ,columns=ecols,show="headings",height=10); [etree.heading(c,text=c) for c in ecols]; etree.column("Concepto",width=220); etree.column("Importe",width=180,anchor="e"); etree.pack(fill="both",expand=True)
+        totals=calc.result.totals if calc and calc.result else None
+        concepts=[("Importe comercial", calc.commercial_amount if calc else None, None),("Recolección", getattr(totals,'collection_amount',None), None),("Transporte", getattr(totals,'transport_amount',None), None),("Calidad", getattr(totals,'quality_amount',None), None),("GlobalGAP", getattr(totals,'globalgap_amount',None), None),("Cuota Ha", getattr(totals,'hectare_fee_amount',None), None),("Base imponible", getattr(totals,'taxable_base',None), None),("IVA", getattr(totals,'vat_amount',None), None),("Retención", getattr(totals,'withholding_amount',None), None),("Total", getattr(totals,'total_amount',None), None)]
+        for name,val,st in concepts: etree.insert("","end",values=(name,self._concept_text(val,st)),tags=("strong",) if name in {"Base imponible","Total"} else ())
+        etree.tag_configure("strong",font=("TkDefaultFont",9,"bold"))
+        warn=ttk.LabelFrame(summary_tab,text="Advertencias"); warn.grid(row=3,column=0,columnspan=2,sticky="nsew",padx=6,pady=6)
+        wlist=tk.Listbox(warn,height=4); wlist.pack(fill="both",expand=True)
+        for msg in ((calc.warnings if calc else []) or ["Cálculo pendiente de ejecutar."]): wlist.insert("end",msg)
+        summary_tab.columnconfigure(0,weight=1); summary_tab.columnconfigure(1,weight=1); summary_tab.rowconfigure(2,weight=1)
+
+        mcols=("Nº socio","Socio","Variedad","Entregas","Neto partidas","Neto comercial","Neto destrío","Neto podrido","Importe comercial","Recolección","Transporte","Calidad","GlobalGAP","Cuota Ha","Base imponible","IVA","Retención","Total","Precio medio")
+        mtree=ttk.Treeview(members_tab,columns=mcols,show="headings");
+        for c in mcols: mtree.heading(c,text=c,command=lambda c=c: self._sort_tree(mtree,c)); mtree.column(c,width=120,anchor="e" if c not in {"Socio","Variedad"} else "w")
+        my=ttk.Scrollbar(members_tab,orient="vertical",command=mtree.yview); mx=ttk.Scrollbar(members_tab,orient="horizontal",command=mtree.xview); mtree.configure(yscrollcommand=my.set,xscrollcommand=mx.set); mtree.grid(row=0,column=0,sticky="nsew"); my.grid(row=0,column=1,sticky="ns"); mx.grid(row=1,column=0,sticky="ew"); members_tab.rowconfigure(0,weight=1); members_tab.columnconfigure(0,weight=1)
+        dcols=("Nº socio","Socio","Variedad","Calibre/Concepto","Kilos","Precio","Importe")
+        dtree=ttk.Treeview(detail_tab,columns=dcols,show="headings");
+        for c in dcols: dtree.heading(c,text=c,command=lambda c=c: self._sort_tree(dtree,c)); dtree.column(c,width=140,anchor="e" if c in {"Kilos","Precio","Importe"} else "w")
+        dy=ttk.Scrollbar(detail_tab,orient="vertical",command=dtree.yview); dx=ttk.Scrollbar(detail_tab,orient="horizontal",command=dtree.xview); dtree.configure(yscrollcommand=dy.set,xscrollcommand=dx.set); dtree.grid(row=0,column=0,sticky="nsew"); dy.grid(row=0,column=1,sticky="ns"); dx.grid(row=1,column=0,sticky="ew"); detail_tab.rowconfigure(0,weight=1); detail_tab.columnconfigure(0,weight=1)
+        if calc and calc.result:
+            for m in calc.result.member_results:
+                mtree.insert("","end",values=(m.member_id,m.member_name,m.variety,m.delivery_count,format_decimal_es(m.net_kg,2),format_decimal_es(m.commercial_kg,2),format_decimal_es(m.destruction_kg,2),format_decimal_es(m.rotten_kg,2),format_currency_es(m.commercial_amount),self._concept_text(m.collection_amount),self._concept_text(m.transport_amount),self._concept_text(m.quality_amount),self._concept_text(m.globalgap_amount),self._concept_text(m.hectare_fee_amount),self._concept_text(m.taxable_base),self._concept_text(m.vat_amount),self._concept_text(m.withholding_amount),self._concept_text(m.total_amount),format_price_es(m.commercial_average_price or 0)))
+                for g in m.grades:
+                    if g.kilograms or g.price: dtree.insert("","end",values=(m.member_id,m.member_name,m.variety,g.label,format_decimal_es(g.kilograms,2),format_price_es(g.price),format_currency_es(g.amount)))
+        buttons=ttk.Frame(win); buttons.pack(fill="x",padx=8,pady=(0,8))
+        ttk.Button(buttons,text="Cerrar",command=win.destroy).pack(side="right",padx=3)
+        ttk.Button(buttons,text="Copiar resumen",command=lambda: (win.clipboard_clear(), win.clipboard_append(f"{data.get('remesa')} - {format_currency_es(calc.commercial_amount) if calc else 'Pendiente'}"))).pack(side="right",padx=3)
+        state="normal" if calc and calc.result else "disabled"
+        ttk.Button(buttons,text="Generar PDF",command=self._export_liquidation_pdf,state=state).pack(side="right",padx=3)
+        ttk.Button(buttons,text="Exportar resumen a Excel",command=self._export_liquidation_excel,state=state).pack(side="right",padx=3)
     def _output_dir(self):
         base=Path("C:/Liquidaciones/salidas/remesas") if Path("C:/").exists() else Path.cwd().parents[0]/"salidas"/"remesas"
         ctx=self.context_panel.context(); data=self.remesa_panel.data()
