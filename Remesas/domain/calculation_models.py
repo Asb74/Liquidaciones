@@ -4,7 +4,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from domain.models import Delivery
 
 
 class CalculationStatus(Enum):
@@ -79,7 +82,9 @@ class MemberLiquidation:
     table_destruction_amount: Decimal = Decimal("0")
     rotten_amount: Decimal = Decimal("0")
     gross_amount: Decimal = Decimal("0")
+    detected_collection_amount: Decimal = Decimal("0")
     collection_amount: Decimal | None = None
+    detected_transport_amount: Decimal = Decimal("0")
     transport_amount: Decimal | None = None
     quality_amount: Decimal | None = None
     globalgap_amount: Decimal | None = None
@@ -94,6 +99,7 @@ class MemberLiquidation:
     final_average_price: Decimal | None = None
     warnings: tuple[str, ...] = ()
     statuses: dict[str, CalculationStatus] = field(default_factory=dict)
+    source_deliveries: tuple["Delivery", ...] = ()
 
     @property
     def net_kg(self) -> Decimal:
@@ -129,7 +135,9 @@ class LiquidationTotals:
     net_kg: Decimal
     commercial_amount: Decimal
     gross_amount: Decimal
+    detected_collection_amount: Decimal
     collection_amount: Decimal | None
+    detected_transport_amount: Decimal
     transport_amount: Decimal | None
     quality_amount: Decimal | None
     globalgap_amount: Decimal | None

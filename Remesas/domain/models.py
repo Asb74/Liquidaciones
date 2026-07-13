@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 
@@ -48,12 +49,16 @@ class Delivery:
     nombre_socio: str | None
     variedad: str | None
     categoria: str | None
-    neto: float
+    neto: Decimal
     albaran: Any
     boleta: Any
     plataforma: Any
     liquidado: Any
     precalibrado: Any = None
+    collection_cost: Decimal = Decimal("0")
+    social_security_collection: Decimal = Decimal("0")
+    foreman_cost: Decimal = Decimal("0")
+    transport_cost: Decimal = Decimal("0")
     extra: dict[str, Any] = field(default_factory=dict)
 
 

@@ -208,7 +208,7 @@ class RemesasFrame(ttk.Frame):
         base = dict(self.current_remesa.values) if self.current_remesa else {}
         base.update({k:v.get() for k,v in self.price_vars.items()})
         ctx=self.context_panel.context(); data=self.remesa_panel.data()
-        base.update({"CAMPAÑA":ctx.campana,"EMPRESA":ctx.empresa,"CULTIVO":ctx.cultivo,"REMESA":data.get("remesa"),"FECHARE":data.get("fecha_pago"),"PERIODO1":data.get("desde"),"PERIODO2":data.get("hasta"),"TipoLiq":data.get("tipo"),"CATEGORIA":data.get("categoria"),"IdSocio":data.get("socio"),"VARIEDAD":", ".join(self.selected.get(0,"end"))})
+        base.update({"CAMPAÑA":ctx.campana,"EMPRESA":ctx.empresa,"CULTIVO":ctx.cultivo,"REMESA":data.get("remesa"),"FECHARE":data.get("fecha_pago"),"PERIODO1":data.get("desde"),"PERIODO2":data.get("hasta"),"TipoLiq":data.get("tipo"),"CATEGORIA":data.get("categoria"),"IdSocio":data.get("socio"),"VARIEDAD":", ".join(self.selected.get(0,"end")),"AplRec":"S" if self.apply_collection_var.get() else "N","AplTte":"S" if self.apply_transport_var.get() else "N","AplCal":"S" if self.apply_quality_var.get() else "N","AplGlobal":"S" if self.apply_globalgap_var.get() else "N","AplCHa":"S" if self.apply_hectare_fee_var.get() else "N","AplPrecalibrado":"S" if self.apply_precalibrated_var.get() else "N"})
         return Remesa(base)
 
     def _invalidate_calculation(self):
@@ -270,15 +270,18 @@ class RemesasFrame(ttk.Frame):
         mtree=ttk.Treeview(members_tab,columns=mcols,show="headings");
         for c in mcols: mtree.heading(c,text=c,command=lambda c=c: self._sort_tree(mtree,c)); mtree.column(c,width=120,anchor="e" if c not in {"Socio","Variedad"} else "w")
         my=ttk.Scrollbar(members_tab,orient="vertical",command=mtree.yview); mx=ttk.Scrollbar(members_tab,orient="horizontal",command=mtree.xview); mtree.configure(yscrollcommand=my.set,xscrollcommand=mx.set); mtree.grid(row=0,column=0,sticky="nsew"); my.grid(row=0,column=1,sticky="ns"); mx.grid(row=1,column=0,sticky="ew"); members_tab.rowconfigure(0,weight=1); members_tab.columnconfigure(0,weight=1)
-        dcols=("Nº socio","Socio","Variedad","Calibre/Concepto","Kilos","Precio","Importe")
+        dcols=("Nº socio","Socio","Variedad","Registro","Concepto","Coste_Recoleccion","SSocialRecoleccion","Manijeria","Recolección entrega","Coste_Trans","Kilos","Precio","Importe")
         dtree=ttk.Treeview(detail_tab,columns=dcols,show="headings");
-        for c in dcols: dtree.heading(c,text=c,command=lambda c=c: self._sort_tree(dtree,c)); dtree.column(c,width=140,anchor="e" if c in {"Kilos","Precio","Importe"} else "w")
+        for c in dcols: dtree.heading(c,text=c,command=lambda c=c: self._sort_tree(dtree,c)); dtree.column(c,width=140,anchor="e" if c not in {"Socio","Variedad","Concepto"} else "w")
         dy=ttk.Scrollbar(detail_tab,orient="vertical",command=dtree.yview); dx=ttk.Scrollbar(detail_tab,orient="horizontal",command=dtree.xview); dtree.configure(yscrollcommand=dy.set,xscrollcommand=dx.set); dtree.grid(row=0,column=0,sticky="nsew"); dy.grid(row=0,column=1,sticky="ns"); dx.grid(row=1,column=0,sticky="ew"); detail_tab.rowconfigure(0,weight=1); detail_tab.columnconfigure(0,weight=1)
         if calc and calc.result:
             for m in calc.result.member_results:
                 mtree.insert("","end",values=(m.member_id,m.member_name,m.variety,m.delivery_count,format_decimal_es(m.net_kg,2),format_decimal_es(m.commercial_kg,2),format_decimal_es(m.destruction_kg,2),format_decimal_es(m.rotten_kg,2),format_currency_es(m.commercial_amount),self._concept_text(m.collection_amount),self._concept_text(m.transport_amount),self._concept_text(m.quality_amount),self._concept_text(m.globalgap_amount),self._concept_text(m.hectare_fee_amount),self._concept_text(m.taxable_base),self._concept_text(m.vat_amount),self._concept_text(m.withholding_amount),self._concept_text(m.total_amount),format_price_es(m.commercial_average_price or 0)))
                 for g in m.grades:
-                    if g.kilograms or g.price: dtree.insert("","end",values=(m.member_id,m.member_name,m.variety,g.label,format_decimal_es(g.kilograms,2),format_price_es(g.price),format_currency_es(g.amount)))
+                    if g.kilograms or g.price: dtree.insert("","end",values=(m.member_id,m.member_name,m.variety,"",g.label,"","","","","",format_decimal_es(g.kilograms,2),format_price_es(g.price),format_currency_es(g.amount)))
+                for d in m.source_deliveries:
+                    collection = d.collection_cost + d.social_security_collection + d.foreman_cost
+                    dtree.insert("","end",values=(m.member_id,m.member_name,m.variety,d.registro,"Costes de entrada",format_currency_es(d.collection_cost),format_currency_es(d.social_security_collection),format_currency_es(d.foreman_cost),format_currency_es(collection),format_currency_es(d.transport_cost),format_decimal_es(d.neto,2),"",""))
         buttons=ttk.Frame(win); buttons.pack(fill="x",padx=8,pady=(0,8))
         ttk.Button(buttons,text="Cerrar",command=win.destroy).pack(side="right",padx=3)
         ttk.Button(buttons,text="Copiar resumen",command=lambda: (win.clipboard_clear(), win.clipboard_append(f"{data.get('remesa')} - {format_currency_es(calc.commercial_amount) if calc else 'Pendiente'}"))).pack(side="right",padx=3)
