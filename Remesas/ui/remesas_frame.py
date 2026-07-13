@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -21,6 +22,9 @@ from ui.deliveries_panel import COLUMNS, DeliveriesPanel
 from ui.remesa_panel import RemesaPanel
 from ui.summary_panel import SummaryPanel
 from exporters.excel_exporter import export_liquidation_summary
+from exporters.file_lock import FileLockedError
+
+logger = logging.getLogger(__name__)
 from exporters.pdf_exporter import export_member_pdf
 
 class RemesasFrame(ttk.Frame):
@@ -266,7 +270,7 @@ class RemesasFrame(ttk.Frame):
         for msg in ((calc.warnings if calc else []) or ["Cálculo pendiente de ejecutar."]): wlist.insert("end",msg)
         summary_tab.columnconfigure(0,weight=1); summary_tab.columnconfigure(1,weight=1); summary_tab.rowconfigure(2,weight=1)
 
-        mcols=("Nº socio","Socio","Variedad","Entregas","Neto efectivo","Neto comercial","Neto destrío","Neto podrido","Importe comercial","Recolección","Transporte","Calidad","GlobalGAP","Cuota Ha","Base imponible","IVA","Retención","Total","Precio medio")
+        mcols=("Nº socio","Socio","Variedad","Entregas","Neto efectivo","Neto comercial","Neto destrío","Neto podrido","Importe comercial","Recolección","Transporte","Calidad","GlobalGAP","Cuota Ha","Base imponible","IVA","Retención","Total","Precio medio","Ha","Cuota anual","Kg totales Ha","€/kg Ha","Kg línea Ha","Cuota parcial Ha","Estado Ha")
         mtree=ttk.Treeview(members_tab,columns=mcols,show="headings");
         for c in mcols: mtree.heading(c,text=c,command=lambda c=c: self._sort_tree(mtree,c)); mtree.column(c,width=120,anchor="e" if c not in {"Socio","Variedad"} else "w")
         my=ttk.Scrollbar(members_tab,orient="vertical",command=mtree.yview); mx=ttk.Scrollbar(members_tab,orient="horizontal",command=mtree.xview); mtree.configure(yscrollcommand=my.set,xscrollcommand=mx.set); mtree.grid(row=0,column=0,sticky="nsew"); my.grid(row=0,column=1,sticky="ns"); mx.grid(row=1,column=0,sticky="ew"); members_tab.rowconfigure(0,weight=1); members_tab.columnconfigure(0,weight=1)
@@ -276,7 +280,7 @@ class RemesasFrame(ttk.Frame):
         dy=ttk.Scrollbar(detail_tab,orient="vertical",command=dtree.yview); dx=ttk.Scrollbar(detail_tab,orient="horizontal",command=dtree.xview); dtree.configure(yscrollcommand=dy.set,xscrollcommand=dx.set); dtree.grid(row=0,column=0,sticky="nsew"); dy.grid(row=0,column=1,sticky="ns"); dx.grid(row=1,column=0,sticky="ew"); detail_tab.rowconfigure(0,weight=1); detail_tab.columnconfigure(0,weight=1)
         if calc and calc.result:
             for m in calc.result.member_results:
-                mtree.insert("","end",values=(m.member_id,m.member_name,m.variety,m.delivery_count,format_decimal_es(m.net_kg,2),format_decimal_es(m.commercial_kg,2),format_decimal_es(m.destruction_kg,2),format_decimal_es(m.rotten_kg,2),format_currency_es(m.commercial_amount),self._concept_text(m.collection_amount),self._concept_text(m.transport_amount),self._concept_text(m.quality_amount),self._concept_text(m.globalgap_amount),self._concept_text(m.hectare_fee_amount),self._concept_text(m.taxable_base),self._concept_text(m.vat_amount),self._concept_text(m.withholding_amount),self._concept_text(m.total_amount),format_price_es(m.commercial_average_price or 0)))
+                mtree.insert("","end",values=(m.member_id,m.member_name,m.variety,m.delivery_count,format_decimal_es(m.net_kg,2),format_decimal_es(m.commercial_kg,2),format_decimal_es(m.destruction_kg,2),format_decimal_es(m.rotten_kg,2),format_currency_es(m.commercial_amount),self._concept_text(m.collection_amount),self._concept_text(m.transport_amount),self._concept_text(m.quality_amount),self._concept_text(m.globalgap_amount),self._concept_text(m.hectare_fee_amount),self._concept_text(m.taxable_base),self._concept_text(m.vat_amount),self._concept_text(m.withholding_amount),self._concept_text(m.total_amount),format_price_es(m.commercial_average_price or 0),format_decimal_es(m.applicable_hectares,4),format_currency_es(m.hectare_fee_total_member),format_decimal_es(m.hectare_fee_total_effective_kg,2),format_price_es(m.hectare_fee_rate_per_kg or 0),format_decimal_es(m.net_kg,2),self._concept_text(m.hectare_fee_amount,m.hectare_fee_status),getattr(m.hectare_fee_status,"value",m.hectare_fee_status)))
                 for g in m.grades:
                     if g.kilograms or g.price: dtree.insert("","end",values=(m.member_id,m.member_name,m.variety,"",g.label,"","","","","",format_decimal_es(g.kilograms,2),format_price_es(g.price),format_currency_es(g.amount)))
                 for d in m.source_deliveries:
@@ -312,8 +316,22 @@ class RemesasFrame(ttk.Frame):
 
     def _export_liquidation_excel(self):
         if not (self.current_calculation and self.current_calculation.result and self.calculation_valid): return
-        path=export_liquidation_summary(self.current_calculation.result, self._output_dir()/"resumen_liquidaciones.xlsx")
-        messagebox.showinfo("Exportación", f"Excel de liquidación creado: {path}")
+        try:
+            path=export_liquidation_summary(self.current_calculation.result, self._output_dir()/"resumen_liquidaciones.xlsx")
+        except FileLockedError as exc:
+            logger.warning("Excel bloqueado: %s", exc.path)
+            messagebox.showwarning(
+                "Archivo Excel abierto",
+                "No se puede actualizar el resumen porque el archivo está abierto o bloqueado.\n\n"
+                f"Cierre el archivo:\n{exc.path}\n\n"
+                "y vuelva a pulsar \"Exportar resumen de liquidación\"."
+            )
+            return
+        except Exception as exc:
+            logger.exception("Error exportando el resumen de liquidación")
+            messagebox.showerror("Exportar resumen", f"No se ha podido generar el Excel:\n{exc}")
+            return
+        messagebox.showinfo("Exportación completada", f"El resumen se ha guardado en:\n{path}")
 
     def _export_liquidation_pdf(self):
         if not (self.current_calculation and self.current_calculation.result and self.calculation_valid): return

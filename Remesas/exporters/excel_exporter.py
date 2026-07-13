@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -8,7 +10,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 
-from domain.calculation_models import LiquidationResult
+from domain.calculation_models import CalculationStatus, LiquidationResult
+from exporters.file_lock import FileLockedError, ensure_target_is_writable
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +89,21 @@ def _validate_result(result: LiquidationResult) -> None:
             _number(getattr(member, field_name), f"{field_name} línea {idx}")
 
 
+
+def _hectare_fee_excel_value(member):
+    status = getattr(member, "hectare_fee_status", None)
+    if status == CalculationStatus.ERROR:
+        logger.warning(
+            "Cuota Ha no exportable socio=%s status=%s warnings=%s",
+            member.member_id,
+            getattr(status, "value", status),
+            "; ".join(member.warnings),
+        )
+        return None
+    if status in (CalculationStatus.DISABLED, CalculationStatus.NOT_APPLICABLE):
+        return Decimal("0")
+    return _number(member.hectare_fee_amount, "C. Has.")
+
 def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
     _validate_result(result)
 
@@ -103,7 +121,7 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
             _number(member.gross_amount, "I. Bruto"),
             _number(member.commercial_average_price, "P. Comer."),
             _number(member.collection_amount, "Recolec."),
-            _number(member.hectare_fee_amount, "C. Has."),
+            _hectare_fee_excel_value(member),
             _number(member.quality_amount, "B/P Cal."),
             _number(member.transport_amount, "B. Trans."),
             _number(member.globalgap_amount, "B. Glob."),
@@ -131,8 +149,43 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
         ws.cell(total_row, column, f"=SUM({letter}2:{letter}{total_row - 1})")
 
     _style_summary(ws, total_row)
+    diagnostics = wb.create_sheet("Diagnóstico cuota Ha")
+    diagnostics.append(["Nº Socio", "Socio", "Variedad", "Estado", "Hectáreas", "Cuota anual", "Kilos efectivos totales", "Proporción €/kg", "Neto efectivo línea", "Cuota calculada", "Advertencias"])
+    for member in result.member_results:
+        diagnostics.append([
+            member.member_id,
+            member.member_name,
+            member.variety,
+            getattr(member.hectare_fee_status, "value", str(member.hectare_fee_status)),
+            _number(member.applicable_hectares, "Hectáreas"),
+            _number(member.hectare_fee_total_member, "Cuota anual"),
+            _number(member.hectare_fee_total_effective_kg, "Kilos efectivos totales"),
+            _number(member.hectare_fee_rate_per_kg, "Proporción €/kg"),
+            _number(member.net_kg, "Neto efectivo línea"),
+            _number(member.hectare_fee_amount, "Cuota calculada"),
+            "; ".join(member.warnings),
+        ])
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(path)
+    ensure_target_is_writable(path)
+    temp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=f".{path.stem}_", suffix=path.suffix, dir=path.parent, delete=False) as tmp:
+            temp_name = tmp.name
+        temp_path = Path(temp_name)
+        wb.save(temp_path)
+        try:
+            os.replace(temp_path, path)
+        except PermissionError as exc:
+            raise FileLockedError(path) from exc
+    finally:
+        if temp_name:
+            temp_path = Path(temp_name)
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    logger.warning("No se pudo eliminar el temporal de Excel: %s", temp_path)
     return path
 
 
