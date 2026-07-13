@@ -68,15 +68,21 @@ class EffectiveNetQualityHectareTests(unittest.TestCase):
         repo = HectareRepository(conn)
         self.assertEqual(repo.total_effective_kg(1, "2026", "1", ("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA")), Decimal("490"))
 
-    def test_hectare_applicable_surface_uses_dparcela(self):
+    def test_hectare_applicable_surface_uses_dparcela_rec_for_mandarina(self):
         from data.hectare_repository import HectareRepository
         conn = sqlite3.connect(":memory:")
         conn.execute("ATTACH DATABASE ':memory:' AS eepp")
-        conn.execute("CREATE TABLE eepp.DEEPP(Boleta TEXT, IdSocio INTEGER, CAMPAÑA TEXT, EMPRESA TEXT, CHA INTEGER, SupCul REAL)")
-        conn.execute("CREATE TABLE eepp.DParcela(Boleta TEXT, IdPM TEXT, Pol TEXT, Par TEXT, Recinto TEXT, CAMPAÑA TEXT, EMPRESA TEXT, CULTIVO TEXT, SupCul REAL, BAJA TEXT, Año INTEGER)")
-        conn.executemany("INSERT INTO eepp.DEEPP VALUES(?,?,?,?,?,?)", [("B1", 1, "2026", "1", -1, 99), ("B2", 1, "2026", "1", 0, 99)])
-        conn.executemany("INSERT INTO eepp.DParcela VALUES(?,?,?,?,?,?,?,?,?,?,?)", [("B1", "PM1", "P", "A", "R", "2026", "1", "CITRICOS", 3.5, None, 2020), ("B1", "PM1", "P", "A", "R", "2026", "1", "CITRICOS", 3.5, None, 2020), ("B2", "PM2", "P", "B", "R", "2026", "1", "CITRICOS", 7, None, 2020)])
-        hectares, warnings = HectareRepository(conn).calculate_applicable_hectares(1, "2026", "1")
+        conn.execute("CREATE TABLE eepp.DEEPP(Boleta TEXT, IdSocio INTEGER, CAMPAÑA TEXT, EMPRESA TEXT, CHA INTEGER, Recinto TEXT, SupCul REAL)")
+        conn.execute("CREATE TABLE eepp.DParcela(Boleta TEXT, IdPM TEXT, Pol TEXT, Par TEXT, Rec TEXT, CAMPAÑA TEXT, EMPRESA TEXT, CULTIVO TEXT, SupCul REAL, BAJA TEXT, Año INTEGER)")
+        dparcela_columns = [row[1] for row in conn.execute("PRAGMA eepp.table_info('DParcela')").fetchall()]
+        self.assertIn("Rec", dparcela_columns)
+        self.assertNotIn("Recinto", dparcela_columns)
+        conn.executemany("INSERT INTO eepp.DEEPP VALUES(?,?,?,?,?,?,?)", [("B1", 1, "2026", "1", -1, "R", 99), ("B2", 1, "2026", "1", 0, "R", 99)])
+        conn.executemany("INSERT INTO eepp.DParcela VALUES(?,?,?,?,?,?,?,?,?,?,?)", [("B1", "PM1", "P", "A", "R", "2026", "1", "MANDARINA", 3.5, None, 2020), ("B1", "PM1", "P", "A", "R", "2026", "1", "MANDARINA", 3.5, None, 2020), ("B2", "PM2", "P", "B", "R", "2026", "1", "MANDARINA", 7, None, 2020)])
+        try:
+            hectares, warnings = HectareRepository(conn).calculate_applicable_hectares(1, "2026", "1")
+        except sqlite3.OperationalError as exc:
+            self.fail(f"La consulta real de superficie para MANDARINA no debe fallar: {exc}")
         self.assertEqual(hectares, Decimal("3.5"))
         self.assertTrue(warnings)
 

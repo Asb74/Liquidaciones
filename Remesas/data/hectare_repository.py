@@ -35,7 +35,7 @@ class HectareRepository:
                 dp.IdPM,
                 dp.Pol,
                 dp.Par,
-                dp.Recinto,
+                dp.Rec,
                 dp.CAMPAÑA,
                 dp.EMPRESA,
                 dp.CULTIVO,
@@ -73,7 +73,7 @@ class HectareRepository:
                 continue
             seen[key] = sup
         if len(rows) != len(seen):
-            warnings.append(f"Superficie deduplicada socio={member_id}: {len(rows)} filas -> {len(seen)} claves Boleta/IdPM/Pol/Par/Recinto/CAMPAÑA/EMPRESA.")
+            warnings.append(f"Superficie deduplicada socio={member_id}: {len(rows)} filas -> {len(seen)} claves Boleta/IdPM/Pol/Par/Rec/CAMPAÑA/EMPRESA.")
         self.logger.debug("Filtros cuota Ha superficie: IdSocio=%s CAMPAÑA=%s EMPRESA=%s CHA=-1 BAJA vacía Año<=%s; filas=%s dedup=%s", member_id, campaign, company, year_limit, len(rows), len(seen))
         return sum(seen.values(), Decimal("0")), tuple(warnings)
 
