@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from decimal import Decimal, ROUND_HALF_UP
@@ -7,8 +8,9 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from domain.calculation_models import LiquidationHeader, LiquidationResult, LiquidationTotals, MemberLiquidation
+from domain.calculation_models import CalculationStatus, LiquidationHeader, LiquidationResult, LiquidationTotals, MemberLiquidation
 from exporters.excel_exporter import SUMMARY_HEADERS, export_liquidation_summary
+from exporters.file_lock import FileLockedError
 
 
 class ExcelSummaryExporterTests(unittest.TestCase):
@@ -119,3 +121,41 @@ class ExcelSummaryExporterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExcelLockedTargetTests(unittest.TestCase):
+    def test_locked_replace_raises_without_timestamp_copy_and_keeps_existing_file(self):
+        result = ExcelSummaryExporterTests()._result()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "resumen_liquidaciones.xlsx"
+            path.write_bytes(b"existing workbook bytes")
+            original = path.read_bytes()
+            import exporters.excel_exporter as exporter
+            old_replace = exporter.os.replace
+            def locked_replace(src, dst):
+                if Path(dst) == path:
+                    raise PermissionError("locked")
+                return old_replace(src, dst)
+            exporter.os.replace = locked_replace
+            try:
+                with self.assertRaises(FileLockedError) as ctx:
+                    export_liquidation_summary(result, path)
+            finally:
+                exporter.os.replace = old_replace
+            self.assertEqual(ctx.exception.path, path)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(Path(tmp).glob("resumen_liquidaciones_*.xlsx")), [])
+            self.assertEqual(list(Path(tmp).glob(".resumen_liquidaciones_*.xlsx")), [])
+
+    def test_error_hectare_fee_leaves_summary_blank_and_adds_diagnostic(self):
+        from dataclasses import replace
+        result = ExcelSummaryExporterTests()._result()
+        member = result.member_results[0]
+        result = replace(result, member_results=(replace(member, hectare_fee_amount=None, hectare_fee_status=CalculationStatus.ERROR, warnings=("sin superficie",)),))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "resumen_liquidaciones.xlsx"
+            export_liquidation_summary(result, path)
+            wb = load_workbook(path, data_only=False)
+            self.assertIsNone(wb["Resumen"]["H2"].value)
+            self.assertIn("Diagnóstico cuota Ha", wb.sheetnames)
+            self.assertEqual(wb["Diagnóstico cuota Ha"]["D2"].value, "error")
