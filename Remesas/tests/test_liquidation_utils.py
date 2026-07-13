@@ -16,3 +16,11 @@ class LiquidatedTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class YesNoParserTests(unittest.TestCase):
+    def test_parse_yes_no_values(self):
+        from domain.utils import parse_yes_no
+        for value in ("S", "SI", "SÍ", "Y", "YES", "1", 1, True, "  s  ", "x", "TRUE"):
+            self.assertTrue(parse_yes_no(value), value)
+        for value in ("N", "NO", "0", 0, False, None, "", " false "):
+            self.assertFalse(parse_yes_no(value), value)
