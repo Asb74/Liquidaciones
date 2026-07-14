@@ -10,12 +10,17 @@ class MainMenuHandlers:
     close: Callable[[], None]
     open_hectare_fee_master: Callable[[], None]
     show_about: Callable[[], None]
+    refresh_local_databases: Callable[[], None] = lambda: None
+    open_data_folder: Callable[[], None] = lambda: None
 
 
 def build_main_menu(root: tk.Misc, handlers: MainMenuHandlers) -> tk.Menu:
     menu_bar = tk.Menu(root)
 
     file_menu = tk.Menu(menu_bar, tearoff=False)
+    file_menu.add_command(label="Actualizar bases locales", command=handlers.refresh_local_databases)
+    file_menu.add_command(label="Abrir carpeta de datos", command=handlers.open_data_folder)
+    file_menu.add_separator()
     file_menu.add_command(label="Cerrar", command=handlers.close)
     menu_bar.add_cascade(label="Archivo", menu=file_menu)
 

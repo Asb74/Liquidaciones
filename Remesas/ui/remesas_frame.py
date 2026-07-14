@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -20,6 +21,7 @@ from services.deliveries_service import DeliveriesService
 from services.remesas_service import RemesasService
 from services.calculation_service import CalculationService
 from services.hectare_fee_master_service import HectareFeeMasterService
+from services.local_database_sync_service import LocalDatabaseSyncService
 from ui.context_panel import ContextPanel
 from ui.deliveries_panel import COLUMNS, DeliveriesPanel
 from ui.remesa_panel import RemesaPanel
@@ -35,19 +37,21 @@ class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
         super().__init__(master, padding=8)
         self.config=load_config(config_path); setup_logging(self.config)
-        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
+        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.sync_results=[]; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
         self._build(); self._connect()
 
     def _build(self):
-        self.context_panel=ContextPanel(self,self.config,self._context_changed); self.context_panel.grid(row=0,column=0,columnspan=3,sticky="ew")
-        self.remesa_panel=RemesaPanel(self); self.remesa_panel.grid(row=1,column=0,sticky="nsew",padx=4,pady=4)
-        self._build_varieties(); self.var_frame.grid(row=1,column=1,sticky="nsew",padx=4,pady=4)
-        self.summary_panel=SummaryPanel(self); self.summary_panel.grid(row=1,column=2,rowspan=2,sticky="nsew",padx=4,pady=4)
-        self.deliveries_panel=DeliveriesPanel(self); self.deliveries_panel.grid(row=2,column=0,columnspan=2,sticky="nsew",padx=4,pady=4)
-        self._build_hectare_config_info(); self.hectare_info.grid(row=3,column=0,columnspan=3,sticky="ew",pady=3)
-        self._build_buttons(); self.buttons.grid(row=4,column=0,columnspan=3,sticky="ew")
-        self.status=tk.StringVar(value="Listo"); ttk.Label(self,textvariable=self.status).grid(row=5,column=0,columnspan=3,sticky="ew")
-        self.rowconfigure(2,weight=1); self.columnconfigure(1,weight=1)
+        self.db_status_text=tk.StringVar(value="Preparando bases locales...")
+        ttk.Label(self,textvariable=self.db_status_text).grid(row=0,column=0,columnspan=3,sticky="ew")
+        self.context_panel=ContextPanel(self,self.config,self._context_changed); self.context_panel.grid(row=1,column=0,columnspan=3,sticky="ew")
+        self.remesa_panel=RemesaPanel(self); self.remesa_panel.grid(row=2,column=0,sticky="nsew",padx=4,pady=4)
+        self._build_varieties(); self.var_frame.grid(row=2,column=1,sticky="nsew",padx=4,pady=4)
+        self.summary_panel=SummaryPanel(self); self.summary_panel.grid(row=2,column=2,rowspan=2,sticky="nsew",padx=4,pady=4)
+        self.deliveries_panel=DeliveriesPanel(self); self.deliveries_panel.grid(row=3,column=0,columnspan=2,sticky="nsew",padx=4,pady=4)
+        self._build_hectare_config_info(); self.hectare_info.grid(row=4,column=0,columnspan=3,sticky="ew",pady=3)
+        self._build_buttons(); self.buttons.grid(row=5,column=0,columnspan=3,sticky="ew")
+        self.status=tk.StringVar(value="Listo"); ttk.Label(self,textvariable=self.status).grid(row=6,column=0,columnspan=3,sticky="ew")
+        self.rowconfigure(3,weight=1); self.columnconfigure(1,weight=1)
 
     def _build_varieties(self):
         self.var_frame=ttk.LabelFrame(self,text="Variedades y configuración")
@@ -107,11 +111,69 @@ class RemesasFrame(ttk.Frame):
     def _connect(self):
         try:
             self.conn=self.db.connect_fruta_with_eepp(); self.meta=ContextService(MetadataRepository(self.conn)); self.deliveries=DeliveriesService(DeliveriesRepository(self.conn)); self.remesas=RemesasService(RemesasRepository(self.conn))
-            self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.hectare_master_service=HectareFeeMasterService(self.master_repository, HectareFeeCropRepository(self.conn)); self.calculations=CalculationService(self.conn, self.config); self._refresh_action_states()
-        except Exception as exc: messagebox.showerror("Error",f"No se ha podido acceder a las bases SQLite: {exc}")
+            self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.hectare_master_service=HectareFeeMasterService(self.master_repository, HectareFeeCropRepository(self.conn)); self.calculations=CalculationService(self.conn, self.config); self._refresh_database_status(); self._refresh_action_states()
+        except Exception as exc:
+            logger.exception("No se ha podido abrir la copia local de las bases SQLite")
+            messagebox.showerror("Error", "No se han podido preparar las bases de datos.\n\nDetalle:\nNo existe una copia local válida para abrir en modo lectura.\n\nRevise la conexión de red o utilice la última copia local disponible.")
+
+    def synchronize_local_databases(self, manual: bool = False) -> bool:
+        if manual and self.calculation_valid and not messagebox.askyesno("Actualizar bases locales", "Existe un cálculo activo. La actualización limpiará los resultados actuales. ¿Continuar?"):
+            return False
+        try:
+            service=LocalDatabaseSyncService(self.config, progress_callback=self.status.set if hasattr(self, "status") else None)
+            self.sync_results=service.synchronize_all()
+            errors=[r for r in self.sync_results if not (r.synchronized or r.used_local_fallback)]
+            if errors:
+                detail="\n".join(f"{r.database_name}: {r.error_message}" for r in errors)
+                messagebox.showerror("Bases de datos", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{detail}\n\nRevise la conexión de red o utilice la última copia local disponible.")
+                return False
+            if manual:
+                self._reconnect_after_sync()
+                messagebox.showinfo("Bases locales", self._fallback_warning_text() or "Bases locales actualizadas desde red.")
+            self._refresh_database_status()
+            return True
+        except Exception as exc:
+            logger.exception("Error de sincronización manual")
+            messagebox.showerror("Bases de datos", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{exc}\n\nRevise la conexión de red o utilice la última copia local disponible.")
+            return False
+
+    def _reconnect_after_sync(self):
+        if self.conn is not None:
+            self.conn.close()
+        self._clear()
+        self._connect()
+
+    def open_data_folder(self):
+        Path(self.config.local_database_dir).mkdir(parents=True, exist_ok=True)
+        if hasattr(os, "startfile"):
+            os.startfile(self.config.local_database_dir)
+        else:
+            messagebox.showinfo("Carpeta de datos", self.config.local_database_dir)
+
+    def _fallback_warning_text(self) -> str:
+        if not any(r.used_local_fallback for r in self.sync_results):
+            return ""
+        lines=["No se ha podido acceder a las bases de red.", "", "La aplicación utilizará la última copia local válida:"]
+        for r in self.sync_results:
+            if r.used_local_fallback:
+                stamp=r.local_modified_at.strftime("%d/%m/%Y %H:%M") if r.local_modified_at else "fecha desconocida"
+                lines.append(f"{r.database_name}: {stamp}")
+        lines += ["", "Los datos pueden no estar actualizados."]
+        return "\n".join(lines)
+
+    def _refresh_database_status(self):
+        if not hasattr(self, "db_status_text"):
+            return
+        status=self.db.status()
+        parts=[]
+        for key in ("DBfruta", "DBEEPPL"):
+            parts.append(f"{key} local: {status.get(key, 'No accesible')}")
+        if self.sync_results:
+            parts.append(" | ".join(sorted({r.status for r in self.sync_results})))
+        self.db_status_text.set("   ".join(parts))
 
     def _context_changed(self):
-        self.current_remesa=None; self.remesa_panel.load({}); self._clear_selected_varieties(); self.deliveries_panel.clear(); self.summary_panel.clear(); self.current_calculation=None; self.calculation_valid=False; self.current_deliveries=[]
+        self.current_remesa=None; self.remesa_panel.load({}); self._clear_selected_varieties(invalidate=False); self.deliveries_panel.clear(); self.summary_panel.clear(); self.current_calculation=None; self.calculation_valid=False; self.current_deliveries=[]
         ctx=self.context_panel.context()
         try:
             if ctx.campana and not ctx.empresa: self.context_panel.empresa_cb["values"]=self.meta.empresas(ctx.campana)
@@ -129,8 +191,10 @@ class RemesasFrame(ttk.Frame):
         except ValueError:
             pass
         for v in self.meta.variedades(ctx.campana,ctx.empresa,ctx.cultivo,desde,hasta): self.available.insert("end",v)
-    def _clear_selected_varieties(self):
-        self.selected.delete(0,"end"); self._invalidate_calculation()
+    def _clear_selected_varieties(self, invalidate: bool = True):
+        self.selected.delete(0,"end")
+        if invalidate:
+            self._invalidate_calculation()
     def _add_var(self):
         for i in self.available.curselection():
             v=self.available.get(i)
@@ -213,18 +277,22 @@ class RemesasFrame(ttk.Frame):
             return False
 
     def _refresh_action_states(self) -> None:
-        has_context = self._context_ready()
+        has_valid_context = self._context_ready()
         has_varieties = bool(self.selected.get(0,"end"))
-        has_deliveries = bool(self.deliveries_panel.visible_rows())
+        has_deliveries = bool(self.current_deliveries) or bool(self.deliveries_panel.visible_rows())
+        has_valid_calculation = bool(self.current_calculation and self.current_calculation.result and self.calculation_valid and self.current_calculation.result.member_results)
+        can_search = has_valid_context
+        can_calculate = has_valid_context and has_varieties and has_deliveries
+        can_preview = has_deliveries
+        can_export_calculation = has_valid_calculation
         if hasattr(self, "action_buttons"):
-            self.action_buttons["Buscar entregas"].configure(state="normal" if has_context else "disabled")
-            self.action_buttons["Calcular liquidación"].configure(state="normal" if has_context and has_varieties and has_deliveries else "disabled")
-            self.action_buttons["Vista previa"].configure(state="normal" if ok else "disabled")
+            self.action_buttons["Buscar entregas"].configure(state="normal" if can_search else "disabled")
+            self.action_buttons["Calcular liquidación"].configure(state="normal" if can_calculate else "disabled")
+            self.action_buttons["Vista previa"].configure(state="normal" if can_preview else "disabled")
             self.action_buttons["Guardar liquidaciones"].configure(state="disabled")
             self.action_buttons["Anular liquidación"].configure(state="disabled")
-            ok=bool(self.current_calculation and self.current_calculation.result and self.calculation_valid and self.current_calculation.result.member_results)
-            if "Exportar resumen de liquidación" in self.action_buttons: self.action_buttons["Exportar resumen de liquidación"].configure(state="normal" if ok else "disabled")
-            if "Generar PDF de liquidación" in self.action_buttons: self.action_buttons["Generar PDF de liquidación"].configure(state="normal" if ok else "disabled")
+            if "Exportar resumen de liquidación" in self.action_buttons: self.action_buttons["Exportar resumen de liquidación"].configure(state="normal" if can_export_calculation else "disabled")
+            if "Generar PDF de liquidación" in self.action_buttons: self.action_buttons["Generar PDF de liquidación"].configure(state="normal" if can_export_calculation else "disabled")
 
     def _deliveries(self):
         return list(self.current_deliveries)
