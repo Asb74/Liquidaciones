@@ -151,16 +151,16 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
 
 
     parcels = wb.create_sheet("02_Parcelas")
-    parcel_headers = ["IdSocio", "Nombre socio", "Boleta DEEPP", "Boleta DParcela", "Campaña DEEPP", "Campaña DParcela", "Empresa DEEPP", "Empresa DParcela", "Cultivo DEEPP", "Cultivo DParcela", "CHA", "BAJA DEEPP", "BAJA DParcela", "IdPM", "Pol", "Par", "Recinto DEEPP", "Rec DParcela", "SupCul DEEPP", "SupCul DParcela", "SupApor", "Incluida", "Motivo exclusión", "Clave deduplicación"]
+    parcel_headers = ["IdSocio", "Nombre socio", "Boleta DEEPP", "Cultivo DEEPP", "Campaña DEEPP", "Empresa DEEPP", "CHA original", "CHA activo", "Baja DEEPP", "Boleta DParcela", "Campaña DParcela", "Empresa DParcela", "Cultivo DParcela", "IdPM", "Pol", "Par", "Rec", "SupCul DParcela", "SupRec", "SupApor", "Baja DParcela", "Incluida", "Motivo exclusión", "Clave deduplicación"]
     parcels.append(parcel_headers)
     for member in result.member_results:
         for row in getattr(member, "hectare_fee_parcels", ()):
             parcels.append([
-                row.get("IdSocio", member.member_id), member.member_name, row.get("Boleta DEEPP"), row.get("Boleta DParcela"),
-                row.get("Campaña DEEPP"), row.get("Campaña DParcela"), row.get("Empresa DEEPP"), row.get("Empresa DParcela"),
-                row.get("Cultivo DEEPP"), row.get("Cultivo DParcela"), row.get("CHA"), row.get("BAJA DEEPP"), row.get("BAJA DParcela"),
-                row.get("IdPM"), row.get("Pol"), row.get("Par"), row.get("Recinto DEEPP"), row.get("Rec DParcela"),
-                _number(row.get("SupCul DEEPP"), "SupCul DEEPP"), _number(row.get("SupCul DParcela"), "SupCul DParcela"), _number(row.get("SupApor"), "SupApor"),
+                row.get("IdSocio", member.member_id), member.member_name, row.get("Boleta DEEPP"), row.get("Cultivo DEEPP"),
+                row.get("Campaña DEEPP"), row.get("Empresa DEEPP"), row.get("CHA original"), row.get("CHA activo"), row.get("Baja DEEPP"),
+                row.get("Boleta DParcela"), row.get("Campaña DParcela"), row.get("Empresa DParcela"), row.get("Cultivo DParcela"),
+                row.get("IdPM"), row.get("Pol"), row.get("Par"), row.get("Rec"), _number(row.get("SupCul DParcela"), "SupCul DParcela"),
+                _number(row.get("SupRec"), "SupRec"), _number(row.get("SupApor"), "SupApor"), row.get("Baja DParcela"),
                 row.get("Incluida"), row.get("Motivo exclusión"), row.get("Clave deduplicación"),
             ])
 
