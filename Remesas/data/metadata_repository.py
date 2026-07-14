@@ -49,10 +49,3 @@ class MetadataRepository:
             params.extend(table_params)
         sql = "SELECT DISTINCT Variedad FROM (" + " UNION ".join(selects) + ") WHERE Variedad IS NOT NULL AND TRIM(Variedad) <> '' ORDER BY Variedad"
         return [str(r[0]) for r in self.conn.execute(sql, params)]
-
-
-    def surface_crops_for_hectare_master(self) -> list[str]:
-        return [str(r[0]).strip().upper() for r in self.conn.execute("SELECT DISTINCT CULTIVO FROM eepp.DEEPP WHERE CULTIVO IS NOT NULL AND TRIM(CULTIVO) <> '' ORDER BY UPPER(TRIM(CULTIVO))")]
-
-    def delivery_crops_for_hectare_master(self) -> list[str]:
-        return [str(r[0]).strip().upper() for r in self.conn.execute("SELECT DISTINCT CULTIVO FROM PesosFres WHERE CULTIVO IS NOT NULL AND TRIM(CULTIVO) <> '' ORDER BY UPPER(TRIM(CULTIVO))")]

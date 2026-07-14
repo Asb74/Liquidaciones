@@ -9,19 +9,22 @@ from tkinter import messagebox, ttk
 from data.db_connection import ReadOnlyDatabase, load_config, setup_logging
 from data.deliveries_repository import DeliveriesRepository
 from data.metadata_repository import MetadataRepository
+from data.hectare_fee_master_repository import HectareFeeCropRepository
 from data.remesas_repository import RemesasRepository
 from domain.models import DeliveryFilter, Period, Remesa
-from domain.hectare_fee_master import HectareFeeMaster, HectareFeeMasterRepository, parse_decimal, normalize_crops
+from domain.hectare_fee_master import HectareFeeMasterRepository
 from domain.validators import parse_user_date, validate_context, validate_period
 from domain.utils import format_currency_es, format_decimal_es, format_display_date, format_integer_es, format_price_es, parse_yes_no, safe_path_part
 from services.context_service import ContextService
 from services.deliveries_service import DeliveriesService
 from services.remesas_service import RemesasService
 from services.calculation_service import CalculationService
+from services.hectare_fee_master_service import HectareFeeMasterService
 from ui.context_panel import ContextPanel
 from ui.deliveries_panel import COLUMNS, DeliveriesPanel
 from ui.remesa_panel import RemesaPanel
 from ui.summary_panel import SummaryPanel
+from ui.hectare_fee_master_dialog import HectareFeeMasterDialog
 from exporters.excel_exporter import export_liquidation_summary
 from exporters.file_lock import FileLockedError
 
@@ -32,7 +35,7 @@ class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
         super().__init__(master, padding=8)
         self.config=load_config(config_path); setup_logging(self.config)
-        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.master_repository=HectareFeeMasterRepository(); self.active_master=self.master_repository.load()
+        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
         self._build(); self._connect()
 
     def _build(self):
@@ -62,7 +65,7 @@ class RemesasFrame(ttk.Frame):
 
     def _build_buttons(self):
         self.buttons=ttk.Frame(self)
-        actions=[("Configurar cuota Ha",self._open_hectare_master),("Nueva remesa",self._clear),("Cargar remesa existente",self._load_remesa),("Buscar entregas",self._search),("Exportar entregas a CSV",self._export_csv),("Exportar entregas a Excel",self._export_excel),("Vista previa",self._preview),("Cerrar",self.winfo_toplevel().destroy)]
+        actions=[("Nueva remesa",self._clear),("Cargar remesa existente",self._load_remesa),("Buscar entregas",self._search),("Exportar entregas a CSV",self._export_csv),("Exportar entregas a Excel",self._export_excel),("Vista previa",self._preview),("Cerrar",self.winfo_toplevel().destroy)]
         self.action_buttons={}
         for i,(text,cmd) in enumerate(actions):
             b=ttk.Button(self.buttons,text=text,command=cmd); b.grid(row=0,column=i,padx=2); self.action_buttons[text]=b
@@ -74,55 +77,37 @@ class RemesasFrame(ttk.Frame):
         self.hectare_info=ttk.LabelFrame(self,text="Configuración cuota Ha")
         self.hectare_config_text=tk.StringVar(value="")
         ttk.Label(self.hectare_info,textvariable=self.hectare_config_text,wraplength=1100).pack(side="left",fill="x",expand=True,padx=6)
-        ttk.Button(self.hectare_info,text="Configurar cuota Ha",command=self._open_hectare_master).pack(side="right",padx=6)
         self._refresh_hectare_config_label()
 
     def _refresh_hectare_config_label(self):
         m=self.active_master
         self.hectare_config_text.set(f"{str(m.price_per_hectare).replace('.', ',')} €/ha | Superficie: {', '.join(m.surface_crops)} | Kilos: {', '.join(m.delivery_crops)}")
 
-    def _open_hectare_master(self):
+    def open_hectare_fee_master(self):
+        self._open_hectare_fee_master()
+
+    def show_about(self):
+        self._show_about()
+
+    def _show_about(self):
+        messagebox.showinfo("Acerca de", "Liquidaciones - Remesas\nModo prueba SQLite\nVersión actual del módulo")
+
+    def _open_hectare_fee_master(self):
         try:
-            surface_all = self.meta.surface_crops_for_hectare_master() if hasattr(self, "meta") else list(self.active_master.surface_crops)
-            delivery_all = self.meta.delivery_crops_for_hectare_master() if hasattr(self, "meta") else list(self.active_master.delivery_crops)
-        except Exception as exc:
-            messagebox.showerror("Maestro cuota Ha", str(exc)); return
-        win=tk.Toplevel(self); win.title("Maestro de cuota por hectárea"); win.transient(self.winfo_toplevel()); win.grab_set(); win.geometry("760x620")
-        price_var=tk.StringVar(value=str(self.active_master.price_per_hectare).replace('.', ','))
-        ttk.Label(win,text="Precio €/ha").pack(anchor="w",padx=8,pady=(8,0)); ttk.Entry(win,textvariable=price_var).pack(fill="x",padx=8,pady=4)
-        lists=ttk.Frame(win); lists.pack(fill="both",expand=True,padx=8,pady=6)
-        def build_list(parent, title, values, selected):
-            frame=ttk.LabelFrame(parent,text=title); vars={}
-            canvas=tk.Canvas(frame); scroll=ttk.Scrollbar(frame,orient="vertical",command=canvas.yview); inner=ttk.Frame(canvas)
-            inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-            canvas.create_window((0,0),window=inner,anchor="nw"); canvas.configure(yscrollcommand=scroll.set)
-            canvas.pack(side="left",fill="both",expand=True); scroll.pack(side="right",fill="y")
-            for crop in normalize_crops([*values, *selected]):
-                var=tk.BooleanVar(value=crop in selected); vars[crop]=var; ttk.Checkbutton(inner,text=crop,variable=var).pack(anchor="w")
-            return frame, vars
-        sf,svars=build_list(lists,"Cultivos cuya superficie genera cuota",surface_all,self.active_master.surface_crops); df,dvars=build_list(lists,"Cultivos cuyos kilos entran en el prorrateo",delivery_all,self.active_master.delivery_crops)
-        sf.grid(row=0,column=0,sticky="nsew",padx=4); df.grid(row=0,column=1,sticky="nsew",padx=4); lists.columnconfigure(0,weight=1); lists.columnconfigure(1,weight=1); lists.rowconfigure(0,weight=1)
-        def selected(vars): return tuple(c for c,v in vars.items() if v.get())
-        def select_all(value):
-            for d in (svars,dvars):
-                for v in d.values(): v.set(value)
-        def restore():
-            m=self.master_repository.defaults(); price_var.set(str(m.price_per_hectare).replace('.', ','))
-            for c,v in svars.items(): v.set(c in m.surface_crops)
-            for c,v in dvars.items(): v.set(c in m.delivery_crops)
-        def save():
-            try:
-                master=HectareFeeMaster(parse_decimal(price_var.get()), selected(svars), selected(dvars))
-                if not master.surface_crops or not master.delivery_crops: raise ValueError("Seleccione cultivos de superficie y entrega")
-                self.master_repository.save(master); self.active_master=self.master_repository.load(); self._refresh_hectare_config_label(); self._invalidate_master_changed(); win.destroy()
-            except Exception as exc: messagebox.showwarning("Datos inválidos", str(exc))
-        bf=ttk.Frame(win); bf.pack(fill="x",padx=8,pady=8)
-        ttk.Button(bf,text="Guardar",command=save).pack(side="right",padx=3); ttk.Button(bf,text="Cancelar",command=win.destroy).pack(side="right",padx=3); ttk.Button(bf,text="Restaurar valores iniciales",command=restore).pack(side="left",padx=3); ttk.Button(bf,text="Seleccionar todos",command=lambda: select_all(True)).pack(side="left",padx=3); ttk.Button(bf,text="Quitar todos",command=lambda: select_all(False)).pack(side="left",padx=3)
+            HectareFeeMasterDialog(self.winfo_toplevel(), self.hectare_master_service, on_saved=self._hectare_master_saved)
+        except Exception:
+            logger.exception("No se ha podido abrir el maestro de cuota por hectárea")
+            messagebox.showerror("Maestro cuota Ha", "No se ha podido abrir el maestro de cuota por hectárea.")
+
+    def _hectare_master_saved(self):
+        self.active_master = self.hectare_master_service.load_master()
+        self._refresh_hectare_config_label()
+        self._invalidate_master_changed()
 
     def _connect(self):
         try:
             self.conn=self.db.connect_fruta_with_eepp(); self.meta=ContextService(MetadataRepository(self.conn)); self.deliveries=DeliveriesService(DeliveriesRepository(self.conn)); self.remesas=RemesasService(RemesasRepository(self.conn))
-            self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.calculations=CalculationService(self.conn, self.config); self._refresh_action_states()
+            self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.hectare_master_service=HectareFeeMasterService(self.master_repository, HectareFeeCropRepository(self.conn)); self.calculations=CalculationService(self.conn, self.config); self._refresh_action_states()
         except Exception as exc: messagebox.showerror("Error",f"No se ha podido acceder a las bases SQLite: {exc}")
 
     def _context_changed(self):
@@ -234,7 +219,7 @@ class RemesasFrame(ttk.Frame):
         if hasattr(self, "action_buttons"):
             self.action_buttons["Buscar entregas"].configure(state="normal" if has_context else "disabled")
             self.action_buttons["Calcular liquidación"].configure(state="normal" if has_context and has_varieties and has_deliveries else "disabled")
-            self.action_buttons["Vista previa"].configure(state="normal" if has_deliveries else "disabled")
+            self.action_buttons["Vista previa"].configure(state="normal" if ok else "disabled")
             self.action_buttons["Guardar liquidaciones"].configure(state="disabled")
             self.action_buttons["Anular liquidación"].configure(state="disabled")
             ok=bool(self.current_calculation and self.current_calculation.result and self.calculation_valid and self.current_calculation.result.member_results)
@@ -268,8 +253,10 @@ class RemesasFrame(ttk.Frame):
 
     def _invalidate_master_changed(self):
         if getattr(self, "current_calculation", None):
-            self.calculation_valid=False; self.status.set("La configuración de cuota Ha ha cambiado. Vuelva a calcular la liquidación.")
+            self.current_calculation = None
             logger.info("Invalidación de cálculo por cambio de maestro cuota Ha")
+        self.calculation_valid = False
+        self.status.set("La configuración de cuota Ha ha cambiado. Vuelva a calcular la liquidación.")
         self._refresh_action_states()
 
     def _invalidate_calculation(self):
