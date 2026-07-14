@@ -34,6 +34,21 @@ class FiscalRegime:
 
 
 @dataclass(frozen=True)
+class FiscalCalculation:
+    vat_rate: Decimal
+    withholding_rate: Decimal
+    vat_factor: Decimal
+    withholding_factor: Decimal
+    raw_amount_after_vat: Decimal
+    amount_after_vat: Decimal
+    vat_amount: Decimal
+    raw_total_amount: Decimal
+    withholding_amount: Decimal
+    total_amount: Decimal
+    final_average_price: Decimal | None
+
+
+@dataclass(frozen=True)
 class LiquidationHeader:
     remesa_id: Any
     remesa_name: str
@@ -168,9 +183,14 @@ class MemberLiquidation:
     taxable_base: Decimal | None = None
     fiscal_regime_name: str = ""
     vat_rate: Decimal | None = None
+    vat_factor: Decimal | None = None
     vat_amount: Decimal | None = None
+    amount_after_vat: Decimal | None = None
+    raw_amount_after_vat: Decimal | None = None
     withholding_rate: Decimal | None = None
+    withholding_factor: Decimal | None = None
     withholding_amount: Decimal | None = None
+    raw_total_amount: Decimal | None = None
     total_amount: Decimal | None = None
     commercial_average_price: Decimal | None = None
     final_average_price: Decimal | None = None

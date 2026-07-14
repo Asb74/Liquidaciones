@@ -92,7 +92,7 @@ class ExcelSummaryExporterTests(unittest.TestCase):
         self.assertEqual(ws["B3"].value, "TOTAL")
         self.assertEqual(ws["D3"].value, "=SUM(D2:D2)")
         self.assertEqual(ws["F3"].value, None)
-        self.assertEqual(ws["M3"].value, None)
+        self.assertEqual(ws["M3"].value, "=IFERROR(P3/D3,0)")
         self.assertEqual(ws["S3"].value, None)
         self.assertEqual(ws["D2"].number_format, "#,##0;-#,##0;-")
         self.assertEqual(ws["G2"].value, 0)

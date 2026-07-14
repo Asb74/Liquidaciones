@@ -11,7 +11,7 @@ from openpyxl.styles import Alignment, Border, Font, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
 from domain.calculation_models import CalculationStatus, LiquidationResult
-from domain.liquidacion_calculator import calculate_taxable_base
+from domain.liquidacion_calculator import calculate_fiscal_result, calculate_taxable_base
 from domain.utils import round_price
 from domain.audit import audit_latest_excel_row, current_audit
 from exporters.file_lock import FileLockedError, ensure_target_is_writable
@@ -133,6 +133,42 @@ def _append_economic_audit_sheet(wb: Workbook, result: LiquidationResult, summar
                 cell.fill = red_fill
 
 
+
+def _append_fiscal_audit_sheet(wb: Workbook, result: LiquidationResult, summary_values: dict[int, tuple[Decimal | None, Decimal | None]], red_fill: PatternFill) -> None:
+    ws = wb.create_sheet("Auditoría fiscal")
+    headers = ["Nº Socio", "Socio", "Variedad", "Base imponible", "IVA %", "Factor IVA", "Importe IVA", "Importe después IVA", "Retención %", "Factor retención", "Importe retención", "Importe total esperado", "Importe total modelo", "Importe total Excel", "Neto efectivo", "P.Medio esperado", "P.Medio modelo", "P.Medio Excel", "Diferencia total", "Diferencia P.Medio", "Alineado", "Advertencias"]
+    ws.append(headers)
+    money_tol = Decimal("0.01")
+    price_tol = Decimal("0.00001")
+    for member in result.member_results:
+        excel_price, excel_total = summary_values.get(member.member_id, (None, None))
+        if None in (member.taxable_base, member.vat_rate, member.withholding_rate):
+            expected = None
+            diff_total = None
+            diff_price = None
+            aligned = False
+            warnings = "Cálculo fiscal pendiente."
+        else:
+            expected = calculate_fiscal_result(member.taxable_base, member.net_kg, member.vat_rate, member.withholding_rate)
+            diff_total = None if member.total_amount is None else member.total_amount - expected.total_amount
+            diff_price = None if member.final_average_price is None or expected.final_average_price is None else member.final_average_price - expected.final_average_price
+            aligned = (
+                member.total_amount is not None and excel_total is not None and
+                abs(expected.total_amount - member.total_amount) <= money_tol and
+                abs(expected.total_amount - excel_total) <= money_tol and
+                member.final_average_price is not None and excel_price is not None and expected.final_average_price is not None and
+                abs(expected.final_average_price - member.final_average_price) <= price_tol and
+                abs(expected.final_average_price - excel_price) <= price_tol
+            )
+            warnings = "" if aligned else "Fiscalidad no alineada."
+        ws.append([
+            member.member_id, member.member_name, member.variety, _number(member.taxable_base, "Base imponible"), _number(member.vat_rate, "IVA %"), _number(member.vat_factor, "Factor IVA"), _number(member.vat_amount, "Importe IVA"), _number(member.amount_after_vat, "Importe después IVA"), _number(member.withholding_rate, "Retención %"), _number(member.withholding_factor, "Factor retención"), _number(member.withholding_amount, "Importe retención"),
+            _number(getattr(expected, "total_amount", None), "Importe total esperado"), _number(member.total_amount, "Importe total modelo"), _number(excel_total, "Importe total Excel"), _number(member.net_kg, "Neto efectivo"), _number(getattr(expected, "final_average_price", None), "P.Medio esperado"), _number(member.final_average_price, "P.Medio modelo"), _number(excel_price, "P.Medio Excel"), _number(diff_total, "Diferencia total"), _number(diff_price, "Diferencia P.Medio"), "SÍ" if aligned else "NO", warnings,
+        ])
+        if not aligned:
+            for cell in ws[ws.max_row]:
+                cell.fill = red_fill
+
 def _hectare_fee_excel_value(member):
     status = getattr(member, "hectare_fee_status", None)
     if status == CalculationStatus.ERROR:
@@ -156,6 +192,7 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
     ws.append(SUMMARY_HEADERS)
 
     summary_base_by_member: dict[int, Decimal | None] = {}
+    summary_fiscal_by_member: dict[int, tuple[Decimal | None, Decimal | None]] = {}
     for row_number, member in enumerate(result.member_results, start=2):
         hectare_excel_value = _hectare_fee_excel_value(member)
         audit = current_audit()
@@ -165,6 +202,9 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
             audit_latest_excel_row(member, hectare_excel_value)
         exported_taxable_base = _number(member.taxable_base, "Base Imponible")
         summary_base_by_member[member.member_id] = exported_taxable_base
+        exported_final_average_price = _number(member.final_average_price, "P.Medio")
+        exported_total_amount = _number(member.total_amount, "Importe Total.")
+        summary_fiscal_by_member[member.member_id] = (exported_final_average_price, exported_total_amount)
         ws.append([
             member.member_id,
             member.member_name,
@@ -178,10 +218,10 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
             _number(member.transport_amount, "B. Trans."),
             _number(member.globalgap_amount, "B. Glob."),
             exported_taxable_base,
-            _number(member.final_average_price, "P.Medio"),
+            exported_final_average_price,
             _number(member.vat_rate, "I.V.A"),
             _number(member.withholding_rate, "Ret."),
-            _number(member.total_amount, "Importe Total."),
+            exported_total_amount,
             result.header.remesa_name,
             result.header.cultivo,
             f'=IFERROR(166.386*G{row_number}/D{row_number},0)',
@@ -214,6 +254,7 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
     for column in (4, 5, 7, 8, 9, 10, 11, 12, 16):
         letter = get_column_letter(column)
         ws.cell(total_row, column, f"=SUM({letter}2:{letter}{total_row - 1})")
+    ws.cell(total_row, 13, f"=IFERROR(P{total_row}/D{total_row},0)")
 
     _style_summary(ws, total_row)
     diagnostics = wb.create_sheet("04_CuotaHa")
@@ -258,6 +299,7 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
                 cell.fill = red_fill
 
     _append_economic_audit_sheet(wb, result, summary_base_by_member, red_fill)
+    _append_fiscal_audit_sheet(wb, result, summary_fiscal_by_member, red_fill)
 
     audit_ws = wb.create_sheet("Auditoría cuota Ha")
     audit_headers = ["Nº Socio", "Socio", "Variedad", "Campaña", "Empresa", "Cultivo remesa", "Precio €/ha", "Cultivos superficie activos", "Cultivos entrega activos", "Hectáreas aplicables", "Cuota teórica total", "Kg efectivos campaña", "Índice €/kg", "Kg efectivos remesa", "Cuota parcial calculada", "Cuota almacenada en modelo", "Cuota exportada a Resumen", "Estado", "Advertencias", "Alineado"]
