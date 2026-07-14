@@ -64,8 +64,10 @@ class FiscalRegimeCalculationTests(unittest.TestCase):
         self.assertEqual(member.vat_rate, Decimal("12"))
         self.assertEqual(member.withholding_rate, Decimal("2"))
         self.assertEqual(member.vat_amount, Decimal("4281.05"))
-        self.assertEqual(member.withholding_amount, Decimal("713.51"))
-        self.assertEqual(member.total_amount, Decimal("39242.95"))
+        self.assertEqual(member.amount_after_vat, Decimal("39956.46"))
+        self.assertEqual(member.withholding_amount, Decimal("799.13"))
+        self.assertEqual(member.total_amount, Decimal("39157.33"))
+        self.assertEqual(member.final_average_price, Decimal("391.57330"))
 
 
 if __name__ == "__main__":

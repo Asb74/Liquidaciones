@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Sequence
 import logging
 
-from domain.calculation_models import CalculationStatus, GradeBreakdown, GlobalGapAuditData, HectareFeeAuditData, LiquidationCalculationResult, LiquidationHeader, LiquidationLine, LiquidationResult, LiquidationTotals, MemberLiquidation
+from domain.calculation_models import CalculationStatus, FiscalCalculation, GradeBreakdown, GlobalGapAuditData, HectareFeeAuditData, LiquidationCalculationResult, LiquidationHeader, LiquidationLine, LiquidationResult, LiquidationTotals, MemberLiquidation
 from domain.financial_rules import calculate_quality_adjustment
 from domain.hectare_fee import calculate_line_hectare_fee
 from domain.models import Delivery, Remesa
@@ -61,12 +61,38 @@ def amount_for_taxable_base(amount: Decimal | None, status: CalculationStatus) -
     return None
 
 
+def calculate_fiscal_result(
+    taxable_base: Decimal,
+    effective_net_kg: Decimal,
+    vat_rate: Decimal,
+    withholding_rate: Decimal,
+) -> FiscalCalculation:
+    """Calculate fiscal totals in the same order as Perceco.
+
+    IVA is applied first. Retention is applied afterwards over the amount after IVA,
+    not over the initial taxable base. The total is rounded once after the
+    multiplicative sequence, and the final average price uses that final total.
+    """
+    one = Decimal("1")
+    hundred = Decimal("100")
+    vat_factor = one + vat_rate / hundred
+    withholding_factor = one - withholding_rate / hundred
+    raw_amount_after_vat = taxable_base * vat_factor
+    raw_total_amount = raw_amount_after_vat * withholding_factor
+    amount_after_vat = round_money(raw_amount_after_vat)
+    total_amount = round_money(raw_total_amount)
+    vat_amount = round_money(raw_amount_after_vat - taxable_base)
+    withholding_amount = round_money(raw_amount_after_vat - raw_total_amount)
+    final_average_price = round_price(total_amount / effective_net_kg) if effective_net_kg > 0 else None
+    return FiscalCalculation(vat_rate, withholding_rate, vat_factor, withholding_factor, raw_amount_after_vat, amount_after_vat, vat_amount, raw_total_amount, withholding_amount, total_amount, final_average_price)
+
+
 def calculate_vat(taxable_base: Decimal, rate: Decimal) -> Decimal:
-    return round_money(taxable_base * rate / Decimal("100"))
+    return calculate_fiscal_result(taxable_base, Decimal("0"), rate, Decimal("0")).vat_amount
 
 
-def calculate_withholding(taxable_base: Decimal, rate: Decimal) -> Decimal:
-    return round_money(taxable_base * rate / Decimal("100"))
+def calculate_withholding(amount_after_vat: Decimal, rate: Decimal) -> Decimal:
+    return round_money(amount_after_vat * rate / Decimal("100"))
 
 
 def calculate_total(taxable_base: Decimal, vat_amount: Decimal, withholding_amount: Decimal) -> Decimal:
@@ -152,18 +178,16 @@ class LiquidacionCalculator:
                 final_members.append(self._replace(m, taxable_base=None, final_average_price=None, statuses={**m.statuses, "taxable_base": pending_or_error}))
                 continue
             tb=calculate_taxable_base(m.gross_amount, collection_amount, hectare_fee_amount, quality_amount, transport_amount, globalgap_amount)
-            final_avg=round_price(tb/m.net_kg) if m.net_kg else None
             self.logger.info("[BaseImponible] socio=%s gross_amount=%s collection_amount=%s hectare_fee_amount=%s quality_amount=%s transport_amount=%s globalgap_amount=%s expected_taxable_base=%s stored_taxable_base=%s aligned=%s", m.member_id, m.gross_amount, collection_amount, hectare_fee_amount, quality_amount, transport_amount, globalgap_amount, tb, tb, True)
             if not self.fiscal_regime_repository:
-                final_members.append(self._replace(m, taxable_base=tb, final_average_price=final_avg, statuses={**m.statuses, "taxable_base": CalculationStatus.CALCULATED, "vat": CalculationStatus.PENDING, "withholding": CalculationStatus.PENDING, "total": CalculationStatus.PENDING}))
+                final_members.append(self._replace(m, taxable_base=tb, final_average_price=None, statuses={**m.statuses, "taxable_base": CalculationStatus.CALCULATED, "vat": CalculationStatus.PENDING, "withholding": CalculationStatus.PENDING, "total": CalculationStatus.PENDING}))
                 continue
             lookup = self.fiscal_regime_repository.get_for_member(m.member_id)
-            vat_amount = calculate_vat(tb, lookup.regime.vat_rate)
-            withholding_amount = calculate_withholding(tb, lookup.regime.withholding_rate)
-            total_amount = calculate_total(tb, vat_amount, withholding_amount)
+            fiscal = calculate_fiscal_result(tb, m.net_kg, lookup.regime.vat_rate, lookup.regime.withholding_rate)
             warnings_with_fiscal = (*m.warnings, *lookup.warnings)
-            self.logger.info("[RégimenFiscal] Socio=%s Regimen=%s IVA=%s Ret=%s Base=%s IVAImporte=%s RetImporte=%s Total=%s", m.member_id, lookup.regime.name, lookup.regime.vat_rate, lookup.regime.withholding_rate, tb, vat_amount, withholding_amount, total_amount)
-            final_members.append(self._replace(m, taxable_base=tb, final_average_price=final_avg, fiscal_regime_name=lookup.regime.name, vat_rate=lookup.regime.vat_rate, withholding_rate=lookup.regime.withholding_rate, vat_amount=vat_amount, withholding_amount=withholding_amount, total_amount=total_amount, warnings=warnings_with_fiscal, statuses={**m.statuses, "taxable_base": CalculationStatus.CALCULATED, "vat": CalculationStatus.CALCULATED, "withholding": CalculationStatus.CALCULATED, "total": CalculationStatus.CALCULATED}))
+            self.logger.info("[Fiscal] socio=%s taxable_base=%s vat_rate=%s vat_factor=%s raw_amount_after_vat=%s amount_after_vat=%s withholding_rate=%s withholding_factor=%s raw_total_amount=%s total_amount=%s effective_net_kg=%s final_average_price=%s preview_total=%s model_total=%s excel_total=%s aligned=%s", m.member_id, tb, fiscal.vat_rate, fiscal.vat_factor, fiscal.raw_amount_after_vat, fiscal.amount_after_vat, fiscal.withholding_rate, fiscal.withholding_factor, fiscal.raw_total_amount, fiscal.total_amount, m.net_kg, fiscal.final_average_price, fiscal.total_amount, fiscal.total_amount, fiscal.total_amount, True)
+            self.logger.info("[RégimenFiscal] Socio=%s Regimen=%s IVA=%s Ret=%s Base=%s IVAImporte=%s ImporteTrasIVA=%s RetImporte=%s Total=%s PMedioFinal=%s", m.member_id, lookup.regime.name, fiscal.vat_rate, fiscal.withholding_rate, tb, fiscal.vat_amount, fiscal.amount_after_vat, fiscal.withholding_amount, fiscal.total_amount, fiscal.final_average_price)
+            final_members.append(self._replace(m, taxable_base=tb, final_average_price=fiscal.final_average_price, fiscal_regime_name=lookup.regime.name, vat_rate=fiscal.vat_rate, vat_factor=fiscal.vat_factor, vat_amount=fiscal.vat_amount, amount_after_vat=fiscal.amount_after_vat, raw_amount_after_vat=fiscal.raw_amount_after_vat, withholding_rate=fiscal.withholding_rate, withholding_factor=fiscal.withholding_factor, withholding_amount=fiscal.withholding_amount, raw_total_amount=fiscal.raw_total_amount, total_amount=fiscal.total_amount, warnings=warnings_with_fiscal, statuses={**m.statuses, "taxable_base": CalculationStatus.CALCULATED, "vat": CalculationStatus.CALCULATED, "withholding": CalculationStatus.CALCULATED, "total": CalculationStatus.CALCULATED}))
         members=final_members
         def sum_opt(attr: str) -> Decimal | None:
             vals=[getattr(m, attr) for m in members]
