@@ -14,9 +14,14 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     base = Path(__file__).resolve().parents[1]
     parser = configparser.ConfigParser()
     parser.read(config_path or base / "config.ini", encoding="utf-8")
+    local_directory = Path(parser.get("database_local", "directory", fallback=r"C:\Liquidaciones\datos"))
+    local_db_fruta = local_directory / parser.get("database_local", "db_fruta", fallback="DBfruta.sqlite")
+    local_db_eepp = local_directory / parser.get("database_local", "db_eepp", fallback="DBEEPPL.sqlite")
+    source_db_fruta = parser.get("database_source", "db_fruta", fallback=parser.get("database", "db_fruta", fallback=r"\\personal\C\BasesSQLite\DBfruta.sqlite"))
+    source_db_eepp = parser.get("database_source", "db_eepp", fallback=parser.get("database", "db_eepp", fallback=r"\\personal\C\BasesSQLite\DBEEPPL.sqlite"))
     return AppConfig(
-        db_fruta=parser.get("database", "db_fruta"),
-        db_eepp=parser.get("database", "db_eepp"),
+        db_fruta=str(local_db_fruta),
+        db_eepp=str(local_db_eepp),
         app_name=parser.get("application", "name"),
         mode=parser.get("application", "mode"),
         window_width=parser.getint("application", "window_width"),
@@ -29,6 +34,15 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         hectare_fee_surface_crops=tuple(c.strip().upper() for c in parser.get("hectare_fee", "surface_crops", fallback="CITRICOS,MANDARINA").split(",") if c.strip()),
         hectare_fee_delivery_crops=tuple(c.strip().upper() for c in parser.get("hectare_fee", "delivery_crops", fallback="CITRICOS,MANDARINA,DIRECTO,DIRECTOCHF,INDUSTRIA").split(",") if c.strip()),
         hectare_fee_applicable_remittance_crops=tuple(c.strip().upper() for c in parser.get("hectare_fee", "applicable_remittance_crops", fallback="CITRICOS,MANDARINA,DIRECTO,DIRECTOCHF,INDUSTRIA").split(",") if c.strip()),
+        source_db_fruta=source_db_fruta,
+        source_db_eepp=source_db_eepp,
+        local_database_dir=str(local_directory),
+        local_temp_dir=str(local_directory / "temp"),
+        local_backup_dir=str(local_directory / "backup"),
+        sync_metadata_path=str(local_directory / "sync_metadata.json"),
+        sync_on_start=parser.getboolean("synchronization", "sync_on_start", fallback=True),
+        allow_local_fallback=parser.getboolean("synchronization", "allow_local_fallback", fallback=True),
+        keep_backup=parser.getboolean("synchronization", "keep_backup", fallback=True),
     )
 
 
@@ -47,14 +61,15 @@ class ReadOnlyDatabase:
 
     @staticmethod
     def readonly_uri(path: str) -> str:
-        return f"file:{path}?mode=ro"
+        return f"file:{Path(path).as_posix()}?mode=ro"
 
     def connect_fruta_with_eepp(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.readonly_uri(self.config.db_fruta), uri=True)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only = ON")
-        conn.execute("ATTACH DATABASE ? AS eepp", (self.config.db_eepp,))
-        self.logger.info("Conexión SQLite de lectura creada con ATTACH eepp")
+        conn.execute("ATTACH DATABASE ? AS eepp", (self.readonly_uri(self.config.db_eepp),))
+        conn.execute("PRAGMA query_only = ON")
+        self.logger.info("Conexión SQLite de lectura creada con ATTACH eepp en modo lectura: fruta=%s eepp=%s", self.config.db_fruta, self.config.db_eepp)
         return conn
 
     def connect_eepp(self) -> sqlite3.Connection:
