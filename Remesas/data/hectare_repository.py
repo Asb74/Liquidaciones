@@ -8,7 +8,24 @@ from typing import Any, Sequence
 
 from domain.audit import current_audit
 from domain.financial_rules import EFFECTIVE_NET_SQL
-from domain.utils import decimal_or_zero
+from domain.utils import decimal_or_zero, parse_yes_no
+
+SURFACE_CROPS = ("CITRICOS", "MANDARINA")
+
+
+def is_active_cha(value: object) -> bool:
+    """Normalize heterogeneous CHA flags from SQLite/Access."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        return Decimal(str(value)) in {Decimal("-1"), Decimal("1")}
+    return parse_yes_no(value)
+
+
+def is_active_baja(value: object) -> bool:
+    return value is None or str(value).strip() == ""
 
 
 class HectareRepository:
@@ -19,78 +36,72 @@ class HectareRepository:
         self.last_surface_filter_counts: dict[str, Any] = {}
 
     def calculate_applicable_hectares(self, member_id: int, campaign: int | str, company: int | str, applicable_crops: Sequence[str] | None = None) -> tuple[Decimal, tuple[str, ...]]:
-        """Return applicable hectares as SUM(DParcela.SupApor) for valid CHA parcels.
+        """Return SUM(DParcela.SupApor) after auditable staged filtering.
 
-        Confirmed rule:
-        - filter DEEPP by IdSocio, CAMPAÑA, EMPRESA, configured surface CULTIVO and CHA=-1;
-        - join DParcela by Boleta, CAMPAÑA, EMPRESA and CULTIVO;
-        - exclude DEEPP/DParcela rows with BAJA informed;
-        - use DParcela.SupApor, never SupCul, as the economic surface;
-        - deduplicate by Boleta/CAMPAÑA/EMPRESA/CULTIVO/IdPM/Pol/Par/Rec before summing.
+        Stages:
+        A. candidate DEEPP rows by socio/campaña/empresa and CITRICOS/MANDARINA;
+        B. DParcela lookup only by Boleta;
+        C. context filters in Python: campaña, empresa, productive crop, baja and SupApor.
         """
-        crops = tuple(dict.fromkeys((c or "").strip().upper() for c in (applicable_crops or ("CITRICOS", "MANDARINA")) if (c or "").strip()))
-        if not crops:
-            self.last_surface_audit_rows = ()
-            self.last_surface_filter_counts = {"Cultivos superficie": "(vacío)", "Parcelas únicas": 0, "Suma SupApor": Decimal("0")}
-            return Decimal("0"), ("Cuota Ha no calculable: no hay cultivos de superficie configurados.",)
-        placeholders = ",".join("?" for _ in crops)
-        sql = f"""
-            SELECT DISTINCT
-                dp.Boleta,
-                dp.CAMPAÑA,
-                dp.EMPRESA,
-                dp.CULTIVO,
-                dp.IdPM,
-                dp.Pol,
-                dp.Par,
-                dp.Rec,
-                COALESCE(dp.SupApor, 0) AS SupApor
-            FROM eepp.DEEPP AS d
-            INNER JOIN eepp.DParcela AS dp
-                ON TRIM(COALESCE(dp.Boleta, '')) = TRIM(COALESCE(d.Boleta, ''))
-               AND CAST(dp.CAMPAÑA AS TEXT) = CAST(d.CAMPAÑA AS TEXT)
-               AND CAST(dp.EMPRESA AS TEXT) = CAST(d.EMPRESA AS TEXT)
-               AND UPPER(TRIM(dp.CULTIVO)) = UPPER(TRIM(d.CULTIVO))
-            WHERE d.IdSocio = ?
-              AND CAST(d.CAMPAÑA AS TEXT) = CAST(? AS TEXT)
-              AND CAST(d.EMPRESA AS TEXT) = CAST(? AS TEXT)
-              AND UPPER(TRIM(d.CULTIVO)) IN ({placeholders})
-              AND COALESCE(d.CHA, 0) = -1
-              AND (d.BAJA IS NULL OR TRIM(CAST(d.BAJA AS TEXT)) = '')
-              AND (dp.BAJA IS NULL OR TRIM(CAST(dp.BAJA AS TEXT)) = '')
-              AND COALESCE(dp.SupApor, 0) > 0
-        """
-        params = [member_id, str(campaign), str(company), *crops]
+        crops = tuple(dict.fromkeys([*SURFACE_CROPS, *((c or "").strip().upper() for c in (applicable_crops or ()) if (c or "").strip())]))
         start = time.perf_counter()
-        rows = self.conn.execute(sql, params).fetchall()
+        deepp_rows = self._deepp_candidate_rows(member_id, campaign, company, crops)
+        cha_summary = self._cha_summary(member_id, campaign, company, crops)
+        active_deepp = [r for r in deepp_rows if is_active_cha(r[7]) and is_active_baja(r[9])]
+
+        audit_rows: list[dict[str, Any]] = []
+        included: dict[tuple[str, ...], Decimal] = {}
+        warnings: list[str] = []
+        dparcela_by_boleta: dict[str, list[sqlite3.Row | tuple[Any, ...]]] = {}
+        filter_counts: dict[str, Any] = self._base_counts(member_id, campaign, company, crops)
+        filter_counts["E. Valores reales de CHA"] = "; ".join(f"cultivo={cult} CHA={cha!r} tipo={type(cha).__name__} filas={cnt}" for cult, cha, cnt in cha_summary) or "(sin filas)"
+        filter_counts["F. Filas consideradas CHA activas"] = len(active_deepp)
+        filter_counts["G. Boletas activas"] = ", ".join(str(r[1]) for r in active_deepp) or "(ninguna)"
+
+        for d in deepp_rows:
+            if not is_active_cha(d[7]) or not is_active_baja(d[9]):
+                audit_rows.append(self._audit_excluded_deepp(member_id, d))
+
+        for d in active_deepp:
+            boleta = d[1]
+            dp_rows = self._dparcela_by_boleta(boleta)
+            dparcela_by_boleta[str(boleta)] = dp_rows
+            for idx, dp in enumerate(dp_rows):
+                row, included_flag, reason, key = self._audit_dp_row(member_id, d, dp, campaign, company, crops)
+                if included_flag:
+                    sup = decimal_or_zero(dp[10])
+                    if key in included:
+                        if included[key] != sup:
+                            msg = f"Conflicto SupApor socio={member_id} clave={key}: {included[key]} vs {sup}; se conserva la primera."
+                            warnings.append(msg)
+                            row["Motivo exclusión"] = msg
+                        else:
+                            row["Motivo exclusión"] = "Duplicada"
+                        row["Incluida"] = "No"
+                    else:
+                        included[key] = sup
+                audit_rows.append(row)
+            if not dp_rows:
+                audit_rows.append(self._audit_no_dp(member_id, d))
+
+        total = sum(included.values(), Decimal("0"))
+        filter_counts.update(self._dparcela_counts(dparcela_by_boleta, active_deepp, campaign, company, crops, len(included), total))
+        self.last_surface_audit_rows = tuple(audit_rows)
+        self.last_surface_filter_counts = filter_counts
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        parcel_rows = self._parcel_audit_rows(member_id, campaign, company, crops)
-        self.last_surface_audit_rows = tuple(parcel_rows)
-        seen: dict[tuple[str, ...], Decimal] = {}
-        warnings: list[str] = []
-        for r in rows:
-            key = tuple(str(v or "").strip().upper() for v in r[:8])
-            sup = decimal_or_zero(r[8])
-            if key in seen:
-                if seen[key] != sup:
-                    warnings.append(f"Superficie duplicada conflictiva socio={member_id} clave={key}: {seen[key]} vs {sup}; se conserva la primera.")
-                continue
-            seen[key] = sup
-        total = sum(seen.values(), Decimal("0"))
-        counts = self._surface_filter_counts(member_id, campaign, company, crops, len(rows), len(seen), total)
-        self.last_surface_filter_counts = counts
-        if len(rows) != len(seen):
-            warnings.append(f"Superficie deduplicada socio={member_id}: {len(rows)} filas -> {len(seen)} claves Boleta/CAMPAÑA/EMPRESA/CULTIVO/IdPM/Pol/Par/Rec.")
         audit = current_audit()
         if audit:
             audit.subsection("SUPERFICIE")
-            audit.audit_sql("superficie socio SupApor", sql, params, len(rows), elapsed_ms)
-            audit.audit_filters("superficie", counts)
+            audit.audit_sql("DEEPP candidatas superficie", self._deepp_sql(crops), [member_id, str(campaign), str(company), *crops], len(deepp_rows), elapsed_ms)
+            audit.audit_filters("superficie", filter_counts)
+            audit.line("Valores CHA reales:")
+            for cult, cha, cnt in cha_summary:
+                audit.line(f"cultivo={cult} CHA={cha!r} tipo={type(cha).__name__} filas={cnt}")
             audit.line("Parcelas auditadas:")
-            for item in parcel_rows:
+            for item in audit_rows:
                 audit.line(" | ".join(f"{k}={v}" for k, v in item.items()))
-        self.logger.debug("Filtros cuota Ha superficie: IdSocio=%s CAMPAÑA=%s EMPRESA=%s CULTIVOS=%s CHA=-1 BAJA vacía SupApor>0; filas=%s dedup=%s total=%s", member_id, campaign, company, crops, len(rows), len(seen), total)
+        self.logger.debug("Superficie socio=%s campaña=%s empresa=%s total=%s parcelas_unicas=%s", member_id, campaign, company, total, len(included))
         return total, tuple(warnings)
 
     def total_effective_kg(self, member_id: int, campaign: int | str, company: int | str, delivery_crops: Sequence[str]) -> Decimal:
@@ -111,48 +122,91 @@ class HectareRepository:
             audit.subsection("KILOS CAMPAÑA"); audit.audit_sql("kilos campaña socio", sql, params, 1, elapsed_ms); audit.line(f"Kilos totales: {total}")
         return total
 
-    def _active(self, expr: str) -> str:
-        return f"({expr} IS NULL OR TRIM(CAST({expr} AS TEXT)) = '')"
+    def _col(self, table: str, name: str, alias: str | None = None) -> str:
+        cols = {r[1].upper() for r in self.conn.execute(f"PRAGMA eepp.table_info('{table}')").fetchall()}
+        out = alias or name
+        return f"{name} AS {out}" if name.upper() in cols else f"NULL AS {out}"
 
-    def _surface_filter_counts(self, member_id: int, campaign: int | str, company: int | str, crops: Sequence[str], joined_rows: int, unique_count: int, total: Decimal) -> dict[str, Any]:
+    def _deepp_sql(self, crops: Sequence[str]) -> str:
+        ph = ",".join("?" for _ in crops)
+        return f"""
+            SELECT DISTINCT d.IdSocio, d.Boleta, d.CAMPAÑA, d.EMPRESA, d.CULTIVO,
+                {self._col('DEEPP','SubCultivo')}, {self._col('DEEPP','Variedad')}, d.CHA, d.SupCul, d.BAJA
+            FROM eepp.DEEPP AS d
+            WHERE d.IdSocio = ? AND CAST(d.CAMPAÑA AS TEXT) = CAST(? AS TEXT)
+              AND CAST(d.EMPRESA AS TEXT) = CAST(? AS TEXT)
+              AND UPPER(TRIM(d.CULTIVO)) IN ({ph})
+            ORDER BY UPPER(TRIM(d.CULTIVO)), d.Boleta
+        """
+
+    def _deepp_candidate_rows(self, member_id: int, campaign: int | str, company: int | str, crops: Sequence[str]) -> list[Any]:
+        return self.conn.execute(self._deepp_sql(crops), [member_id, str(campaign), str(company), *crops]).fetchall()
+
+    def _cha_summary(self, member_id: int, campaign: int | str, company: int | str, crops: Sequence[str]) -> list[Any]:
+        ph = ",".join("?" for _ in crops)
+        sql = f"SELECT d.CULTIVO, d.CHA, COUNT(*) FROM eepp.DEEPP AS d WHERE d.IdSocio=? AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(d.CULTIVO)) IN ({ph}) GROUP BY d.CULTIVO, d.CHA ORDER BY d.CULTIVO, d.CHA"
+        return self.conn.execute(sql, [member_id, str(campaign), str(company), *crops]).fetchall()
+
+    def _dparcela_by_boleta(self, boleta: Any) -> list[Any]:
+        sql = f"""
+            SELECT dp.Boleta, dp.CAMPAÑA, dp.EMPRESA, dp.CULTIVO, dp.IdPM, dp.Pol, dp.Par, dp.Rec,
+                   dp.SupCul, {self._col('DParcela','SupRec')}, dp.SupApor, {self._col('DParcela','ALTA')}, dp.BAJA, {self._col('DParcela','Año')}
+            FROM eepp.DParcela AS dp
+            WHERE TRIM(CAST(dp.Boleta AS TEXT)) = TRIM(CAST(? AS TEXT))
+            ORDER BY dp.CAMPAÑA, dp.EMPRESA, dp.CULTIVO, dp.IdPM, dp.Pol, dp.Par, dp.Rec
+        """
+        return self.conn.execute(sql, [boleta]).fetchall()
+
+    def _base_counts(self, member_id: int, campaign: int | str, company: int | str, crops: Sequence[str]) -> dict[str, Any]:
         ph = ",".join("?" for _ in crops)
         base = "FROM eepp.DEEPP AS d WHERE d.IdSocio=?"
-        c: dict[str, Any] = {"Cultivos superficie": ",".join(crops)}
-        c["A. DEEPP sin filtros adicionales"] = int(self.conn.execute(f"SELECT COUNT(*) {base}", [member_id]).fetchone()[0] or 0)
-        c["B. Después de campaña"] = int(self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT)", [member_id, str(campaign)]).fetchone()[0] or 0)
-        c["C. Después de empresa"] = int(self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT)", [member_id, str(campaign), str(company)]).fetchone()[0] or 0)
-        ctx_params = [member_id, str(campaign), str(company)]
-        c["D. Después de cultivos de superficie"] = int(self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(d.CULTIVO)) IN ({ph})", [*ctx_params, *crops]).fetchone()[0] or 0)
-        c["E. Después de CHA = -1"] = int(self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(d.CULTIVO)) IN ({ph}) AND COALESCE(d.CHA,0)=-1", [*ctx_params, *crops]).fetchone()[0] or 0)
-        join_boleta = f"FROM eepp.DEEPP AS d INNER JOIN eepp.DParcela AS dp ON TRIM(COALESCE(dp.Boleta,''))=TRIM(COALESCE(d.Boleta,'')) WHERE d.IdSocio=? AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(d.CULTIVO)) IN ({ph}) AND COALESCE(d.CHA,0)=-1"
-        c["F. Cruce DParcela sólo por Boleta"] = int(self.conn.execute(f"SELECT COUNT(*) {join_boleta}", [*ctx_params, *crops]).fetchone()[0] or 0)
-        join_full = join_boleta.replace(" WHERE ", " AND CAST(dp.CAMPAÑA AS TEXT)=CAST(d.CAMPAÑA AS TEXT) AND CAST(dp.EMPRESA AS TEXT)=CAST(d.EMPRESA AS TEXT) AND UPPER(TRIM(dp.CULTIVO))=UPPER(TRIM(d.CULTIVO)) WHERE ")
-        c["G. Cruce completo"] = int(self.conn.execute(f"SELECT COUNT(*) {join_full}", [*ctx_params, *crops]).fetchone()[0] or 0)
-        c["H. Después de bajas"] = int(self.conn.execute(f"SELECT COUNT(*) {join_full} AND {self._active('d.BAJA')} AND {self._active('dp.BAJA')}", [*ctx_params, *crops]).fetchone()[0] or 0)
-        c["I. Después de SupApor > 0"] = joined_rows
-        c["J. Después de deduplicación - parcelas únicas"] = unique_count
-        c["J. Después de deduplicación - suma SupApor"] = total
-        return c
+        return {
+            "Cultivos superficie": ",".join(crops),
+            "A. DEEPP sin filtros adicionales": self.conn.execute(f"SELECT COUNT(*) {base}", [member_id]).fetchone()[0],
+            "B. Después de campaña": self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT)", [member_id, str(campaign)]).fetchone()[0],
+            "C. Después de empresa": self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT)", [member_id, str(campaign), str(company)]).fetchone()[0],
+            "D. Después de cultivos CITRICOS/MANDARINA": self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(d.CULTIVO)) IN ({ph})", [member_id, str(campaign), str(company), *crops]).fetchone()[0],
+        }
 
-    def _parcel_audit_rows(self, member_id: int, campaign: int | str, company: int | str, crops: Sequence[str]) -> list[dict[str, Any]]:
-        ph = ",".join("?" for _ in crops)
-        sql = f"""
-            SELECT d.IdSocio, d.Boleta, dp.Boleta, d.CAMPAÑA, dp.CAMPAÑA, d.EMPRESA, dp.EMPRESA, d.CULTIVO, dp.CULTIVO, d.CHA, d.BAJA, dp.BAJA,
-                   dp.IdPM, dp.Pol, dp.Par, d.Recinto, dp.Rec, d.SupCul, dp.SupCul, dp.SupApor
-            FROM eepp.DEEPP AS d LEFT JOIN eepp.DParcela AS dp ON TRIM(COALESCE(dp.Boleta,''))=TRIM(COALESCE(d.Boleta,''))
-             AND CAST(dp.CAMPAÑA AS TEXT)=CAST(d.CAMPAÑA AS TEXT) AND CAST(dp.EMPRESA AS TEXT)=CAST(d.EMPRESA AS TEXT) AND UPPER(TRIM(dp.CULTIVO))=UPPER(TRIM(d.CULTIVO))
-            WHERE d.IdSocio=? AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(d.CULTIVO)) IN ({ph}) AND COALESCE(d.CHA,0)=-1
-        """
-        rows = []
-        seen = set()
-        for r in self.conn.execute(sql, [member_id, str(campaign), str(company), *crops]).fetchall():
-            key = "|".join(str(v or "").strip() for v in (r[2], r[4], r[6], r[8], r[12], r[13], r[14], r[16]))
-            reason = ""
-            if r[2] is None: reason = "Sin cruce DParcela completo"
-            elif not ((r[10] is None or str(r[10]).strip() == "") and (r[11] is None or str(r[11]).strip() == "")): reason = "BAJA informada"
-            elif decimal_or_zero(r[19]) <= 0: reason = "SupApor <= 0"
-            elif key in seen: reason = "Duplicada"
-            included = reason == ""
-            if included: seen.add(key)
-            rows.append({"IdSocio": r[0], "Boleta DEEPP": r[1], "Boleta DParcela": r[2], "Campaña DEEPP": r[3], "Campaña DParcela": r[4], "Empresa DEEPP": r[5], "Empresa DParcela": r[6], "Cultivo DEEPP": r[7], "Cultivo DParcela": r[8], "CHA": r[9], "BAJA DEEPP": r[10], "BAJA DParcela": r[11], "IdPM": r[12], "Pol": r[13], "Par": r[14], "Recinto DEEPP": r[15], "Rec DParcela": r[16], "SupCul DEEPP": r[17], "SupCul DParcela": r[18], "SupApor": r[19], "Incluida": "Sí" if included else "No", "Motivo exclusión": reason, "Clave deduplicación": key})
-        return rows
+    def _dparcela_counts(self, by_boleta: dict[str, list[Any]], active_deepp: list[Any], campaign: Any, company: Any, crops: Sequence[str], unique_count: int, total: Decimal) -> dict[str, Any]:
+        all_rows = [r for rows in by_boleta.values() for r in rows]
+        camp = [r for r in all_rows if str(r[1]).strip() == str(campaign).strip()]
+        emp = [r for r in camp if str(r[2]).strip() == str(company).strip()]
+        crop = [r for r in emp if str(r[3] or '').strip().upper() in crops]
+        baja = [r for r in crop if is_active_baja(r[12])]
+        sup = [r for r in baja if decimal_or_zero(r[10]) > 0]
+        return {
+            "H. Filas DParcela sólo por boleta": len(all_rows),
+            "I. Campañas disponibles": ", ".join(sorted({str(r[1]) for r in all_rows})) or "(ninguna)",
+            "J. Empresas disponibles": ", ".join(sorted({str(r[2]) for r in all_rows})) or "(ninguna)",
+            "K. Cultivos disponibles": ", ".join(sorted({str(r[3]) for r in all_rows})) or "(ninguno)",
+            "L. Filas tras campaña": len(camp),
+            "M. Filas tras empresa": len(emp),
+            "N. Filas tras cultivo": len(crop),
+            "O. Filas tras baja": len(baja),
+            "P. Filas tras SupApor > 0": len(sup),
+            "Q. Parcelas únicas": unique_count,
+            "R. Superficie final": total,
+        }
+
+    def _audit_dp_row(self, member_id: int, d: Any, dp: Any, campaign: Any, company: Any, crops: Sequence[str]) -> tuple[dict[str, Any], bool, str, tuple[str, ...]]:
+        key = tuple(str(v or "").strip().upper() for v in (dp[0], dp[1], dp[2], dp[3], dp[4], dp[5], dp[6], dp[7]))
+        reasons = []
+        if str(dp[1]).strip() != str(campaign).strip(): reasons.append("Campaña distinta")
+        if str(dp[2]).strip() != str(company).strip(): reasons.append("Empresa distinta")
+        if str(dp[3] or "").strip().upper() not in crops: reasons.append("Cultivo no productivo")
+        if not is_active_baja(dp[12]): reasons.append("BAJA DParcela informada")
+        if decimal_or_zero(dp[10]) <= 0: reasons.append("SupApor <= 0")
+        reason = "; ".join(reasons)
+        return ({"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "Boleta DParcela": dp[0], "Campaña DParcela": dp[1], "Empresa DParcela": dp[2], "Cultivo DParcela": dp[3], "IdPM": dp[4], "Pol": dp[5], "Par": dp[6], "Rec": dp[7], "SupCul DParcela": dp[8], "SupRec": dp[9], "SupApor": dp[10], "Baja DParcela": dp[12], "Incluida": "Sí" if not reason else "No", "Motivo exclusión": reason, "Clave deduplicación": "|".join(key)}, not reason, reason, key)
+
+    def _audit_no_dp(self, member_id: int, d: Any) -> dict[str, Any]:
+        return {"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "Incluida": "No", "Motivo exclusión": "Sin filas DParcela por Boleta", "Clave deduplicación": ""}
+
+    def _audit_excluded_deepp(self, member_id: int, d: Any) -> dict[str, Any]:
+        reasons = []
+        if not is_active_cha(d[7]):
+            reasons.append("CHA inactivo")
+        if not is_active_baja(d[9]):
+            reasons.append("BAJA DEEPP informada")
+        return {"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí" if is_active_cha(d[7]) else "No", "Baja DEEPP": d[9], "Incluida": "No", "Motivo exclusión": "; ".join(reasons), "Clave deduplicación": ""}
