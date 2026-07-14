@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from domain.calculation_models import CalculationStatus, LiquidationResult, MemberLiquidation
 from domain.models import Delivery, Remesa, AppConfig
+from domain.hectare_fee_master import HectareFeeMaster
 
 _current_audit: ContextVar["AuditLogger | None"] = ContextVar("current_liquidation_audit", default=None)
 _last_audit_path: Path | None = None
@@ -41,11 +42,12 @@ class AuditSession:
 
 
 class AuditLogger:
-    def __init__(self, config: AppConfig, remesa: Remesa | None, deliveries: list[Delivery]) -> None:
+    def __init__(self, config: AppConfig, remesa: Remesa | None, deliveries: list[Delivery], hectare_master: HectareFeeMaster | None = None) -> None:
         self.enabled = bool(getattr(config, "audit_enabled", False))
         self.config = config
         self.remesa = remesa
         self.deliveries = deliveries
+        self.hectare_master = hectare_master
         self.path: Path | None = None
         self._fh = None
         self._started = False
@@ -56,12 +58,12 @@ class AuditLogger:
         }
 
     @classmethod
-    def for_calculation(cls, config: AppConfig, remesa: Remesa | None, deliveries: list[Delivery]) -> "AuditSession":
+    def for_calculation(cls, config: AppConfig, remesa: Remesa | None, deliveries: list[Delivery], hectare_master: HectareFeeMaster | None = None) -> "AuditSession":
         global _last_audit_path
         if not getattr(config, "audit_enabled", False):
             _last_audit_path = None
             return AuditSession(None)
-        return AuditSession(cls(config, remesa, deliveries))
+        return AuditSession(cls(config, remesa, deliveries, hectare_master))
 
     def start(self) -> None:
         if self._started:
@@ -112,6 +114,15 @@ class AuditLogger:
         self.line("Opciones activas:")
         for label, key in (("Recolección", "AplRec"), ("Transporte", "AplTte"), ("Calidad", "AplCal"), ("GlobalGAP", "AplGlobal"), ("Cuota Ha", "AplCHa"), ("Precalibrado", "AplPrecalibrado")):
             self.line(f"- {label}: {values.get(key, '')}")
+        if self.hectare_master:
+            self.section("MAESTRO CUOTA HA", "-")
+            self.line(f"Ruta: {self.hectare_master.path}")
+            self.line(f"Versión: {self.hectare_master.version}")
+            self.line(f"Huella: {self.hectare_master.fingerprint}")
+            self.line(f"Cargado: {self.hectare_master.loaded_at}")
+            self.line(f"Precio por ha: {self.hectare_master.price_per_hectare}")
+            self.line(f"Cultivos superficie: {', '.join(self.hectare_master.surface_crops)}")
+            self.line(f"Cultivos entrega: {', '.join(self.hectare_master.delivery_crops)}")
 
     def audit_deliveries(self) -> None:
         self.section("AUDITORÍA DE ENTREGAS")
@@ -142,6 +153,18 @@ class AuditLogger:
         self.subsection("MODELO - MemberLiquidation")
         for name in ("member_id","gross_amount","collection_amount","transport_amount","quality_amount","globalgap_amount","hectare_fee_amount","hectare_fee_status","warnings"):
             self.line(f"{name}: {getattr(member, name)}")
+        audit = getattr(member, "hectare_fee_audit", None)
+        if audit:
+            self.line(f"Hectáreas: {audit.applicable_hectares}")
+            self.line(f"Cuota teórica: {audit.total_theoretical_fee}")
+            self.line(f"Kilos totales: {audit.total_effective_kg}")
+            self.line(f"Índice: {audit.rate_per_kg}")
+            self.line(f"Neto línea: {audit.line_effective_kg}")
+            self.line(f"Cuota parcial: {audit.line_fee}")
+            self.line(f"Valor almacenado: {member.hectare_fee_amount}")
+            self.line(f"Alineación audit.line_fee == member.hectare_fee_amount: {audit.line_fee == member.hectare_fee_amount}")
+            if audit.line_fee != member.hectare_fee_amount:
+                self.line("ERROR DE ALINEACIÓN")
         self.line(f"¿hectare_fee_amount llega con valor?: {member.hectare_fee_amount is not None}")
 
     def audit_result(self, result: LiquidationResult) -> None:

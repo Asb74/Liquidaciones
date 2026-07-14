@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Sequence
 import logging
 
-from domain.calculation_models import CalculationStatus, GradeBreakdown, LiquidationCalculationResult, LiquidationHeader, LiquidationLine, LiquidationResult, LiquidationTotals, MemberLiquidation
+from domain.calculation_models import CalculationStatus, GradeBreakdown, HectareFeeAuditData, LiquidationCalculationResult, LiquidationHeader, LiquidationLine, LiquidationResult, LiquidationTotals, MemberLiquidation
 from domain.financial_rules import calculate_quality_adjustment
 from domain.hectare_fee import calculate_line_hectare_fee
 from domain.models import Delivery, Remesa
@@ -56,6 +56,7 @@ class LiquidacionCalculator:
         self.quality_repository = quality_repository
         self.hectare_repository = hectare_repository
         self.hectare_config = hectare_config
+        self.hectare_master = None
         self.logger = logging.getLogger(__name__)
 
     def calculate(self, deliveries: list[Delivery], remesa: Remesa | None) -> LiquidationCalculationResult:
@@ -121,7 +122,7 @@ class LiquidacionCalculator:
             vals=[getattr(m, attr) for m in members]
             return None if any(v is None for v in vals) else sum(vals, Decimal("0"))
         totals=LiquidationTotals(sum((m.net_kg for m in members), Decimal("0")), sum((m.commercial_amount for m in members), Decimal("0")), sum((m.gross_amount for m in members), Decimal("0")), sum((m.detected_collection_amount for m in members), Decimal("0")), sum_opt("collection_amount"), sum((m.detected_transport_amount for m in members), Decimal("0")), sum_opt("transport_amount"), sum_opt("quality_amount"), sum_opt("globalgap_amount"), sum_opt("hectare_fee_amount"), sum_opt("taxable_base"), sum_opt("vat_amount"), sum_opt("withholding_amount"), sum_opt("total_amount"))
-        result=LiquidationResult(header, tuple(members), totals, tuple(dict.fromkeys(w for m in members for w in m.warnings)))
+        result=LiquidationResult(header, tuple(members), totals, tuple(dict.fromkeys(w for m in members for w in m.warnings)), self.hectare_master, getattr(self.hectare_master, "fingerprint", ""))
         if audit:
             for _member in result.member_results:
                 audit.audit_model(_member)
@@ -135,14 +136,15 @@ class LiquidacionCalculator:
         return replace(member, **changes)
 
     def _apply_hectare_fee(self, members: list[MemberLiquidation], header: LiquidationHeader, apply_fee: bool) -> list[MemberLiquidation]:
-        surface_crops = tuple(getattr(self.hectare_config, "hectare_fee_surface_crops", ("CITRICOS", "MANDARINA")))
-        delivery_crops = tuple(getattr(self.hectare_config, "hectare_fee_delivery_crops", ("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA")))
-        remittance_crops = tuple(getattr(self.hectare_config, "hectare_fee_applicable_remittance_crops", getattr(self.hectare_config, "hectare_fee_applicable_crops", delivery_crops)))
-        price = getattr(self.hectare_config, "hectare_fee_price_per_hectare", Decimal("195"))
+        master = self.hectare_master
+        surface_crops = tuple(getattr(master, "surface_crops", getattr(self.hectare_config, "hectare_fee_surface_crops", ("CITRICOS", "MANDARINA"))))
+        delivery_crops = tuple(getattr(master, "delivery_crops", getattr(self.hectare_config, "hectare_fee_delivery_crops", ("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA"))))
+        remittance_crops = delivery_crops
+        price = getattr(master, "price_per_hectare", getattr(self.hectare_config, "hectare_fee_price_per_hectare", Decimal("195")))
         crop = header.cultivo.strip().upper()
 
         if crop not in remittance_crops:
-            return [self._replace(m, hectare_fee_price=price, hectare_fee_status=CalculationStatus.NOT_APPLICABLE, hectare_fee_amount=Decimal("0"), statuses={**m.statuses, "hectare_fee": CalculationStatus.NOT_APPLICABLE}) for m in members]
+            return [self._replace(m, hectare_fee_price=price, hectare_fee_status=CalculationStatus.NOT_APPLICABLE, hectare_fee_amount=Decimal("0"), hectare_fee_audit=self._hectare_audit_data(surface_crops, delivery_crops, price, Decimal("0"), Decimal("0"), Decimal("0"), None, m.net_kg, Decimal("0"), CalculationStatus.NOT_APPLICABLE, m.warnings), statuses={**m.statuses, "hectare_fee": CalculationStatus.NOT_APPLICABLE}) for m in members]
 
         result = list(members)
         by_member: dict[int, list[int]] = defaultdict(list)
@@ -168,7 +170,7 @@ class LiquidacionCalculator:
                 diagnostic_state = "CALCULATED"
                 if not apply_fee:
                     detected_fee = calculate_line_hectare_fee(m.net_kg, rate) if rate is not None else Decimal("0")
-                    result[idx] = self._replace(m, applicable_hectares=hectares, hectare_fee_price=price, hectare_fee_total_member=total_fee, hectare_fee_total_effective_kg=total_kg, hectare_fee_rate_per_kg=rate, hectare_fee_amount=Decimal("0"), hectare_fee_status=CalculationStatus.DISABLED, hectare_fee_rounding_adjustment=Decimal("0"), hectare_fee_parcels=parcel_audit_rows, warnings=warnings, statuses={**m.statuses, "hectare_fee": CalculationStatus.DISABLED})
+                    result[idx] = self._replace(m, applicable_hectares=hectares, hectare_fee_price=price, hectare_fee_total_member=total_fee, hectare_fee_total_effective_kg=total_kg, hectare_fee_rate_per_kg=rate, hectare_fee_amount=Decimal("0"), hectare_fee_status=CalculationStatus.DISABLED, hectare_fee_rounding_adjustment=Decimal("0"), hectare_fee_parcels=parcel_audit_rows, hectare_fee_audit=self._hectare_audit_data(surface_crops, delivery_crops, price, hectares, total_fee, total_kg, rate, m.net_kg, Decimal("0"), CalculationStatus.DISABLED, warnings), warnings=warnings, statuses={**m.statuses, "hectare_fee": CalculationStatus.DISABLED})
                     if audit:
                         self._audit_hectare_member(audit, result[idx], total_fee, total_kg, rate)
                     diagnostic_state = "DISABLED"
@@ -176,24 +178,27 @@ class LiquidacionCalculator:
                     continue
                 if hectares <= 0:
                     msg = "Cuota Ha no calculable: superficie aplicable <= 0."
-                    result[idx] = self._replace(m, applicable_hectares=hectares, hectare_fee_price=price, hectare_fee_total_member=total_fee, hectare_fee_total_effective_kg=total_kg, hectare_fee_rate_per_kg=rate, hectare_fee_amount=None, hectare_fee_status=CalculationStatus.ERROR, hectare_fee_parcels=parcel_audit_rows, warnings=(*warnings, msg), statuses={**m.statuses, "hectare_fee": CalculationStatus.ERROR})
+                    result[idx] = self._replace(m, applicable_hectares=hectares, hectare_fee_price=price, hectare_fee_total_member=total_fee, hectare_fee_total_effective_kg=total_kg, hectare_fee_rate_per_kg=rate, hectare_fee_amount=None, hectare_fee_status=CalculationStatus.ERROR, hectare_fee_parcels=parcel_audit_rows, hectare_fee_audit=self._hectare_audit_data(surface_crops, delivery_crops, price, hectares, total_fee, total_kg, rate, m.net_kg, None, CalculationStatus.ERROR, (*warnings, msg)), warnings=(*warnings, msg), statuses={**m.statuses, "hectare_fee": CalculationStatus.ERROR})
                     if audit:
                         self._audit_hectare_member(audit, result[idx], total_fee, total_kg, rate)
                     self.logger.warning("Cuota Ha socio=%s hectares=%s annual_fee=%s total_effective_kg=%s rate_per_kg=%s line_effective_kg=%s line_fee=%s status=ERROR warnings=%s", socio, hectares, total_fee, total_kg, rate, m.net_kg, None, "; ".join((*warnings, msg)))
                     continue
                 if total_kg <= 0:
                     msg = "Cuota Ha no calculable: kilos efectivos totales <= 0."
-                    result[idx] = self._replace(m, applicable_hectares=hectares, hectare_fee_price=price, hectare_fee_total_member=total_fee, hectare_fee_total_effective_kg=total_kg, hectare_fee_rate_per_kg=None, hectare_fee_amount=None, hectare_fee_status=CalculationStatus.ERROR, hectare_fee_parcels=parcel_audit_rows, warnings=(*warnings, msg), statuses={**m.statuses, "hectare_fee": CalculationStatus.ERROR})
+                    result[idx] = self._replace(m, applicable_hectares=hectares, hectare_fee_price=price, hectare_fee_total_member=total_fee, hectare_fee_total_effective_kg=total_kg, hectare_fee_rate_per_kg=None, hectare_fee_amount=None, hectare_fee_status=CalculationStatus.ERROR, hectare_fee_parcels=parcel_audit_rows, hectare_fee_audit=self._hectare_audit_data(surface_crops, delivery_crops, price, hectares, total_fee, total_kg, rate, m.net_kg, None, CalculationStatus.ERROR, (*warnings, msg)), warnings=(*warnings, msg), statuses={**m.statuses, "hectare_fee": CalculationStatus.ERROR})
                     if audit:
                         self._audit_hectare_member(audit, result[idx], total_fee, total_kg, None)
                     self.logger.warning("Cuota Ha socio=%s hectares=%s annual_fee=%s total_effective_kg=%s rate_per_kg=%s line_effective_kg=%s line_fee=%s status=ERROR warnings=%s", socio, hectares, total_fee, total_kg, None, m.net_kg, None, "; ".join((*warnings, msg)))
                     continue
                 detected_fee = calculate_line_hectare_fee(m.net_kg, rate)
-                result[idx] = self._replace(m, applicable_hectares=hectares, hectare_fee_price=price, hectare_fee_total_member=total_fee, hectare_fee_total_effective_kg=total_kg, hectare_fee_rate_per_kg=rate, hectare_fee_amount=detected_fee, hectare_fee_status=CalculationStatus.CALCULATED, hectare_fee_rounding_adjustment=Decimal("0"), hectare_fee_parcels=parcel_audit_rows, warnings=warnings, statuses={**m.statuses, "hectare_fee": CalculationStatus.CALCULATED})
+                result[idx] = self._replace(m, applicable_hectares=hectares, hectare_fee_price=price, hectare_fee_total_member=total_fee, hectare_fee_total_effective_kg=total_kg, hectare_fee_rate_per_kg=rate, hectare_fee_amount=detected_fee, hectare_fee_status=CalculationStatus.CALCULATED, hectare_fee_rounding_adjustment=Decimal("0"), hectare_fee_parcels=parcel_audit_rows, hectare_fee_audit=self._hectare_audit_data(surface_crops, delivery_crops, price, hectares, total_fee, total_kg, rate, m.net_kg, detected_fee, CalculationStatus.CALCULATED, warnings), warnings=warnings, statuses={**m.statuses, "hectare_fee": CalculationStatus.CALCULATED})
                 if audit:
                     self._audit_hectare_member(audit, result[idx], total_fee, total_kg, rate)
                 self.logger.info("Cuota Ha socio=%s hectares=%s annual_fee=%s total_effective_kg=%s rate_per_kg=%s line_effective_kg=%s line_fee=%s status=CALCULATED warnings=%s", socio, hectares, total_fee, total_kg, rate, m.net_kg, detected_fee, "; ".join(warnings))
         return result
+
+    def _hectare_audit_data(self, surface_crops, delivery_crops, price, hectares, total_fee, total_kg, rate, line_kg, line_fee, status, warnings):
+        return HectareFeeAuditData(tuple(surface_crops), tuple(delivery_crops), price, hectares, total_fee, total_kg, rate, line_kg, line_fee, status, tuple(warnings))
 
     def _audit_hectare_member(self, audit: Any, member: MemberLiquidation, total_fee: Decimal, total_kg: Decimal, rate: Decimal | None) -> None:
         audit.subsection("CUOTA ANUAL")

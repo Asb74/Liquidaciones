@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.styles import Alignment, Border, Font, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
 from domain.calculation_models import CalculationStatus, LiquidationResult
@@ -187,6 +187,45 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
             _number(member.hectare_fee_amount, "Cuota calculada"),
             "; ".join(member.warnings),
         ])
+
+
+    audit_ws = wb.create_sheet("Auditoría cuota Ha")
+    audit_headers = ["Nº Socio", "Socio", "Variedad", "Campaña", "Empresa", "Cultivo remesa", "Precio €/ha", "Cultivos superficie activos", "Cultivos entrega activos", "Hectáreas aplicables", "Cuota teórica total", "Kg efectivos campaña", "Índice €/kg", "Kg efectivos remesa", "Cuota parcial calculada", "Cuota almacenada en modelo", "Cuota exportada a Resumen", "Estado", "Advertencias", "Alineado"]
+    audit_ws.append(audit_headers)
+    red_fill = PatternFill(start_color="FFFF9999", end_color="FFFF9999", fill_type="solid")
+    for member in result.member_results:
+        audit_data = getattr(member, "hectare_fee_audit", None)
+        exported = _hectare_fee_excel_value(member)
+        calculated = getattr(audit_data, "line_fee", None)
+        aligned = calculated == member.hectare_fee_amount == exported
+        audit_ws.append([
+            member.member_id, member.member_name, member.variety, result.header.campana, result.header.empresa, result.header.cultivo,
+            _number(getattr(audit_data, "price_per_hectare", None), "Precio €/ha"), ", ".join(getattr(audit_data, "surface_crops", ())), ", ".join(getattr(audit_data, "delivery_crops", ())),
+            _number(getattr(audit_data, "applicable_hectares", None), "Hectáreas aplicables"), _number(getattr(audit_data, "total_theoretical_fee", None), "Cuota teórica total"),
+            _number(getattr(audit_data, "total_effective_kg", None), "Kg efectivos campaña"), _number(getattr(audit_data, "rate_per_kg", None), "Índice €/kg"),
+            _number(getattr(audit_data, "line_effective_kg", None), "Kg efectivos remesa"), _number(calculated, "Cuota parcial calculada"),
+            _number(member.hectare_fee_amount, "Cuota almacenada en modelo"), _number(exported, "Cuota exportada a Resumen"),
+            getattr(getattr(audit_data, "status", member.hectare_fee_status), "value", str(member.hectare_fee_status)), "; ".join(getattr(audit_data, "warnings", member.warnings)), "SÍ" if aligned else "NO",
+        ])
+        if not aligned:
+            for cell in audit_ws[audit_ws.max_row]:
+                cell.fill = red_fill
+
+    parcelas_ws = wb.create_sheet("Parcelas cuota Ha")
+    parcelas_headers = ["Nº Socio", "Socio", "Boleta DEEPP", "Boleta DParcela", "Campaña", "Empresa", "Cultivo", "CHA original", "CHA activo", "IdPM", "Pol", "Par", "Rec", "SupCul DEEPP", "SupCul DParcela", "SupRec", "SupApor", "Incluida", "Motivo exclusión", "Clave deduplicación"]
+    parcelas_ws.append(parcelas_headers)
+    for member in result.member_results:
+        for row in getattr(member, "hectare_fee_parcels", ()):
+            parcelas_ws.append([member.member_id, member.member_name, row.get("Boleta DEEPP"), row.get("Boleta DParcela"), row.get("Campaña DParcela") or row.get("Campaña DEEPP"), row.get("Empresa DParcela") or row.get("Empresa DEEPP"), row.get("Cultivo DParcela") or row.get("Cultivo DEEPP"), row.get("CHA original"), row.get("CHA activo"), row.get("IdPM"), row.get("Pol"), row.get("Par"), row.get("Rec"), _number(row.get("SupCul DEEPP"), "SupCul DEEPP"), _number(row.get("SupCul DParcela"), "SupCul DParcela"), _number(row.get("SupRec"), "SupRec"), _number(row.get("SupApor"), "SupApor"), row.get("Incluida"), row.get("Motivo exclusión"), row.get("Clave deduplicación")])
+
+    perceco = wb.create_sheet("Comparación Perceco")
+    perceco.append(["Nº Socio", "Socio", "Variedad", "Campo", "Nueva app", "Perceco", "Diferencia", "Diferencia %", "Observación"])
+    fields = ["Hectáreas", "Cuota teórica", "Kg campaña", "Índice", "Kg remesa", "Cuota parcial", "Importe bruto", "Recolección", "Transporte", "Calidad", "GlobalGAP", "Base imponible", "IVA", "Retención", "Total"]
+    for member in result.member_results:
+        audit_data = getattr(member, "hectare_fee_audit", None)
+        values = {"Hectáreas": getattr(audit_data, "applicable_hectares", None), "Cuota teórica": getattr(audit_data, "total_theoretical_fee", None), "Kg campaña": getattr(audit_data, "total_effective_kg", None), "Índice": getattr(audit_data, "rate_per_kg", None), "Kg remesa": getattr(audit_data, "line_effective_kg", None), "Cuota parcial": member.hectare_fee_amount, "Importe bruto": member.gross_amount, "Recolección": member.collection_amount, "Transporte": member.transport_amount, "Calidad": member.quality_amount, "GlobalGAP": member.globalgap_amount, "Base imponible": member.taxable_base, "IVA": member.vat_amount, "Retención": member.withholding_amount, "Total": member.total_amount}
+        for field in fields:
+            perceco.append([member.member_id, member.member_name, member.variety, field, _number(values[field], field), None, None, None, ""])
 
     path.parent.mkdir(parents=True, exist_ok=True)
     ensure_target_is_writable(path)

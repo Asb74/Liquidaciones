@@ -10,9 +10,6 @@ from domain.audit import current_audit
 from domain.financial_rules import EFFECTIVE_NET_SQL
 from domain.utils import decimal_or_zero, parse_yes_no
 
-SURFACE_CROPS = ("CITRICOS", "MANDARINA")
-
-
 def is_active_cha(value: object) -> bool:
     """Normalize heterogeneous CHA flags from SQLite/Access."""
     if value is None:
@@ -43,7 +40,7 @@ class HectareRepository:
         B. DParcela lookup only by Boleta;
         C. context filters in Python: campaña, empresa, productive crop, baja and SupApor.
         """
-        crops = tuple(dict.fromkeys([*SURFACE_CROPS, *((c or "").strip().upper() for c in (applicable_crops or ()) if (c or "").strip())]))
+        crops = tuple(dict.fromkeys((c or "").strip().upper() for c in (applicable_crops or ("CITRICOS", "MANDARINA")) if (c or "").strip()))
         start = time.perf_counter()
         deepp_rows = self._deepp_candidate_rows(member_id, campaign, company, crops)
         cha_summary = self._cha_summary(member_id, campaign, company, crops)
@@ -165,7 +162,7 @@ class HectareRepository:
             "A. DEEPP sin filtros adicionales": self.conn.execute(f"SELECT COUNT(*) {base}", [member_id]).fetchone()[0],
             "B. Después de campaña": self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT)", [member_id, str(campaign)]).fetchone()[0],
             "C. Después de empresa": self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT)", [member_id, str(campaign), str(company)]).fetchone()[0],
-            "D. Después de cultivos CITRICOS/MANDARINA": self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(d.CULTIVO)) IN ({ph})", [member_id, str(campaign), str(company), *crops]).fetchone()[0],
+            "D. Después de cultivos de superficie activos": self.conn.execute(f"SELECT COUNT(*) {base} AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(d.CULTIVO)) IN ({ph})", [member_id, str(campaign), str(company), *crops]).fetchone()[0],
         }
 
     def _dparcela_counts(self, by_boleta: dict[str, list[Any]], active_deepp: list[Any], campaign: Any, company: Any, crops: Sequence[str], unique_count: int, total: Decimal) -> dict[str, Any]:
@@ -198,10 +195,10 @@ class HectareRepository:
         if not is_active_baja(dp[12]): reasons.append("BAJA DParcela informada")
         if decimal_or_zero(dp[10]) <= 0: reasons.append("SupApor <= 0")
         reason = "; ".join(reasons)
-        return ({"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "Boleta DParcela": dp[0], "Campaña DParcela": dp[1], "Empresa DParcela": dp[2], "Cultivo DParcela": dp[3], "IdPM": dp[4], "Pol": dp[5], "Par": dp[6], "Rec": dp[7], "SupCul DParcela": dp[8], "SupRec": dp[9], "SupApor": dp[10], "Baja DParcela": dp[12], "Incluida": "Sí" if not reason else "No", "Motivo exclusión": reason, "Clave deduplicación": "|".join(key)}, not reason, reason, key)
+        return ({"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Boleta DParcela": dp[0], "Campaña DParcela": dp[1], "Empresa DParcela": dp[2], "Cultivo DParcela": dp[3], "IdPM": dp[4], "Pol": dp[5], "Par": dp[6], "Rec": dp[7], "SupCul DParcela": dp[8], "SupRec": dp[9], "SupApor": dp[10], "Baja DParcela": dp[12], "Incluida": "Sí" if not reason else "No", "Motivo exclusión": reason, "Clave deduplicación": "|".join(key)}, not reason, reason, key)
 
     def _audit_no_dp(self, member_id: int, d: Any) -> dict[str, Any]:
-        return {"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "Incluida": "No", "Motivo exclusión": "Sin filas DParcela por Boleta", "Clave deduplicación": ""}
+        return {"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Incluida": "No", "Motivo exclusión": "Sin filas DParcela por Boleta", "Clave deduplicación": ""}
 
     def _audit_excluded_deepp(self, member_id: int, d: Any) -> dict[str, Any]:
         reasons = []
@@ -209,4 +206,4 @@ class HectareRepository:
             reasons.append("CHA inactivo")
         if not is_active_baja(d[9]):
             reasons.append("BAJA DEEPP informada")
-        return {"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí" if is_active_cha(d[7]) else "No", "Baja DEEPP": d[9], "Incluida": "No", "Motivo exclusión": "; ".join(reasons), "Clave deduplicación": ""}
+        return {"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí" if is_active_cha(d[7]) else "No", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Incluida": "No", "Motivo exclusión": "; ".join(reasons), "Clave deduplicación": ""}
