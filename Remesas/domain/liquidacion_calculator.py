@@ -33,8 +33,32 @@ def calculate_member_transport(deliveries: Sequence[Delivery], apply_transport: 
     return detected_amount, detected_amount if apply_transport else Decimal("0")
 
 
-def calculate_taxable_base(commercial_amount: Decimal, collection: Decimal, hectare_fee: Decimal, quality: Decimal, transport: Decimal, globalgap: Decimal) -> Decimal:
-    return round_money(commercial_amount - collection - hectare_fee + quality + transport + globalgap)
+def calculate_taxable_base(
+    gross_amount: Decimal,
+    collection_amount: Decimal,
+    hectare_fee_amount: Decimal,
+    quality_amount: Decimal,
+    transport_amount: Decimal,
+    globalgap_amount: Decimal,
+) -> Decimal:
+    return round_money(
+        gross_amount
+        - collection_amount
+        - hectare_fee_amount
+        + quality_amount
+        + transport_amount
+        + globalgap_amount
+    )
+
+
+def amount_for_taxable_base(amount: Decimal | None, status: CalculationStatus) -> Decimal | None:
+    if status == CalculationStatus.CALCULATED:
+        return amount
+    if status in (CalculationStatus.NOT_APPLICABLE, CalculationStatus.DISABLED):
+        return Decimal("0")
+    if status in (CalculationStatus.ERROR, CalculationStatus.PENDING):
+        return None
+    return None
 
 
 def calculate_vat(taxable_base: Decimal, rate: Decimal) -> Decimal:
@@ -116,14 +140,29 @@ class LiquidacionCalculator:
         members = self._apply_hectare_fee(members, header, options["Cuota por hectárea"])
         final_members=[]
         for m in members:
-            tb=calculate_taxable_base(m.commercial_amount, m.collection_amount or Decimal("0"), m.hectare_fee_amount or Decimal("0"), m.quality_amount or Decimal("0"), m.transport_amount or Decimal("0"), m.globalgap_amount or Decimal("0"))
+            collection_amount = amount_for_taxable_base(m.collection_amount, m.statuses.get("collection", CalculationStatus.PENDING))
+            hectare_fee_amount = amount_for_taxable_base(m.hectare_fee_amount, m.statuses.get("hectare_fee", CalculationStatus.PENDING))
+            quality_amount = amount_for_taxable_base(m.quality_amount, m.statuses.get("quality", CalculationStatus.PENDING))
+            transport_amount = amount_for_taxable_base(m.transport_amount, m.statuses.get("transport", CalculationStatus.PENDING))
+            globalgap_amount = amount_for_taxable_base(m.globalgap_amount, m.statuses.get("globalgap", CalculationStatus.PENDING))
+            taxable_inputs = (collection_amount, hectare_fee_amount, quality_amount, transport_amount, globalgap_amount)
+            if any(amount is None for amount in taxable_inputs):
+                pending_or_error = next((status for status in (m.statuses.get("collection"), m.statuses.get("hectare_fee"), m.statuses.get("quality"), m.statuses.get("transport"), m.statuses.get("globalgap")) if status in (CalculationStatus.ERROR, CalculationStatus.PENDING)), CalculationStatus.PENDING)
+                final_members.append(self._replace(m, taxable_base=None, final_average_price=None, statuses={**m.statuses, "taxable_base": pending_or_error}))
+                continue
+            tb=calculate_taxable_base(m.gross_amount, collection_amount, hectare_fee_amount, quality_amount, transport_amount, globalgap_amount)
             final_avg=round_price(tb/m.net_kg) if m.net_kg else None
-            final_members.append(self._replace(m, taxable_base=tb, final_average_price=final_avg))
+            self.logger.info("[BaseImponible] socio=%s gross_amount=%s collection_amount=%s hectare_fee_amount=%s quality_amount=%s transport_amount=%s globalgap_amount=%s expected_taxable_base=%s stored_taxable_base=%s aligned=%s", m.member_id, m.gross_amount, collection_amount, hectare_fee_amount, quality_amount, transport_amount, globalgap_amount, tb, tb, True)
+            final_members.append(self._replace(m, taxable_base=tb, final_average_price=final_avg, statuses={**m.statuses, "taxable_base": CalculationStatus.CALCULATED}))
         members=final_members
         def sum_opt(attr: str) -> Decimal | None:
             vals=[getattr(m, attr) for m in members]
             return None if any(v is None for v in vals) else sum(vals, Decimal("0"))
         totals=LiquidationTotals(sum((m.net_kg for m in members), Decimal("0")), sum((m.commercial_amount for m in members), Decimal("0")), sum((m.gross_amount for m in members), Decimal("0")), sum((m.detected_collection_amount for m in members), Decimal("0")), sum_opt("collection_amount"), sum((m.detected_transport_amount for m in members), Decimal("0")), sum_opt("transport_amount"), sum_opt("quality_amount"), sum_opt("globalgap_amount"), sum_opt("hectare_fee_amount"), sum_opt("taxable_base"), sum_opt("vat_amount"), sum_opt("withholding_amount"), sum_opt("total_amount"))
+        if totals.taxable_base is not None:
+            expected_total_base = calculate_taxable_base(totals.gross_amount, totals.collection_amount or Decimal("0"), totals.hectare_fee_amount or Decimal("0"), totals.quality_amount or Decimal("0"), totals.transport_amount or Decimal("0"), totals.globalgap_amount or Decimal("0"))
+            if expected_total_base != totals.taxable_base:
+                self.logger.error("[BaseImponible] Alineación global incorrecta expected=%s stored=%s", expected_total_base, totals.taxable_base)
         result=LiquidationResult(header, tuple(members), totals, tuple(dict.fromkeys(w for m in members for w in m.warnings)), self.hectare_master, getattr(self.hectare_master, "fingerprint", ""))
         if audit:
             for _member in result.member_results:

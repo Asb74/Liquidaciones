@@ -166,6 +166,30 @@ class AuditLogger:
             if audit.line_fee != member.hectare_fee_amount:
                 self.line("ERROR DE ALINEACIÓN")
         self.line(f"¿hectare_fee_amount llega con valor?: {member.hectare_fee_amount is not None}")
+        self.audit_taxable_base(member, member.taxable_base)
+
+    def audit_taxable_base(self, member: MemberLiquidation, exported_taxable_base: Any = None) -> None:
+        self.subsection("BaseImponible")
+        from domain.liquidacion_calculator import calculate_taxable_base
+        if None in (member.collection_amount, member.hectare_fee_amount, member.quality_amount, member.transport_amount, member.globalgap_amount, member.taxable_base):
+            self.line(f"socio={member.member_id}")
+            self.line("Base imponible pendiente o en error; no se presenta base definitiva.")
+            return
+        expected = calculate_taxable_base(member.gross_amount, member.collection_amount, member.hectare_fee_amount, member.quality_amount, member.transport_amount, member.globalgap_amount)
+        self.line(f"socio={member.member_id}")
+        self.line(f"gross_amount={member.gross_amount}")
+        self.line(f"collection_amount={member.collection_amount}")
+        self.line(f"hectare_fee_amount={member.hectare_fee_amount}")
+        self.line(f"quality_amount={member.quality_amount}")
+        self.line(f"transport_amount={member.transport_amount}")
+        self.line(f"globalgap_amount={member.globalgap_amount}")
+        self.line(f"expected_taxable_base={expected}")
+        self.line(f"stored_taxable_base={member.taxable_base}")
+        self.line(f"exported_taxable_base={exported_taxable_base}")
+        aligned = expected == member.taxable_base and (exported_taxable_base is None or exported_taxable_base == member.taxable_base)
+        self.line(f"aligned={aligned}")
+        if not aligned:
+            self.line(f"ERROR: Importe bruto desalineado: mostrado={member.gross_amount} usado_en_base=desconocido")
 
     def audit_result(self, result: LiquidationResult) -> None:
         self.section("AUDITORÍA DEL RESULTADO GLOBAL")

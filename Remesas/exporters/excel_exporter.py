@@ -11,6 +11,8 @@ from openpyxl.styles import Alignment, Border, Font, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
 from domain.calculation_models import CalculationStatus, LiquidationResult
+from domain.liquidacion_calculator import calculate_taxable_base
+from domain.utils import round_price
 from domain.audit import audit_latest_excel_row, current_audit
 from exporters.file_lock import FileLockedError, ensure_target_is_writable
 
@@ -91,6 +93,46 @@ def _validate_result(result: LiquidationResult) -> None:
 
 
 
+def _append_economic_audit_sheet(wb: Workbook, result: LiquidationResult, summary_rows: dict[int, Decimal | None], red_fill: PatternFill) -> None:
+    ws = wb.create_sheet("Auditoría económica")
+    headers = [
+        "Nº Socio", "Socio", "Variedad", "Importe bruto mostrado", "Importe bruto usado en fórmula",
+        "Recolección", "Cuota Ha", "B/P Calidad", "B. Transporte", "B. GlobalGAP",
+        "Base esperada", "Base almacenada en modelo", "Base exportada", "Diferencia",
+        "Precio medio esperado", "Precio medio almacenado", "Alineado", "Advertencias",
+    ]
+    ws.append(headers)
+    tolerance = Decimal("0.01")
+    for member in result.member_results:
+        exported_base = summary_rows.get(member.member_id)
+        if None in (member.collection_amount, member.hectare_fee_amount, member.quality_amount, member.transport_amount, member.globalgap_amount):
+            expected = None
+            diff = None
+            expected_price = None
+            aligned = False
+            warnings = "Base pendiente o en error; falta algún concepto obligatorio."
+        else:
+            expected = calculate_taxable_base(member.gross_amount, member.collection_amount, member.hectare_fee_amount, member.quality_amount, member.transport_amount, member.globalgap_amount)
+            diff = None if member.taxable_base is None else member.taxable_base - expected
+            expected_price = round_price(expected / member.net_kg) if member.net_kg else None
+            aligned = (
+                member.taxable_base is not None
+                and exported_base is not None
+                and -tolerance <= expected - member.taxable_base <= tolerance
+                and -tolerance <= expected - exported_base <= tolerance
+            )
+            warnings = "" if aligned else "Base imponible no alineada."
+        ws.append([
+            member.member_id, member.member_name, member.variety, _number(member.gross_amount, "Importe bruto mostrado"), _number(member.gross_amount, "Importe bruto usado en fórmula"),
+            _number(member.collection_amount, "Recolección"), _number(member.hectare_fee_amount, "Cuota Ha"), _number(member.quality_amount, "B/P Calidad"), _number(member.transport_amount, "B. Transporte"), _number(member.globalgap_amount, "B. GlobalGAP"),
+            _number(expected, "Base esperada"), _number(member.taxable_base, "Base almacenada"), _number(exported_base, "Base exportada"), _number(diff, "Diferencia"),
+            _number(expected_price, "Precio medio esperado"), _number(member.final_average_price, "Precio medio almacenado"), "SÍ" if aligned else "NO", warnings,
+        ])
+        if not aligned:
+            for cell in ws[ws.max_row]:
+                cell.fill = red_fill
+
+
 def _hectare_fee_excel_value(member):
     status = getattr(member, "hectare_fee_status", None)
     if status == CalculationStatus.ERROR:
@@ -113,6 +155,7 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
     ws.title = "Resumen"
     ws.append(SUMMARY_HEADERS)
 
+    summary_base_by_member: dict[int, Decimal | None] = {}
     for row_number, member in enumerate(result.member_results, start=2):
         hectare_excel_value = _hectare_fee_excel_value(member)
         audit = current_audit()
@@ -120,6 +163,8 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
             audit.audit_excel_row(member, hectare_excel_value)
         else:
             audit_latest_excel_row(member, hectare_excel_value)
+        exported_taxable_base = _number(member.taxable_base, "Base Imponible")
+        summary_base_by_member[member.member_id] = exported_taxable_base
         ws.append([
             member.member_id,
             member.member_name,
@@ -132,7 +177,7 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
             _number(member.quality_amount, "B/P Cal."),
             _number(member.transport_amount, "B. Trans."),
             _number(member.globalgap_amount, "B. Glob."),
-            _number(member.taxable_base, "Base Imponible"),
+            exported_taxable_base,
             _number(member.final_average_price, "P.Medio"),
             _number(member.vat_rate, "I.V.A"),
             _number(member.withholding_rate, "Ret."),
@@ -211,6 +256,8 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
         if not aligned:
             for cell in gg_ws[gg_ws.max_row]:
                 cell.fill = red_fill
+
+    _append_economic_audit_sheet(wb, result, summary_base_by_member, red_fill)
 
     audit_ws = wb.create_sheet("Auditoría cuota Ha")
     audit_headers = ["Nº Socio", "Socio", "Variedad", "Campaña", "Empresa", "Cultivo remesa", "Precio €/ha", "Cultivos superficie activos", "Cultivos entrega activos", "Hectáreas aplicables", "Cuota teórica total", "Kg efectivos campaña", "Índice €/kg", "Kg efectivos remesa", "Cuota parcial calculada", "Cuota almacenada en modelo", "Cuota exportada a Resumen", "Estado", "Advertencias", "Alineado"]
