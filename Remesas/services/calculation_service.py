@@ -3,6 +3,7 @@ from __future__ import annotations
 from domain.liquidacion_calculator import LiquidacionCalculator
 from domain.models import AppConfig, Delivery, Remesa
 from domain.audit import AuditLogger
+from domain.hectare_fee_master import HectareFeeMasterRepository
 
 
 class CalculationService:
@@ -13,10 +14,14 @@ class CalculationService:
             from data.hectare_repository import HectareRepository
             quality_repository = QualityRepository(conn)
             hectare_repository = HectareRepository(conn)
+        self.config = config
+        self.master_repository = HectareFeeMasterRepository()
         self.calculator = LiquidacionCalculator(quality_repository, hectare_repository, config)
 
     def calculate(self, deliveries: list[Delivery], remesa: Remesa | None):
-        with AuditLogger.for_calculation(self.calculator.hectare_config, remesa, deliveries) as audit:
+        master = self.master_repository.load()
+        self.calculator.hectare_master = master
+        with AuditLogger.for_calculation(self.calculator.hectare_config, remesa, deliveries, master) as audit:
             if audit:
                 audit.audit_deliveries()
             return self.calculator.calculate(deliveries, remesa)

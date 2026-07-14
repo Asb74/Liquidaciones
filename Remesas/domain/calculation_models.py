@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Any, TYPE_CHECKING
+from domain.hectare_fee_master import HectareFeeMaster
 
 if TYPE_CHECKING:
     from domain.models import Delivery
@@ -68,6 +69,21 @@ GradeLiquidation = GradeBreakdown
 
 
 @dataclass(frozen=True)
+class HectareFeeAuditData:
+    surface_crops: tuple[str, ...]
+    delivery_crops: tuple[str, ...]
+    price_per_hectare: Decimal
+    applicable_hectares: Decimal
+    total_theoretical_fee: Decimal
+    total_effective_kg: Decimal
+    rate_per_kg: Decimal | None
+    line_effective_kg: Decimal
+    line_fee: Decimal | None
+    status: CalculationStatus
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class MemberLiquidation:
     member_id: int
     member_name: str
@@ -101,6 +117,7 @@ class MemberLiquidation:
     hectare_fee_status: CalculationStatus = CalculationStatus.NOT_APPLICABLE
     hectare_fee_rounding_adjustment: Decimal = Decimal("0")
     hectare_fee_parcels: tuple[dict, ...] = ()
+    hectare_fee_audit: HectareFeeAuditData | None = None
     taxable_base: Decimal | None = None
     vat_rate: Decimal | None = None
     vat_amount: Decimal | None = None
@@ -166,6 +183,8 @@ class LiquidationResult:
     member_results: tuple[MemberLiquidation, ...]
     totals: LiquidationTotals
     warnings: tuple[str, ...]
+    hectare_fee_master: HectareFeeMaster | None = None
+    hectare_fee_master_fingerprint: str = ""
 
     @property
     def members(self) -> tuple[MemberLiquidation, ...]:
