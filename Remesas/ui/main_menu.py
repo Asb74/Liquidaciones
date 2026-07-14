@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable
+import tkinter as tk
+
+
+@dataclass(frozen=True)
+class MainMenuHandlers:
+    close: Callable[[], None]
+    open_hectare_fee_master: Callable[[], None]
+    show_about: Callable[[], None]
+
+
+def build_main_menu(root: tk.Misc, handlers: MainMenuHandlers) -> tk.Menu:
+    menu_bar = tk.Menu(root)
+
+    file_menu = tk.Menu(menu_bar, tearoff=False)
+    file_menu.add_command(label="Cerrar", command=handlers.close)
+    menu_bar.add_cascade(label="Archivo", menu=file_menu)
+
+    masters_menu = tk.Menu(menu_bar, tearoff=False)
+    masters_menu.add_command(label="Cuota por hectárea", command=handlers.open_hectare_fee_master)
+    menu_bar.add_cascade(label="Maestros", menu=masters_menu)
+
+    help_menu = tk.Menu(menu_bar, tearoff=False)
+    help_menu.add_command(label="Acerca de", command=handlers.show_about)
+    menu_bar.add_cascade(label="Ayuda", menu=help_menu)
+
+    return menu_bar
