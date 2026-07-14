@@ -157,5 +157,5 @@ class ExcelLockedTargetTests(unittest.TestCase):
             export_liquidation_summary(result, path)
             wb = load_workbook(path, data_only=False)
             self.assertIsNone(wb["Resumen"]["H2"].value)
-            self.assertIn("Diagnóstico cuota Ha", wb.sheetnames)
-            self.assertEqual(wb["Diagnóstico cuota Ha"]["D2"].value, "error")
+            self.assertIn("04_CuotaHa", wb.sheetnames)
+            self.assertEqual(wb["04_CuotaHa"]["D2"].value, "error")

@@ -149,6 +149,21 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
     for member in result.member_results:
         detail.append([member.member_id, member.member_name, member.variety, _number(member.quality_rate, "Bon/Pen tarifa"), member.quality_source, _number(member.applicable_hectares, "Hectáreas"), _number(member.hectare_fee_price, "Precio/ha"), _number(member.hectare_fee_total_member, "Cuota total socio"), _number(member.hectare_fee_total_effective_kg, "Kilos efectivos totales"), _number(member.hectare_fee_rate_per_kg, "Proporción €/kg"), _number(member.hectare_fee_amount, "Cuota parcial"), _number(member.hectare_fee_rounding_adjustment, "Ajuste redondeo")])
 
+
+    parcels = wb.create_sheet("02_Parcelas")
+    parcel_headers = ["IdSocio", "Nombre socio", "Boleta DEEPP", "Boleta DParcela", "Campaña DEEPP", "Campaña DParcela", "Empresa DEEPP", "Empresa DParcela", "Cultivo DEEPP", "Cultivo DParcela", "CHA", "BAJA DEEPP", "BAJA DParcela", "IdPM", "Pol", "Par", "Recinto DEEPP", "Rec DParcela", "SupCul DEEPP", "SupCul DParcela", "SupApor", "Incluida", "Motivo exclusión", "Clave deduplicación"]
+    parcels.append(parcel_headers)
+    for member in result.member_results:
+        for row in getattr(member, "hectare_fee_parcels", ()):
+            parcels.append([
+                row.get("IdSocio", member.member_id), member.member_name, row.get("Boleta DEEPP"), row.get("Boleta DParcela"),
+                row.get("Campaña DEEPP"), row.get("Campaña DParcela"), row.get("Empresa DEEPP"), row.get("Empresa DParcela"),
+                row.get("Cultivo DEEPP"), row.get("Cultivo DParcela"), row.get("CHA"), row.get("BAJA DEEPP"), row.get("BAJA DParcela"),
+                row.get("IdPM"), row.get("Pol"), row.get("Par"), row.get("Recinto DEEPP"), row.get("Rec DParcela"),
+                _number(row.get("SupCul DEEPP"), "SupCul DEEPP"), _number(row.get("SupCul DParcela"), "SupCul DParcela"), _number(row.get("SupApor"), "SupApor"),
+                row.get("Incluida"), row.get("Motivo exclusión"), row.get("Clave deduplicación"),
+            ])
+
     total_row = ws.max_row + 1
     ws.cell(total_row, 2, "TOTAL")
     for column in (4, 5, 7, 8, 9, 10, 11, 12, 16):
@@ -156,7 +171,7 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
         ws.cell(total_row, column, f"=SUM({letter}2:{letter}{total_row - 1})")
 
     _style_summary(ws, total_row)
-    diagnostics = wb.create_sheet("Diagnóstico cuota Ha")
+    diagnostics = wb.create_sheet("04_CuotaHa")
     diagnostics.append(["Nº Socio", "Socio", "Variedad", "Estado", "Hectáreas", "Cuota anual", "Kilos efectivos totales", "Proporción €/kg", "Neto efectivo línea", "Cuota calculada", "Advertencias"])
     for member in result.member_results:
         diagnostics.append([

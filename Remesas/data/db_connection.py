@@ -26,6 +26,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         audit_enabled=parser.getboolean("AUDIT", "enabled", fallback=False),
         audit_dir=str(base / "logs"),
         hectare_fee_price_per_hectare=decimal_or_zero(parser.get("hectare_fee", "price_per_hectare", fallback="195")),
+        hectare_fee_surface_crops=tuple(c.strip().upper() for c in parser.get("hectare_fee", "surface_crops", fallback="CITRICOS,MANDARINA").split(",") if c.strip()),
         hectare_fee_delivery_crops=tuple(c.strip().upper() for c in parser.get("hectare_fee", "delivery_crops", fallback="CITRICOS,MANDARINA,DIRECTO,DIRECTOCHF,INDUSTRIA").split(",") if c.strip()),
         hectare_fee_applicable_remittance_crops=tuple(c.strip().upper() for c in parser.get("hectare_fee", "applicable_remittance_crops", fallback="CITRICOS,MANDARINA,DIRECTO,DIRECTOCHF,INDUSTRIA").split(",") if c.strip()),
     )
