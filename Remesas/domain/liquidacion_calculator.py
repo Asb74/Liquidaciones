@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Sequence
 import logging
 
-from domain.calculation_models import CalculationStatus, GradeBreakdown, HectareFeeAuditData, LiquidationCalculationResult, LiquidationHeader, LiquidationLine, LiquidationResult, LiquidationTotals, MemberLiquidation
+from domain.calculation_models import CalculationStatus, GradeBreakdown, GlobalGapAuditData, HectareFeeAuditData, LiquidationCalculationResult, LiquidationHeader, LiquidationLine, LiquidationResult, LiquidationTotals, MemberLiquidation
 from domain.financial_rules import calculate_quality_adjustment
 from domain.hectare_fee import calculate_line_hectare_fee
 from domain.models import Delivery, Remesa
@@ -52,9 +52,10 @@ def calculate_total(taxable_base: Decimal, vat_amount: Decimal, withholding_amou
 class LiquidacionCalculator:
     """Simulación en memoria; no escribe en Access ni en DLiquidaciones."""
 
-    def __init__(self, quality_repository: Any | None = None, hectare_repository: Any | None = None, hectare_config: Any | None = None) -> None:
+    def __init__(self, quality_repository: Any | None = None, hectare_repository: Any | None = None, hectare_config: Any | None = None, globalgap_repository: Any | None = None) -> None:
         self.quality_repository = quality_repository
         self.hectare_repository = hectare_repository
+        self.globalgap_repository = globalgap_repository
         self.hectare_config = hectare_config
         self.hectare_master = None
         self.logger = logging.getLogger(__name__)
@@ -111,6 +112,7 @@ class LiquidacionCalculator:
             avg=round_price(commercial_amount/commercial_kg) if commercial_kg else None
             member=MemberLiquidation(member_id=socio, member_name=name, variety=variety, delivery_count=data["count"], net_deliveries=data["net"], net_commercial=commercial_kg, net_waste=data["des"]+data["mesa"], net_rotten=data["pod"], grades=tuple(grades), commercial_amount=round_money(commercial_amount), destruction_amount=des_amount, table_destruction_amount=mesa_amount, rotten_amount=pod_amount, gross_amount=gross, detected_collection_amount=detected_collection, collection_amount=round_money(collection), detected_transport_amount=detected_transport, transport_amount=round_money(transport), quality_amount=qamount, globalgap_amount=Decimal("0"), hectare_fee_amount=Decimal("0"), effective_net_kg=data["net"], quality_rate=qrate, quality_source=qsource, taxable_base=None, commercial_average_price=avg, final_average_price=None, warnings=tuple(line_warnings), statuses=statuses, source_deliveries=tuple(data["deliveries"]))
             member_indexes[socio].append(len(members)); members.append(member)
+        members = self._apply_globalgap(members, header, options["GlobalGAP"])
         members = self._apply_hectare_fee(members, header, options["Cuota por hectárea"])
         final_members=[]
         for m in members:
@@ -195,6 +197,71 @@ class LiquidacionCalculator:
                 if audit:
                     self._audit_hectare_member(audit, result[idx], total_fee, total_kg, rate)
                 self.logger.info("Cuota Ha socio=%s hectares=%s annual_fee=%s total_effective_kg=%s rate_per_kg=%s line_effective_kg=%s line_fee=%s status=CALCULATED warnings=%s", socio, hectares, total_fee, total_kg, rate, m.net_kg, detected_fee, "; ".join(warnings))
+        return result
+
+
+    def _empty_globalgap_audit(self, member: MemberLiquidation, status: CalculationStatus, warnings=()):
+        return GlobalGapAuditData(False, False, (), (), None, None, None, None, None, member.net_kg, member.commercial_kg, None, None, Decimal("0") if status in (CalculationStatus.DISABLED, CalculationStatus.NOT_APPLICABLE) else None, status, tuple(warnings))
+
+    def _apply_globalgap(self, members: list[MemberLiquidation], header: LiquidationHeader, apply_globalgap: bool) -> list[MemberLiquidation]:
+        repo = self.globalgap_repository
+        if not repo:
+            msg = "Repositorio DEEPP/MNivelGlobal/BonGlobal no disponible; GlobalGAP no calculado."
+            status = CalculationStatus.ERROR if apply_globalgap else CalculationStatus.DISABLED
+            return [self._replace(m, globalgap_amount=Decimal("0") if not apply_globalgap else None, globalgap_audit=self._empty_globalgap_audit(m, status, (*m.warnings, msg)), warnings=(*m.warnings, msg), statuses={**m.statuses, "globalgap": status}) for m in members]
+
+        result = list(members)
+        cert_cache = {}
+        levels_cache = {}
+        index_cache = {}
+        rate = repo.get_bonus_rate(header)
+        rate_warnings = tuple(rate.warnings)
+        by_member: dict[int, list[int]] = defaultdict(list)
+        for idx, m in enumerate(result):
+            by_member[m.member_id].append(idx)
+
+        for socio, indexes in by_member.items():
+            cert = cert_cache.setdefault(socio, repo.get_member_certification(socio, header.campana, header.empresa))
+            levels = levels_cache.setdefault(socio, repo.get_member_levels(socio, header.campana, header.empresa)) if cert.certified else ()
+            level_result = None
+            member_warnings = list(cert.warnings) + list(rate_warnings)
+            if not apply_globalgap:
+                member_status = CalculationStatus.DISABLED
+            elif not cert.certified:
+                member_status = CalculationStatus.NOT_APPLICABLE
+            elif len(levels) == 0:
+                member_status = CalculationStatus.ERROR
+                member_warnings.append(f"El socio {socio} está certificado GlobalGAP, pero no tiene NivelGlobal definido.")
+            elif len(levels) > 1:
+                member_status = CalculationStatus.ERROR
+                member_warnings.append(f"El socio {socio} tiene varios niveles GlobalGAP: {', '.join(levels)}. No se ha calculado la bonificación.")
+            else:
+                level = levels[0]
+                level_result = index_cache.setdefault(level.strip().upper(), repo.get_level_index(level))
+                member_warnings.extend(level_result.warnings)
+                member_status = level_result.status
+            if member_status == CalculationStatus.CALCULATED and (rate.bonus_rate is None or rate.category is None):
+                member_status = CalculationStatus.ERROR
+            if member_status == CalculationStatus.CALCULATED and rate.category not in (0, 1):
+                member_status = CalculationStatus.ERROR
+                member_warnings.append(f"CATEGORIA GlobalGAP no válida: {rate.category}.")
+
+            for idx in indexes:
+                m = result[idx]
+                base_type = None
+                base_kg = None
+                detected = None
+                applied = Decimal("0") if member_status in (CalculationStatus.DISABLED, CalculationStatus.NOT_APPLICABLE) else None
+                if member_status == CalculationStatus.CALCULATED:
+                    # BonGlobal.CATEGORIA: 0 = base NetoComercial; 1 = base NetoEfectivo.
+                    base_type = "neto_comercial" if rate.category == 0 else "neto_efectivo"
+                    base_kg = m.commercial_kg if rate.category == 0 else m.net_kg
+                    raw_amount = (level_result.index or Decimal("0")) * (rate.bonus_rate or Decimal("0")) * base_kg
+                    detected = round_money(raw_amount)
+                    applied = detected if apply_globalgap else Decimal("0")
+                audit_data = GlobalGapAuditData(cert.certified, cert.inconsistent, cert.certified_crops, cert.non_certified_crops, (levels[0] if len(levels)==1 else None), (level_result.index if level_result else None), rate.bonus_rate, rate.category, base_type, m.net_kg, m.commercial_kg, base_kg, detected, applied, member_status, tuple(member_warnings))
+                result[idx] = self._replace(m, globalgap_amount=applied, globalgap_audit=audit_data, warnings=(*m.warnings, *member_warnings), statuses={**m.statuses, "globalgap": member_status})
+                self.logger.info("[GlobalGAP] socio=%s certified=%s inconsistent=%s certified_crops=%s non_certified_crops=%s level=%s index=%s bonus_rate=%s category=%s base=%s base_kg=%s detected_amount=%s applied_amount=%s status=%s", socio, cert.certified, cert.inconsistent, ','.join(cert.certified_crops), ','.join(cert.non_certified_crops), audit_data.level, audit_data.index, audit_data.bonus_rate, audit_data.category, audit_data.base_type, audit_data.base_kg, audit_data.detected_amount, audit_data.applied_amount, member_status.value)
         return result
 
     def _hectare_audit_data(self, surface_crops, delivery_crops, price, hectares, total_fee, total_kg, rate, line_kg, line_fee, status, warnings):

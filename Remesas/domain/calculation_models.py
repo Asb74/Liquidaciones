@@ -84,6 +84,52 @@ class HectareFeeAuditData:
 
 
 @dataclass(frozen=True)
+class GlobalGapCertificationResult:
+    certified: bool
+    inconsistent: bool
+    certified_crops: tuple[str, ...]
+    non_certified_crops: tuple[str, ...]
+    raw_values: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GlobalGapLevelResult:
+    level: str | None
+    index: Decimal | None
+    status: CalculationStatus
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GlobalGapRate:
+    bonus_rate: Decimal | None
+    category: int | None
+    source_description: str
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GlobalGapAuditData:
+    certified: bool
+    certification_inconsistent: bool
+    certified_crops: tuple[str, ...]
+    non_certified_crops: tuple[str, ...]
+    level: str | None
+    index: Decimal | None
+    bonus_rate: Decimal | None
+    category: int | None
+    base_type: str | None
+    effective_net_kg: Decimal
+    commercial_net_kg: Decimal
+    base_kg: Decimal | None
+    detected_amount: Decimal | None
+    applied_amount: Decimal | None
+    status: CalculationStatus
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class MemberLiquidation:
     member_id: int
     member_name: str
@@ -105,6 +151,7 @@ class MemberLiquidation:
     transport_amount: Decimal | None = None
     quality_amount: Decimal | None = None
     globalgap_amount: Decimal | None = None
+    globalgap_audit: GlobalGapAuditData | None = None
     hectare_fee_amount: Decimal | None = None
     effective_net_kg: Decimal = Decimal("0")
     quality_rate: Decimal = Decimal("0")

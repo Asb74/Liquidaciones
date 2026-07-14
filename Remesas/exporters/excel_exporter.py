@@ -189,10 +189,32 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
         ])
 
 
+    red_fill = PatternFill(start_color="FFFF9999", end_color="FFFF9999", fill_type="solid")
+    gg_ws = wb.create_sheet("Auditoría GlobalGAP")
+    gg_headers = ["Nº Socio", "Socio", "Variedad", "Campaña", "Empresa", "Cultivo remesa", "Checkbox AplGlobal", "Certificado", "Certificación incoherente", "Cultivos certificados", "Cultivos no certificados", "NivelGlobal", "Índice", "Bonificación base", "Categoría", "Base utilizada", "Neto efectivo", "Neto comercial", "Kilos base", "Importe detectado", "Importe aplicado", "Importe almacenado en modelo", "Importe exportado a Resumen", "Estado", "Advertencias", "Alineado"]
+    gg_ws.append(gg_headers)
+    for member in result.member_results:
+        audit_data = getattr(member, "globalgap_audit", None)
+        exported = _number(member.globalgap_amount, "B. Glob.")
+        applied = getattr(audit_data, "applied_amount", None)
+        expected = applied
+        aligned = expected == member.globalgap_amount == exported
+        gg_ws.append([
+            member.member_id, member.member_name, member.variety, result.header.campana, result.header.empresa, result.header.cultivo,
+            "SÍ" if result.header.options.get("GlobalGAP") else "NO", "SÍ" if getattr(audit_data, "certified", False) else "NO", "SÍ" if getattr(audit_data, "certification_inconsistent", False) else "NO",
+            ", ".join(getattr(audit_data, "certified_crops", ())), ", ".join(getattr(audit_data, "non_certified_crops", ())),
+            getattr(audit_data, "level", None), _number(getattr(audit_data, "index", None), "Índice"), _number(getattr(audit_data, "bonus_rate", None), "Bonificación base"), getattr(audit_data, "category", None), getattr(audit_data, "base_type", None),
+            _number(getattr(audit_data, "effective_net_kg", None), "Neto efectivo"), _number(getattr(audit_data, "commercial_net_kg", None), "Neto comercial"), _number(getattr(audit_data, "base_kg", None), "Kilos base"),
+            _number(getattr(audit_data, "detected_amount", None), "Importe detectado"), _number(applied, "Importe aplicado"), _number(member.globalgap_amount, "Importe almacenado"), exported,
+            getattr(getattr(audit_data, "status", None), "value", str(getattr(audit_data, "status", ""))), "; ".join(getattr(audit_data, "warnings", ())), "SÍ" if aligned else "NO",
+        ])
+        if not aligned:
+            for cell in gg_ws[gg_ws.max_row]:
+                cell.fill = red_fill
+
     audit_ws = wb.create_sheet("Auditoría cuota Ha")
     audit_headers = ["Nº Socio", "Socio", "Variedad", "Campaña", "Empresa", "Cultivo remesa", "Precio €/ha", "Cultivos superficie activos", "Cultivos entrega activos", "Hectáreas aplicables", "Cuota teórica total", "Kg efectivos campaña", "Índice €/kg", "Kg efectivos remesa", "Cuota parcial calculada", "Cuota almacenada en modelo", "Cuota exportada a Resumen", "Estado", "Advertencias", "Alineado"]
     audit_ws.append(audit_headers)
-    red_fill = PatternFill(start_color="FFFF9999", end_color="FFFF9999", fill_type="solid")
     for member in result.member_results:
         audit_data = getattr(member, "hectare_fee_audit", None)
         exported = _hectare_fee_excel_value(member)
