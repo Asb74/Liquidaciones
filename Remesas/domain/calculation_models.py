@@ -100,6 +100,7 @@ class MemberLiquidation:
     hectare_fee_rate_per_kg: Decimal | None = None
     hectare_fee_status: CalculationStatus = CalculationStatus.NOT_APPLICABLE
     hectare_fee_rounding_adjustment: Decimal = Decimal("0")
+    hectare_fee_parcels: tuple[dict, ...] = ()
     taxable_base: Decimal | None = None
     vat_rate: Decimal | None = None
     vat_amount: Decimal | None = None

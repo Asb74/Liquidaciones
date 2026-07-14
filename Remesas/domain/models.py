@@ -19,6 +19,7 @@ class AppConfig:
     audit_enabled: bool = False
     audit_dir: str = "logs"
     hectare_fee_price_per_hectare: Decimal = Decimal("195")
+    hectare_fee_surface_crops: tuple[str, ...] = ("CITRICOS", "MANDARINA")
     hectare_fee_delivery_crops: tuple[str, ...] = ("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA")
     hectare_fee_applicable_remittance_crops: tuple[str, ...] = ("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA")
 
