@@ -167,6 +167,18 @@ class AuditLogger:
                 self.line("ERROR DE ALINEACIÓN")
         self.line(f"¿hectare_fee_amount llega con valor?: {member.hectare_fee_amount is not None}")
         self.audit_taxable_base(member, member.taxable_base)
+        self.audit_fiscal_regime(member)
+
+    def audit_fiscal_regime(self, member: MemberLiquidation) -> None:
+        self.subsection("RégimenFiscal")
+        self.line(f"Socio={member.member_id}")
+        self.line(f"Regimen={getattr(member, 'fiscal_regime_name', '') or ''}")
+        self.line(f"IVA={member.vat_rate}")
+        self.line(f"Ret={member.withholding_rate}")
+        self.line(f"Base={member.taxable_base}")
+        self.line(f"IVAImporte={member.vat_amount}")
+        self.line(f"RetImporte={member.withholding_amount}")
+        self.line(f"Total={member.total_amount}")
 
     def audit_taxable_base(self, member: MemberLiquidation, exported_taxable_base: Any = None) -> None:
         self.subsection("BaseImponible")

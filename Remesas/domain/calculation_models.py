@@ -166,6 +166,7 @@ class MemberLiquidation:
     hectare_fee_parcels: tuple[dict, ...] = ()
     hectare_fee_audit: HectareFeeAuditData | None = None
     taxable_base: Decimal | None = None
+    fiscal_regime_name: str = ""
     vat_rate: Decimal | None = None
     vat_amount: Decimal | None = None
     withholding_rate: Decimal | None = None

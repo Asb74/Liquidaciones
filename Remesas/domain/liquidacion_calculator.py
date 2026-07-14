@@ -76,10 +76,11 @@ def calculate_total(taxable_base: Decimal, vat_amount: Decimal, withholding_amou
 class LiquidacionCalculator:
     """Simulación en memoria; no escribe en Access ni en DLiquidaciones."""
 
-    def __init__(self, quality_repository: Any | None = None, hectare_repository: Any | None = None, hectare_config: Any | None = None, globalgap_repository: Any | None = None) -> None:
+    def __init__(self, quality_repository: Any | None = None, hectare_repository: Any | None = None, hectare_config: Any | None = None, globalgap_repository: Any | None = None, fiscal_regime_repository: Any | None = None) -> None:
         self.quality_repository = quality_repository
         self.hectare_repository = hectare_repository
         self.globalgap_repository = globalgap_repository
+        self.fiscal_regime_repository = fiscal_regime_repository
         self.hectare_config = hectare_config
         self.hectare_master = None
         self.logger = logging.getLogger(__name__)
@@ -153,7 +154,16 @@ class LiquidacionCalculator:
             tb=calculate_taxable_base(m.gross_amount, collection_amount, hectare_fee_amount, quality_amount, transport_amount, globalgap_amount)
             final_avg=round_price(tb/m.net_kg) if m.net_kg else None
             self.logger.info("[BaseImponible] socio=%s gross_amount=%s collection_amount=%s hectare_fee_amount=%s quality_amount=%s transport_amount=%s globalgap_amount=%s expected_taxable_base=%s stored_taxable_base=%s aligned=%s", m.member_id, m.gross_amount, collection_amount, hectare_fee_amount, quality_amount, transport_amount, globalgap_amount, tb, tb, True)
-            final_members.append(self._replace(m, taxable_base=tb, final_average_price=final_avg, statuses={**m.statuses, "taxable_base": CalculationStatus.CALCULATED}))
+            if not self.fiscal_regime_repository:
+                final_members.append(self._replace(m, taxable_base=tb, final_average_price=final_avg, statuses={**m.statuses, "taxable_base": CalculationStatus.CALCULATED, "vat": CalculationStatus.PENDING, "withholding": CalculationStatus.PENDING, "total": CalculationStatus.PENDING}))
+                continue
+            lookup = self.fiscal_regime_repository.get_for_member(m.member_id)
+            vat_amount = calculate_vat(tb, lookup.regime.vat_rate)
+            withholding_amount = calculate_withholding(tb, lookup.regime.withholding_rate)
+            total_amount = calculate_total(tb, vat_amount, withholding_amount)
+            warnings_with_fiscal = (*m.warnings, *lookup.warnings)
+            self.logger.info("[RégimenFiscal] Socio=%s Regimen=%s IVA=%s Ret=%s Base=%s IVAImporte=%s RetImporte=%s Total=%s", m.member_id, lookup.regime.name, lookup.regime.vat_rate, lookup.regime.withholding_rate, tb, vat_amount, withholding_amount, total_amount)
+            final_members.append(self._replace(m, taxable_base=tb, final_average_price=final_avg, fiscal_regime_name=lookup.regime.name, vat_rate=lookup.regime.vat_rate, withholding_rate=lookup.regime.withholding_rate, vat_amount=vat_amount, withholding_amount=withholding_amount, total_amount=total_amount, warnings=warnings_with_fiscal, statuses={**m.statuses, "taxable_base": CalculationStatus.CALCULATED, "vat": CalculationStatus.CALCULATED, "withholding": CalculationStatus.CALCULATED, "total": CalculationStatus.CALCULATED}))
         members=final_members
         def sum_opt(attr: str) -> Decimal | None:
             vals=[getattr(m, attr) for m in members]
