@@ -33,10 +33,11 @@ from ui.hectare_fee_master_dialog import HectareFeeMasterDialog
 from exporters.excel_exporter import export_liquidation_summary
 from exporters.file_lock import FileLockedError
 from exporters.hectare_fee_auditor import export_hectare_fee_audit
+from presentation.premium_liquidation_view_model import from_member_liquidation, sanitize_filename
 
 logger = logging.getLogger(__name__)
 from exporters.pdf_exporter import export_member_pdf
-from exporters.premium_pdf_exporter import LOCKED_PDF_MESSAGE, export_premium_member_pdfs
+from exporters.premium_pdf_exporter import LOCKED_PDF_MESSAGE, export_premium_member_pdf
 
 class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
@@ -80,7 +81,7 @@ class RemesasFrame(ttk.Frame):
         self.action_buttons={}
         for i,(text,cmd) in enumerate(actions):
             b=ttk.Button(self.buttons,text=text,command=cmd); b.grid(row=0,column=i,padx=2); self.action_buttons[text]=b
-        for i,(text,cmd) in enumerate([("Calcular liquidación",self._calculate),("Exportar resumen de liquidación",self._export_liquidation_excel),("Generar PDF para socio",self._export_premium_pdf), ("Generar PDF de liquidación",self._export_liquidation_pdf),("Guardar liquidaciones",lambda:None),("Anular liquidación",lambda:None)]):
+        for i,(text,cmd) in enumerate([("Calcular liquidación",self._calculate),("Exportar resumen de liquidación",self._export_liquidation_excel),("Liquidación Premium",self._export_premium_pdf), ("Informe interno",self._export_liquidation_pdf),("Guardar liquidaciones",lambda:None),("Anular liquidación",lambda:None)]):
             b=ttk.Button(self.buttons,text=text,command=cmd,state="disabled"); b.grid(row=1,column=i,padx=2,pady=2); self.action_buttons[text]=b
         ttk.Label(self.buttons,text="Persistencia deshabilitada en esta fase.").grid(row=1,column=5,columnspan=3,sticky="w")
 
@@ -318,19 +319,21 @@ class RemesasFrame(ttk.Frame):
         has_valid_context = self._context_ready()
         has_varieties = bool(self.selected.get(0,"end"))
         has_deliveries = bool(self.current_deliveries) or bool(self.deliveries_panel.visible_rows())
-        has_valid_calculation = bool(self.current_calculation and self.current_calculation.result and self.calculation_valid and self.current_calculation.result.member_results)
+        calculation_ready = self.current_calculation is not None and self.calculation_valid
+        premium_members_ready = bool(calculation_ready and self._premium_members())
+        persistence_enabled = bool(getattr(self, "persistence_enabled", False))
         can_search = has_valid_context
         can_calculate = has_valid_context and has_varieties and has_deliveries
-        can_preview = has_deliveries
-        can_export_calculation = has_valid_calculation
+        can_persist = persistence_enabled and calculation_ready
         if hasattr(self, "action_buttons"):
             self.action_buttons["Buscar entregas"].configure(state="normal" if can_search else "disabled")
             self.action_buttons["Calcular liquidación"].configure(state="normal" if can_calculate else "disabled")
-            self.action_buttons["Vista previa"].configure(state="normal" if can_preview else "disabled")
-            self.action_buttons["Guardar liquidaciones"].configure(state="disabled")
-            self.action_buttons["Anular liquidación"].configure(state="disabled")
-            if "Exportar resumen de liquidación" in self.action_buttons: self.action_buttons["Exportar resumen de liquidación"].configure(state="normal" if can_export_calculation else "disabled")
-            if "Generar PDF de liquidación" in self.action_buttons: self.action_buttons["Generar PDF de liquidación"].configure(state="normal" if can_export_calculation else "disabled")
+            self.action_buttons["Vista previa"].configure(state="normal" if calculation_ready else "disabled")
+            self.action_buttons["Guardar liquidaciones"].configure(state="normal" if can_persist else "disabled")
+            self.action_buttons["Anular liquidación"].configure(state="normal" if can_persist else "disabled")
+            if "Exportar resumen de liquidación" in self.action_buttons: self.action_buttons["Exportar resumen de liquidación"].configure(state="normal" if calculation_ready else "disabled")
+            if "Liquidación Premium" in self.action_buttons: self.action_buttons["Liquidación Premium"].configure(state="normal" if premium_members_ready else "disabled")
+            if "Informe interno" in self.action_buttons: self.action_buttons["Informe interno"].configure(state="normal" if calculation_ready else "disabled")
 
     def _deliveries(self):
         return list(self.current_deliveries)
@@ -491,19 +494,111 @@ class RemesasFrame(ttk.Frame):
             return
         messagebox.showinfo("Exportación completada", f"El resumen se ha guardado en:\n{path}")
 
+    def _premium_members(self):
+        result = self.current_calculation.result if self.current_calculation and self.current_calculation.result else None
+        if not result:
+            return []
+        unique = {}
+        for member in result.member_results:
+            unique.setdefault(member.member_id, member)
+        return sorted(unique.values(), key=lambda member: member.member_id)
+
+    def _premium_member_label(self, member) -> str:
+        return f"{member.member_id} - {member.member_name}"
+
+    def _premium_member_path(self, member) -> Path:
+        filename = sanitize_filename(f"{int(member.member_id):04d}_{member.member_name}") + ".pdf"
+        return self._output_dir() / "socios" / filename
+
+    def _write_premium_trace(self, *, mode: str, available, selected=None, paths=(), errors=0, error_text="") -> None:
+        log_dir = Path.cwd() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        remesa = self.remesa_panel.data().get("remesa") or ""
+        lines = [
+            "===================================",
+            "",
+            "Generación PDF Premium",
+            "",
+            "Remesa:",
+            str(remesa),
+            "",
+            "Socios disponibles:",
+            "",
+            *[str(member.member_id) for member in available],
+            "",
+            "Modo:",
+            mode,
+            "",
+        ]
+        if mode == "Todos":
+            lines += ["Socios generados:", str(len(paths)), "", "Errores:", str(errors)]
+        else:
+            lines += ["Socio seleccionado:", str(selected.member_id if selected else ""), "", "Resultado:", "PDF generado correctamente" if paths and not errors else (error_text or "Error"), "", "Ruta:", str(paths[0]) if paths else ""]
+        if error_text and mode == "Todos":
+            lines += ["", "Detalle errores:", error_text]
+        with (log_dir / "premium_pdf.log").open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+
+    def _generate_premium_pdfs(self, members, *, preview: bool = False) -> tuple[Path, ...]:
+        result = self.current_calculation.result
+        paths = []
+        for member in members:
+            vm = from_member_liquidation(result.header, member)
+            paths.append(export_premium_member_pdf(vm, self._premium_member_path(member)))
+        if preview and paths:
+            if hasattr(os, "startfile"):
+                os.startfile(paths[0])
+            else:
+                messagebox.showinfo("Vista previa", f"PDF generado para vista previa:\n{paths[0]}")
+        return tuple(paths)
+
+    def _select_premium_members_dialog(self, members):
+        selected = {"action": None, "member": members[0], "all": False}
+        win=tk.Toplevel(self); win.title("Liquidaciones Premium"); win.transient(self.winfo_toplevel()); win.grab_set(); win.resizable(False, False)
+        ttk.Label(win, text="Seleccione el socio").grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(12, 4))
+        values=[self._premium_member_label(member) for member in members]
+        combo_var=tk.StringVar(value=values[0])
+        combo=ttk.Combobox(win, textvariable=combo_var, values=values, state="readonly", width=42)
+        combo.grid(row=1, column=0, columnspan=3, sticky="ew", padx=12, pady=4)
+        all_var=tk.BooleanVar(value=False)
+        ttk.Checkbutton(win, text="Generar todos los socios", variable=all_var).grid(row=2, column=0, columnspan=3, sticky="w", padx=12, pady=4)
+        ttk.Separator(win).grid(row=3, column=0, columnspan=3, sticky="ew", padx=12, pady=8)
+        def finish(action):
+            selected["action"] = action
+            selected["all"] = all_var.get()
+            selected["member"] = members[values.index(combo_var.get())]
+            win.destroy()
+        ttk.Button(win, text="Cancelar", command=lambda: finish("cancel")).grid(row=4, column=0, padx=8, pady=(0, 12))
+        ttk.Button(win, text="Vista previa", command=lambda: finish("preview")).grid(row=4, column=1, padx=8, pady=(0, 12))
+        ttk.Button(win, text="Generar PDF", command=lambda: finish("generate")).grid(row=4, column=2, padx=8, pady=(0, 12))
+        win.wait_window()
+        return selected
+
     def _export_premium_pdf(self):
         if not (self.current_calculation and self.current_calculation.result and self.calculation_valid): return
+        members = self._premium_members()
+        if not members:
+            messagebox.showwarning("Liquidación Premium", "No hay socios disponibles en el cálculo actual.")
+            return
+        selection = {"action": "generate", "member": members[0], "all": False} if len(members) == 1 else self._select_premium_members_dialog(members)
+        if selection["action"] == "cancel":
+            return
+        selected_members = members if selection["all"] and selection["action"] == "generate" else [selection["member"]]
+        mode = "Todos" if selection["all"] and selection["action"] == "generate" else "Individual"
         try:
-            paths=export_premium_member_pdfs(self.current_calculation.result, self._output_dir())
+            paths=self._generate_premium_pdfs(selected_members, preview=selection["action"] == "preview")
         except FileLockedError as exc:
             logger.warning("PDF Premium bloqueado: %s", exc.path)
+            self._write_premium_trace(mode=mode, available=members, selected=selection["member"], errors=1, error_text=str(exc.path))
             messagebox.showwarning("PDF abierto", LOCKED_PDF_MESSAGE)
             return
         except Exception as exc:
             logger.exception("Error exportando Liquidación Premium")
+            self._write_premium_trace(mode=mode, available=members, selected=selection["member"], errors=1, error_text=str(exc))
             messagebox.showerror("Liquidación Premium", f"No se ha podido generar el PDF Premium:\n{exc}")
             return
-        messagebox.showinfo("Liquidación Premium", f"PDFs Premium generados: {len(paths)}\nCarpeta: {self._output_dir()/"socios"}")
+        self._write_premium_trace(mode=mode, available=members, selected=selection["member"], paths=paths)
+        messagebox.showinfo("Liquidación Premium", f"PDFs Premium generados: {len(paths)}\nCarpeta: {self._output_dir()/'socios'}")
 
     def _export_liquidation_pdf(self):
         if not (self.current_calculation and self.current_calculation.result and self.calculation_valid): return
