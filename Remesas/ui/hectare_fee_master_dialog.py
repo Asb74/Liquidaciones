@@ -28,8 +28,7 @@ class HectareFeeMasterDialog(tk.Toplevel):
         self.resizable(True, True)
         self.master_data = self.service.load_master()
         self.price_var = tk.StringVar(value=format_decimal_es_value(self.master_data.price_per_hectare))
-        self._surface_selected = set(self.master_data.surface_crops)
-        self._delivery_selected = set(self.master_data.delivery_crops)
+        self._eligible_selected = set(self.master_data.eligible_crops)
         self._build()
         self._load_lists()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
@@ -43,19 +42,16 @@ class HectareFeeMasterDialog(tk.Toplevel):
 
         lists = ttk.Frame(self)
         lists.pack(fill="both", expand=True, padx=8, pady=4)
-        self.surface_tree = self._build_tree(lists, "Cultivos de superficie")
-        self.delivery_tree = self._build_tree(lists, "Cultivos de entrega")
-        self.surface_tree.master.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-        self.delivery_tree.master.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
-        lists.columnconfigure(0, weight=1); lists.columnconfigure(1, weight=1); lists.rowconfigure(0, weight=1)
+        ttk.Label(lists, text="Estos cultivos se utilizarán tanto para calcular la superficie como para sumar los kilos anuales del socio.").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self.eligible_tree = self._build_tree(lists, "CULTIVOS SUJETOS A CUOTA HA")
+        self.eligible_tree.master.grid(row=1, column=0, sticky="nsew")
+        lists.columnconfigure(0, weight=1); lists.rowconfigure(1, weight=1)
 
         buttons = ttk.Frame(self)
         buttons.pack(fill="x", padx=8, pady=8)
         ttk.Button(buttons, text="Restaurar valores iniciales", command=self._restore_defaults).pack(side="left", padx=3)
-        ttk.Button(buttons, text="Seleccionar todos superficie", command=lambda: self._set_all(self.surface_tree, self._surface_selected, True)).pack(side="left", padx=3)
-        ttk.Button(buttons, text="Quitar todos superficie", command=lambda: self._set_all(self.surface_tree, self._surface_selected, False)).pack(side="left", padx=3)
-        ttk.Button(buttons, text="Seleccionar todos entrega", command=lambda: self._set_all(self.delivery_tree, self._delivery_selected, True)).pack(side="left", padx=3)
-        ttk.Button(buttons, text="Quitar todos entrega", command=lambda: self._set_all(self.delivery_tree, self._delivery_selected, False)).pack(side="left", padx=3)
+        ttk.Button(buttons, text="Seleccionar todos", command=lambda: self._set_all(self.eligible_tree, self._eligible_selected, True)).pack(side="left", padx=3)
+        ttk.Button(buttons, text="Quitar todos", command=lambda: self._set_all(self.eligible_tree, self._eligible_selected, False)).pack(side="left", padx=3)
         ttk.Button(buttons, text="Cancelar", command=self.destroy).pack(side="right", padx=3)
         ttk.Button(buttons, text="Guardar", command=self._save).pack(side="right", padx=3)
 
@@ -73,8 +69,7 @@ class HectareFeeMasterDialog(tk.Toplevel):
         return tree
 
     def _load_lists(self) -> None:
-        self._populate(self.surface_tree, self.service.list_surface_crop_options(), self._surface_selected)
-        self._populate(self.delivery_tree, self.service.list_delivery_crop_options(), self._delivery_selected)
+        self._populate(self.eligible_tree, self.service.list_eligible_crop_options(), self._eligible_selected)
 
     def _populate(self, tree: ttk.Treeview, db_options: list[str], selected: set[str]) -> None:
         tree.delete(*tree.get_children())
@@ -89,7 +84,7 @@ class HectareFeeMasterDialog(tk.Toplevel):
     def _toggle_tree(self, tree: ttk.Treeview) -> None:
         item = tree.focus()
         if not item: return
-        target = self._surface_selected if tree is self.surface_tree else self._delivery_selected
+        target = self._eligible_selected
         if item in target: target.remove(item)
         else: target.add(item)
         crop = tree.set(item, "crop"); status = tree.set(item, "status")
@@ -105,8 +100,7 @@ class HectareFeeMasterDialog(tk.Toplevel):
     def _restore_defaults(self) -> None:
         self.master_data = self.service.restore_defaults()
         self.price_var.set(format_decimal_es_value(self.master_data.price_per_hectare))
-        self._surface_selected = set(self.master_data.surface_crops)
-        self._delivery_selected = set(self.master_data.delivery_crops)
+        self._eligible_selected = set(self.master_data.eligible_crops)
         self._load_lists()
 
     def _validated_master(self) -> HectareFeeMaster:
@@ -114,11 +108,9 @@ class HectareFeeMasterDialog(tk.Toplevel):
             price = parse_decimal(self.price_var.get(), "El precio por hectárea")
         except ValueError as exc:
             raise ValueError("El precio por hectárea debe ser un número mayor que cero.") from exc
-        if not self._surface_selected:
-            raise ValueError("Debe seleccionar al menos un cultivo de superficie.")
-        if not self._delivery_selected:
-            raise ValueError("Debe seleccionar al menos un cultivo de entrega.")
-        return HectareFeeMaster(price, normalize_crops(self._surface_selected), normalize_crops(self._delivery_selected))
+        if not self._eligible_selected:
+            raise ValueError("Debe seleccionar al menos un cultivo sujeto a Cuota Ha.")
+        return HectareFeeMaster(price, normalize_crops(self._eligible_selected))
 
     def _save(self) -> None:
         try:

@@ -47,8 +47,7 @@ def export_hectare_fee_audit(result: Any, output_dir: Path) -> tuple[Path, Path]
     logger.info("LiquidationHeader=%s", vars(header) if is_dataclass(header) else header)
     master = getattr(result, "hectare_fee_master", None)
     price = getattr(master, "price_per_hectare", None)
-    surface_crops = tuple(getattr(master, "surface_crops", ()))
-    delivery_crops = tuple(getattr(master, "delivery_crops", ()))
+    eligible_crops = tuple(getattr(master, "eligible_crops", getattr(master, "surface_crops", ())))
     lines: list[str] = []
     socios_rows: list[dict[str, Any]] = []
     deepp_rows: list[dict[str, Any]] = []
@@ -66,8 +65,7 @@ def export_hectare_fee_audit(result: Any, output_dir: Path) -> tuple[Path, Path]
     line(f"Cultivo remesa: {header.cultivo}")
     line(f"Remesa: {header.remesa_name} ({header.remesa_id})")
     line(f"Precio hectárea: {price}")
-    line(f"Cultivos configurados para calcular superficie: {', '.join(surface_crops)}")
-    line(f"Cultivos configurados para calcular kilos: {', '.join(delivery_crops)}")
+    line(f"Cultivos aplicables: {', '.join(eligible_crops)}")
 
     for m in result.member_results:
         audit = getattr(m, "hectare_fee_audit", None)
@@ -76,7 +74,7 @@ def export_hectare_fee_audit(result: Any, output_dir: Path) -> tuple[Path, Path]
         perceco = PERCECO_REFERENCE.get(int(m.member_id)) if str(m.member_id).isdigit() else None
         diff = None if perceco is None or m.hectare_fee_amount is None else Decimal(str(m.hectare_fee_amount)) - perceco
         estado = "OK" if diff == 0 else ("NO COINCIDE" if perceco is not None else "SIN REFERENCIA")
-        socios_rows.append({"IdSocio": m.member_id, "Nombre": m.member_name, "Variedad": m.variety, "Kg línea": m.net_kg, "Superficie": m.applicable_hectares, "Cuota anual": m.hectare_fee_total_member, "Kg campaña": m.hectare_fee_total_effective_kg, "Índice": m.hectare_fee_rate_per_kg, "Cuota Python": m.hectare_fee_amount, "Cuota Perceco": perceco, "Diferencia": diff, "Estado": estado})
+        socios_rows.append({"IdSocio": m.member_id, "Nombre": m.member_name, "Variedad": m.variety, "Kg línea": m.net_kg, "Superficie": m.applicable_hectares, "Cuota anual": m.hectare_fee_total_member, "Kg campaña": m.hectare_fee_total_effective_kg, "Índice": m.hectare_fee_rate_per_kg, "Cuota Python": m.hectare_fee_amount, "Cuota Perceco": perceco, "Diferencia": diff, "Estado": estado, "Cuota ya aplicada": getattr(audit, "already_applied_fee", None), "Cuota proyectada": getattr(audit, "projected_applied_fee", None), "Saldo pendiente": getattr(audit, "remaining_fee", None), "Estado cierre": getattr(audit, "balance_status", None)})
         line("\n====================================================")
         line("SOCIO")
         line("====================================================")
@@ -104,7 +102,7 @@ def export_hectare_fee_audit(result: Any, output_dir: Path) -> tuple[Path, Path]
             line(f"Consulta SQL: {r.get('Consulta SQL DParcela','')}"); line(f"Parámetros: {r.get('Parámetros DParcela','')}")
             line(" | ".join(f"{k}={r.get(k)}" for k in ("Boleta DParcela","Campaña DParcela","Empresa DParcela","Cultivo DParcela","Pol","Par","Rec","SupCul DParcela","SupRec","SupApor","Año","Alta DParcela","Baja DParcela")))
             included = r.get("Incluida") == "Sí"
-            line(f"CHA activo: {r.get('CHA activo')} | Parcela dada de baja: {'No' if not r.get('Baja DParcela') else 'Sí'} | Año plantación: {r.get('Año')} | Antigüedad: {r.get('Antigüedad')} | Mayor de cinco años: {r.get('Antigüedad suficiente')} | Cultivo permitido: {'Sí' if r.get('Cultivo DParcela') in surface_crops else 'No'} | Empresa correcta: {'Sí' if str(r.get('Empresa DParcela')) == str(header.empresa) else 'No'} | Campaña correcta: {'Sí' if str(r.get('Campaña DParcela')) == str(header.campana) else 'No'} | Superficie válida: {'Sí' if Decimal(str(r.get('SupCul DParcela') or 0)) > 0 else 'No'}")
+            line(f"CHA activo: {r.get('CHA activo')} | Parcela dada de baja: {'No' if not r.get('Baja DParcela') else 'Sí'} | Año plantación: {r.get('Año')} | Antigüedad: {r.get('Antigüedad')} | Mayor de cinco años: {r.get('Antigüedad suficiente')} | Cultivo permitido: {'Sí' if r.get('Cultivo DParcela') in eligible_crops else 'No'} | Empresa correcta: {'Sí' if str(r.get('Empresa DParcela')) == str(header.empresa) else 'No'} | Campaña correcta: {'Sí' if str(r.get('Campaña DParcela')) == str(header.campana) else 'No'} | Superficie válida: {'Sí' if Decimal(str(r.get('SupCul DParcela') or 0)) > 0 else 'No'}")
             line(f"Resultado: {'INCLUIDA' if included else 'EXCLUIDA'} {r.get('Motivo exclusión','')}")
             if included:
                 acc += Decimal(str(r.get("SupCul DParcela") or 0)); line(f"Parcela: {r.get('Clave deduplicación')} | Superficie: {r.get('SupCul DParcela')} | Acumulado: {acc}")
@@ -123,7 +121,7 @@ def export_hectare_fee_audit(result: Any, output_dir: Path) -> tuple[Path, Path]
         line("\nFASE 10 - COMPARACIÓN CON PERCECO"); line(f"Python: {m.hectare_fee_amount} | Perceco: {perceco} | Diferencia: {diff}")
         first = "Sin referencia Perceco detallada; primera comparación disponible: cuota final." if perceco is None else ("Sin diferencias detectadas en referencia disponible." if diff == 0 else f"*************\nPRIMERA DIFERENCIA DETECTADA\n*************\nCuota línea Python={m.hectare_fee_amount} Perceco={perceco} Diferencia={diff}")
         line("\nFASE 11 - PRIMER DATO DISTINTO"); line(first)
-        diag_rows.append({"IdSocio": m.member_id, "Primer dato distinto": first, "Estado": estado})
+        diag_rows.append({"IdSocio": m.member_id, "Primer dato distinto": first, "Estado": estado, "Cuota ya aplicada": getattr(audit, "already_applied_fee", None), "Cuota proyectada": getattr(audit, "projected_applied_fee", None), "Saldo pendiente": getattr(audit, "remaining_fee", None), "Estado cierre": getattr(audit, "balance_status", None)})
         line("\nRESUMEN FINAL"); line(f"Superficie={m.applicable_hectares} | Cuota anual={m.hectare_fee_total_member} | Kg campaña={m.hectare_fee_total_effective_kg} | Índice={m.hectare_fee_rate_per_kg} | Kg línea={m.net_kg} | Cuota Python={m.hectare_fee_amount} | Cuota Perceco={perceco} | Diferencia={diff} | Estado={estado}")
 
     log_path.write_text("\n".join(lines), encoding="utf-8")

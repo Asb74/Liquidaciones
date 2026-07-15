@@ -53,7 +53,7 @@ class HectareFeeProrationTests(unittest.TestCase):
     def test_non_apt_delivery_supports_global_fee(self):
         repo = FakeHectareRepository()
         calc = LiquidacionCalculator(hectare_repository=repo)
-        calc.hectare_master = HectareFeeMaster(price_per_hectare=Decimal("195"), surface_crops=("CITRICOS", "MANDARINA"), delivery_crops=("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA"))
+        calc.hectare_master = HectareFeeMaster(price_per_hectare=Decimal("195"), eligible_crops=("CITRICOS", "MANDARINA"))
         result = calc._apply_hectare_fee([member("NO_APTA", Decimal("30000"))], header(), True)[0]
         self.assertEqual(result.applicable_hectares, Decimal("2"))
         self.assertEqual(result.hectare_fee_total_member, Decimal("390.00"))
@@ -69,7 +69,8 @@ class HectareFeeProrationTests(unittest.TestCase):
         result = LiquidacionCalculator(hectare_repository=FakeHectareRepository())._apply_hectare_fee([member("JOVEN", Decimal("30000"))], header(), True)[0]
         self.assertEqual(result.hectare_fee_amount, Decimal("117.00"))
         self.assertEqual(result.hectare_fee_audit.young_parcels, 1)
-        self.assertEqual(dict(result.hectare_fee_audit.kg_by_crop)["DIRECTO"], Decimal("30000"))
+        self.assertNotIn("DIRECTO", dict(result.hectare_fee_audit.kg_by_crop))
+        self.assertEqual(result.hectare_fee_audit.eligible_crops, ("CITRICOS", "MANDARINA"))
 
     def test_same_member_multiple_varieties_reuse_same_index(self):
         repo = FakeHectareRepository()

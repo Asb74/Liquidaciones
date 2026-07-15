@@ -62,7 +62,7 @@ class HectareRepository:
         self.last_deepp_params: list[Any] = []
         self.last_dparcela_sql = ""
 
-    def calculate_applicable_hectares(self, member_id: int, campaign: int | str, company: int | str, applicable_crops: Sequence[str] | None = None) -> tuple[Decimal, tuple[str, ...]]:
+    def calculate_applicable_hectares(self, member_id: int, campaign: int | str, company: int | str, eligible_crops: Sequence[str] | None = None) -> tuple[Decimal, tuple[str, ...]]:
         """Return SUM(DParcela.SupCul) after auditable staged filtering.
 
         Stages:
@@ -70,7 +70,7 @@ class HectareRepository:
         B. DParcela lookup only by Boleta;
         C. context filters in Python: campaña, empresa, productive crop, baja, Año and SupCul.
         """
-        crops = tuple(dict.fromkeys((c or "").strip().upper() for c in (applicable_crops or ("CITRICOS", "MANDARINA")) if (c or "").strip()))
+        crops = tuple(dict.fromkeys((c or "").strip().upper() for c in (eligible_crops or ("CITRICOS", "MANDARINA")) if (c or "").strip()))
         start = time.perf_counter()
         self.last_deepp_sql = self._deepp_sql(crops)
         self.last_deepp_params = [member_id, str(campaign), str(company), *crops]
@@ -142,8 +142,8 @@ class HectareRepository:
         self.logger.debug("Superficie socio=%s campaña=%s empresa=%s total=%s filas_incluidas=%s", member_id, campaign, company, total, len(included_rows))
         return total, tuple(warnings)
 
-    def total_effective_kg(self, member_id: int, campaign: int | str, company: int | str, delivery_crops: Sequence[str]) -> Decimal:
-        placeholders = ",".join("?" for _ in delivery_crops)
+    def total_effective_kg(self, member_id: int, campaign: int | str, company: int | str, eligible_crops: Sequence[str]) -> Decimal:
+        placeholders = ",".join("?" for _ in eligible_crops)
         sql = f"""
             SELECT COALESCE(SUM({EFFECTIVE_NET_SQL.format(alias='p')}), 0) AS TotalEffectiveKg
             FROM PesosFres AS p
@@ -152,21 +152,21 @@ class HectareRepository:
               AND CAST(p.EMPRESA AS TEXT)=CAST(? AS TEXT)
               AND UPPER(TRIM(p.CULTIVO)) IN ({placeholders})
         """
-        params = [member_id, str(campaign), str(company), *delivery_crops]
+        params = [member_id, str(campaign), str(company), *eligible_crops]
         start = time.perf_counter(); value = self.conn.execute(sql, params).fetchone()[0]; elapsed_ms = (time.perf_counter() - start) * 1000
         total = decimal_or_zero(value)
-        self.last_delivery_audit_rows = self._delivery_proration_rows(member_id, campaign, company, delivery_crops)
+        self.last_delivery_audit_rows = self._delivery_proration_rows(member_id, campaign, company, eligible_crops)
         audit = current_audit()
         if audit:
             audit.subsection("CuotaHa.Prorrateo"); audit.audit_sql("kilos campaña socio", sql, params, 1, elapsed_ms)
-            for crop in delivery_crops:
+            for crop in eligible_crops:
                 kg = sum((r["NetoEfectivo"] for r in self.last_delivery_audit_rows if r["Cultivo"] == crop), Decimal("0"))
                 audit.line(f"kg_{crop.lower()}={kg}")
             audit.line(f"total_effective_kg={total}")
         return total
 
-    def _delivery_proration_rows(self, member_id: int, campaign: int | str, company: int | str, delivery_crops: Sequence[str]) -> tuple[dict[str, Any], ...]:
-        placeholders = ",".join("?" for _ in delivery_crops)
+    def _delivery_proration_rows(self, member_id: int, campaign: int | str, company: int | str, eligible_crops: Sequence[str]) -> tuple[dict[str, Any], ...]:
+        placeholders = ",".join("?" for _ in eligible_crops)
         sql = f"""
             SELECT p.IdSocio, {self._local_col('PesosFres','Socio')}, {self._local_col('PesosFres','Registro')},
                    {self._local_col('PesosFres','Fecha')}, p.CAMPAÑA, p.EMPRESA, p.CULTIVO,
@@ -177,7 +177,7 @@ class HectareRepository:
               AND CAST(p.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(p.CULTIVO)) IN ({placeholders})
             ORDER BY p.CULTIVO
         """
-        rows = self.conn.execute(sql, [member_id, str(campaign), str(company), *delivery_crops]).fetchall()
+        rows = self.conn.execute(sql, [member_id, str(campaign), str(company), *eligible_crops]).fetchall()
         out = []
         for r in rows:
             out.append({"Nº Socio": r[0], "Socio": r[1], "Registro": r[2], "Fecha": r[3], "Campaña": r[4], "Empresa": r[5], "Cultivo": str(r[6] or "").strip().upper(), "Variedad": r[7], "Boleta": r[8], "Neto": r[9], "NetoPartida": r[10], "NetoEfectivo": decimal_or_zero(r[11]), "Incluida en denominador": "Sí", "Motivo exclusión": "", "Boleta apta para cuota": "Informativa", "Relevancia de boleta": "No interviene en el prorrateo"})
