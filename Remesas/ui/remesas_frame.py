@@ -35,6 +35,7 @@ from exporters.file_lock import FileLockedError
 
 logger = logging.getLogger(__name__)
 from exporters.pdf_exporter import export_member_pdf
+from exporters.premium_pdf_exporter import LOCKED_PDF_MESSAGE, export_premium_member_pdfs
 
 class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
@@ -78,7 +79,7 @@ class RemesasFrame(ttk.Frame):
         self.action_buttons={}
         for i,(text,cmd) in enumerate(actions):
             b=ttk.Button(self.buttons,text=text,command=cmd); b.grid(row=0,column=i,padx=2); self.action_buttons[text]=b
-        for i,(text,cmd) in enumerate([("Calcular liquidación",self._calculate),("Exportar resumen de liquidación",self._export_liquidation_excel),("Generar PDF de liquidación",self._export_liquidation_pdf),("Guardar liquidaciones",lambda:None),("Anular liquidación",lambda:None)]):
+        for i,(text,cmd) in enumerate([("Calcular liquidación",self._calculate),("Exportar resumen de liquidación",self._export_liquidation_excel),("Generar PDF para socio",self._export_premium_pdf), ("Generar PDF de liquidación",self._export_liquidation_pdf),("Guardar liquidaciones",lambda:None),("Anular liquidación",lambda:None)]):
             b=ttk.Button(self.buttons,text=text,command=cmd,state="disabled"); b.grid(row=1,column=i,padx=2,pady=2); self.action_buttons[text]=b
         ttk.Label(self.buttons,text="Persistencia deshabilitada en esta fase.").grid(row=1,column=5,columnspan=3,sticky="w")
 
@@ -443,7 +444,7 @@ class RemesasFrame(ttk.Frame):
         ttk.Button(buttons,text="Cerrar",command=win.destroy).pack(side="right",padx=3)
         ttk.Button(buttons,text="Copiar resumen",command=lambda: (win.clipboard_clear(), win.clipboard_append(f"{data.get('remesa')} - {format_currency_es(calc.commercial_amount) if calc else 'Pendiente'}"))).pack(side="right",padx=3)
         state="normal" if calc and calc.result else "disabled"
-        ttk.Button(buttons,text="Generar PDF",command=self._export_liquidation_pdf,state=state).pack(side="right",padx=3)
+        ttk.Button(buttons,text="Vista previa Premium",command=self._export_premium_pdf,state=state).pack(side="right",padx=3)
         ttk.Button(buttons,text="Exportar resumen a Excel",command=self._export_liquidation_excel,state=state).pack(side="right",padx=3)
     def _output_dir(self):
         base=Path("C:/Liquidaciones/salidas/remesas") if Path("C:/").exists() else Path.cwd().parents[0]/"salidas"/"remesas"
@@ -485,6 +486,20 @@ class RemesasFrame(ttk.Frame):
             messagebox.showerror("Exportar resumen", f"No se ha podido generar el Excel:\n{exc}")
             return
         messagebox.showinfo("Exportación completada", f"El resumen se ha guardado en:\n{path}")
+
+    def _export_premium_pdf(self):
+        if not (self.current_calculation and self.current_calculation.result and self.calculation_valid): return
+        try:
+            paths=export_premium_member_pdfs(self.current_calculation.result, self._output_dir())
+        except FileLockedError as exc:
+            logger.warning("PDF Premium bloqueado: %s", exc.path)
+            messagebox.showwarning("PDF abierto", LOCKED_PDF_MESSAGE)
+            return
+        except Exception as exc:
+            logger.exception("Error exportando Liquidación Premium")
+            messagebox.showerror("Liquidación Premium", f"No se ha podido generar el PDF Premium:\n{exc}")
+            return
+        messagebox.showinfo("Liquidación Premium", f"PDFs Premium generados: {len(paths)}\nCarpeta: {self._output_dir()/"socios"}")
 
     def _export_liquidation_pdf(self):
         if not (self.current_calculation and self.current_calculation.result and self.calculation_valid): return
