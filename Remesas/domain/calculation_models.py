@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Protocol
 from domain.hectare_fee_master import HectareFeeMaster
 
 if TYPE_CHECKING:
@@ -85,8 +85,7 @@ GradeLiquidation = GradeBreakdown
 
 @dataclass(frozen=True)
 class HectareFeeAuditData:
-    surface_crops: tuple[str, ...]
-    delivery_crops: tuple[str, ...]
+    eligible_crops: tuple[str, ...]
     price_per_hectare: Decimal
     applicable_hectares: Decimal
     total_theoretical_fee: Decimal
@@ -105,6 +104,43 @@ class HectareFeeAuditData:
     inactive_parcels: int = 0
     kg_by_crop: tuple[tuple[str, Decimal], ...] = ()
     reason: str = ""
+    already_applied_fee: Decimal = Decimal("0")
+    projected_applied_fee: Decimal = Decimal("0")
+    remaining_fee: Decimal = Decimal("0")
+    balance_status: str = "OPEN"
+
+    @property
+    def surface_crops(self) -> tuple[str, ...]:
+        return self.eligible_crops
+
+    @property
+    def delivery_crops(self) -> tuple[str, ...]:
+        return self.eligible_crops
+
+
+@dataclass(frozen=True)
+class HectareFeeBalance:
+    member_id: int
+    annual_fee: Decimal
+    already_applied_fee: Decimal
+    current_liquidation_fee: Decimal
+    projected_applied_fee: Decimal
+    remaining_fee: Decimal
+    closed: bool
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def status(self) -> str:
+        if self.remaining_fee < Decimal("-0.01"):
+            return "OVER_APPLIED"
+        if abs(self.remaining_fee) <= Decimal("0.01"):
+            return "CLOSED"
+        return "OPEN"
+
+
+class HectareFeeAppliedRepository(Protocol):
+    def get_applied_fee(self, member_id: int, campaign: str, company: str, eligible_crops: tuple[str, ...], exclude_current_remittance_id: str | int | None = None) -> Decimal:
+        ...
 
 
 @dataclass(frozen=True)
@@ -118,6 +154,7 @@ class MemberHectareFeeContext:
     warnings: tuple[str, ...]
     parcel_audit: tuple[dict, ...]
     delivery_audit: tuple[dict, ...] = ()
+    balance: HectareFeeBalance | None = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +241,7 @@ class MemberLiquidation:
     hectare_fee_parcels: tuple[dict, ...] = ()
     hectare_fee_delivery_audit: tuple[dict, ...] = ()
     hectare_fee_audit: HectareFeeAuditData | None = None
+    hectare_fee_balance: HectareFeeBalance | None = None
     taxable_base: Decimal | None = None
     fiscal_regime_name: str = ""
     vat_rate: Decimal | None = None

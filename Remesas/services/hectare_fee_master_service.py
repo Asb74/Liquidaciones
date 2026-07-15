@@ -18,12 +18,13 @@ class HectareFeeMasterService:
     def restore_defaults(self) -> HectareFeeMaster:
         return self.master_repository.restore_defaults()
 
-    def list_surface_crop_options(self) -> list[str]:
+    def list_eligible_crop_options(self) -> list[str]:
         if self.crop_repository is None:
-            return list(self.load_master().surface_crops)
-        return self.crop_repository.list_surface_crop_options()
+            return list(self.load_master().eligible_crops)
+        return sorted(set(self.crop_repository.list_surface_crop_options()) | set(self.crop_repository.list_delivery_crop_options()))
+
+    def list_surface_crop_options(self) -> list[str]:
+        return self.list_eligible_crop_options()
 
     def list_delivery_crop_options(self) -> list[str]:
-        if self.crop_repository is None:
-            return list(self.load_master().delivery_crops)
-        return self.crop_repository.list_delivery_crop_options()
+        return self.list_eligible_crop_options()

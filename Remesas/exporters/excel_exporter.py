@@ -321,7 +321,7 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
     _append_fiscal_audit_sheet(wb, result, summary_fiscal_by_member, red_fill)
 
     audit_ws = wb.create_sheet("Auditoría cuota Ha")
-    audit_headers = ["Nº Socio", "Socio", "Variedad", "Campaña", "Empresa", "Cultivos superficie", "Cultivos entrega", "Boletas candidatas", "Boletas CHA activas", "Parcelas incluidas", "Parcelas jóvenes", "Parcelas dadas de baja", "Hectáreas válidas", "Precio €/ha", "Cuota total anual", "Kg CITRICOS", "Kg MANDARINA", "Kg DIRECTO", "Kg DIRECTOCHF", "Kg INDUSTRIA", "Kg totales", "Índice €/kg", "Kg línea", "Cuota línea", "Cuota modelo", "Estado", "Advertencias", "Alineado"]
+    audit_headers = ["Nº Socio", "Socio", "Variedad", "Campaña", "Empresa", "Cultivos aplicables", "Boletas candidatas", "Boletas CHA activas", "Parcelas incluidas", "Parcelas jóvenes", "Parcelas dadas de baja", "Superficie total", "Precio €/ha", "Cuota anual", "Kg anuales aplicables", "Proporción €/kg", "Kg liquidación", "Cuota liquidación", "Cuota ya aplicada", "Cuota proyectada", "Saldo pendiente", "Estado de cierre", "Estado", "Advertencias", "Alineado"]
     audit_ws.append(audit_headers)
     for member in result.member_results:
         audit_data = getattr(member, "hectare_fee_audit", None)
@@ -329,12 +329,12 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
         calculated = getattr(audit_data, "line_fee", None)
         aligned = calculated == member.hectare_fee_amount == exported
         audit_ws.append([
-            member.member_id, member.member_name, member.variety, result.header.campana, result.header.empresa, ", ".join(getattr(audit_data, "surface_crops", ())), ", ".join(getattr(audit_data, "delivery_crops", ())),
+            member.member_id, member.member_name, member.variety, result.header.campana, result.header.empresa, ", ".join(getattr(audit_data, "eligible_crops", ())),
             getattr(audit_data, "candidate_boletas", 0), getattr(audit_data, "active_cha_boletas", 0), getattr(audit_data, "included_parcels", 0), getattr(audit_data, "young_parcels", 0), getattr(audit_data, "inactive_parcels", 0),
-            _number(getattr(audit_data, "applicable_hectares", None), "Hectáreas válidas"), _number(getattr(audit_data, "price_per_hectare", None), "Precio €/ha"), _number(getattr(audit_data, "total_theoretical_fee", None), "Cuota total anual"),
-            *[_number(dict(getattr(audit_data, "kg_by_crop", ())).get(crop, Decimal("0")), f"Kg {crop}") for crop in ("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA")],
-            _number(getattr(audit_data, "total_effective_kg", None), "Kg totales"), _number(getattr(audit_data, "rate_per_kg", None), "Índice €/kg"),
-            _number(getattr(audit_data, "line_effective_kg", None), "Kg línea"), _number(calculated, "Cuota línea"), _number(member.hectare_fee_amount, "Cuota modelo"),
+            _number(getattr(audit_data, "applicable_hectares", None), "Superficie total"), _number(getattr(audit_data, "price_per_hectare", None), "Precio €/ha"), _number(getattr(audit_data, "total_theoretical_fee", None), "Cuota anual"),
+            _number(getattr(audit_data, "total_effective_kg", None), "Kg anuales aplicables"), _number(getattr(audit_data, "rate_per_kg", None), "Proporción €/kg"),
+            _number(getattr(audit_data, "line_effective_kg", None), "Kg liquidación"), _number(calculated, "Cuota liquidación"),
+            _number(getattr(audit_data, "already_applied_fee", None), "Cuota ya aplicada"), _number(getattr(audit_data, "projected_applied_fee", None), "Cuota proyectada"), _number(getattr(audit_data, "remaining_fee", None), "Saldo pendiente"), getattr(audit_data, "balance_status", "OPEN"),
             getattr(getattr(audit_data, "status", member.hectare_fee_status), "value", str(member.hectare_fee_status)), "; ".join(getattr(audit_data, "warnings", member.warnings)), "SÍ" if aligned else "NO",
         ])
         if not aligned:

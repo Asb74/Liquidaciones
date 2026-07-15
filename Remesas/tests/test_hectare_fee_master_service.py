@@ -30,10 +30,11 @@ class HectareFeeMasterServiceTests(unittest.TestCase):
                     HectareFeeMasterRepository(td_path / "maestro_cuota_ha.json"),
                     HectareFeeCropRepository(conn),
                 )
-                self.assertEqual(service.list_surface_crop_options(), ["CITRICOS", "MANDARINA"])
-                self.assertEqual(service.list_delivery_crop_options(), ["CITRICOS", "DIRECTO"])
+                self.assertEqual(service.list_eligible_crop_options(), ["CITRICOS", "DIRECTO", "MANDARINA"])
+                self.assertEqual(service.list_surface_crop_options(), service.list_eligible_crop_options())
+                self.assertEqual(service.list_delivery_crop_options(), service.list_eligible_crop_options())
                 self.assertEqual(service.load_master().price_per_hectare, Decimal("195.00"))
-                service.save_master(HectareFeeMaster(Decimal("210.00"), ("CITRICOS",), ("DIRECTO",)))
+                service.save_master(HectareFeeMaster(Decimal("210.00"), ("CITRICOS",)))
                 self.assertEqual(service.load_master().price_per_hectare, Decimal("210.00"))
                 self.assertEqual(service.restore_defaults().price_per_hectare, Decimal("195.00"))
             finally:

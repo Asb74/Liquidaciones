@@ -95,7 +95,7 @@ class RemesasFrame(ttk.Frame):
 
     def _refresh_hectare_config_label(self):
         m=self.active_master
-        self.hectare_config_text.set(f"{str(m.price_per_hectare).replace('.', ',')} €/ha | Superficie: {', '.join(m.surface_crops)} | Kilos: {', '.join(m.delivery_crops)}")
+        self.hectare_config_text.set(f"{str(m.price_per_hectare).replace('.', ',')} €/ha | Cultivos sujetos a Cuota Ha: {', '.join(m.eligible_crops)}")
 
     def open_hectare_fee_master(self):
         self._open_hectare_fee_master()
@@ -414,7 +414,7 @@ class RemesasFrame(ttk.Frame):
         ctx=self.context_panel.context(); data=self.remesa_panel.data(); selected=', '.join(self.selected.get(0,'end')) or "Todas"; calc=self.current_calculation
 
         ident=ttk.LabelFrame(summary_tab,text="Identificación"); ident.grid(row=0,column=0,sticky="nsew",padx=6,pady=6)
-        rows=[("Remesa",data.get('remesa')), ("Campaña",ctx.campana), ("Empresa",ctx.empresa), ("Cultivo",ctx.cultivo), ("Periodo",f"{format_display_date(data.get('desde'))} - {format_display_date(data.get('hasta'))}"), ("Fecha de pago",format_display_date(data.get('fecha_pago'))), ("Tipo de liquidación",data.get('tipo')), ("Categoría",data.get('categoria')), ("Socio",data.get('socio') or "Todos"), ("Variedades",selected), ("Precio €/ha activo", str(calc.result.hectare_fee_master.price_per_hectare).replace(".", ",") if calc and calc.result and calc.result.hectare_fee_master else ""), ("Cultivos superficie activos", ", ".join(calc.result.hectare_fee_master.surface_crops) if calc and calc.result and calc.result.hectare_fee_master else ""), ("Cultivos entrega activos", ", ".join(calc.result.hectare_fee_master.delivery_crops) if calc and calc.result and calc.result.hectare_fee_master else "")]
+        rows=[("Remesa",data.get('remesa')), ("Campaña",ctx.campana), ("Empresa",ctx.empresa), ("Cultivo",ctx.cultivo), ("Periodo",f"{format_display_date(data.get('desde'))} - {format_display_date(data.get('hasta'))}"), ("Fecha de pago",format_display_date(data.get('fecha_pago'))), ("Tipo de liquidación",data.get('tipo')), ("Categoría",data.get('categoria')), ("Socio",data.get('socio') or "Todos"), ("Variedades",selected), ("Precio €/ha activo", str(calc.result.hectare_fee_master.price_per_hectare).replace(".", ",") if calc and calc.result and calc.result.hectare_fee_master else ""), ("Cultivos sujetos a Cuota Ha", ", ".join(calc.result.hectare_fee_master.eligible_crops) if calc and calc.result and calc.result.hectare_fee_master else "")]
         for i,(k,v) in enumerate(rows):
             r=i//2; c=(i%2)*2; ttk.Label(ident,text=k,font=("TkDefaultFont",9,"bold")).grid(row=r,column=c,sticky="w",padx=4,pady=2); ttk.Label(ident,text=v,wraplength=360).grid(row=r,column=c+1,sticky="w",padx=4,pady=2)
         opts=ttk.LabelFrame(summary_tab,text="Opciones aplicadas"); opts.grid(row=1,column=0,sticky="ew",padx=6,pady=6)
