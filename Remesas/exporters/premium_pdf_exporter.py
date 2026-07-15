@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, is_dataclass
+from dataclasses import is_dataclass
 import logging
 import os
 import tempfile
@@ -39,42 +39,12 @@ LOCKED_PDF_MESSAGE = "No se puede generar el PDF porque el archivo está abierto
 OVERFLOW_MESSAGE = "No se puede generar la liquidación Premium en una sola hoja porque el desglose contiene demasiadas líneas."
 
 
-@dataclass(frozen=True)
-class PremiumLayoutMeasurement:
-    header_height: float
-    cards_height: float
-    main_tables_height: float
-    benchmark_height: float
-    distribution_height: float
-    footer_height: float
-    spacing_height: float
-    total_height: float
-    available_height: float
-    fits: bool
-    benchmark_render_mode: str = "charts"
-
 
 def _visible_commercial_rows(vm: PremiumLiquidationViewModel, max_rows: int = 9):
     rows = [r for r in vm.commercial_breakdown if (r.kilograms and r.kilograms != 0) or (r.amount and r.amount != 0)]
     if len(rows) <= max_rows:
         return rows
     return rows[:max_rows]
-
-
-def measure_premium_layout(vm: PremiumLiquidationViewModel, available_width: float, *, available_height: float | None = None, benchmark_render_mode: str = "charts") -> PremiumLayoutMeasurement:
-    header_height = 26 * MM
-    cards_height = 21 * MM
-    main_tables_height = 72 * MM if len(_visible_commercial_rows(vm)) > 6 else 68 * MM
-    benchmark_height = (35 if benchmark_render_mode == "charts" else 22) * MM
-    distribution_height = 14 * MM
-    footer_height = 9 * MM
-    spacing_height = 14 * MM
-    if available_height is None:
-        from reportlab.lib.pagesizes import A4, landscape
-        available_height = landscape(A4)[1] - 20 * MM
-    total_height = header_height + cards_height + main_tables_height + benchmark_height + distribution_height + footer_height + spacing_height
-    return PremiumLayoutMeasurement(header_height, cards_height, main_tables_height, benchmark_height, distribution_height, footer_height, spacing_height, total_height, available_height, total_height <= available_height, benchmark_render_mode)
-
 
 def premium_member_filename(vm: PremiumLiquidationViewModel) -> str:
     return sanitize_filename(f"Liquidacion_Premium_{vm.member_id}_{vm.member_name}_{vm.remittance_name}_{vm.variety_text}") + ".pdf"
@@ -102,31 +72,13 @@ def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, confi
     page_size = landscape(A4)
     margin = 7 * MM
     available_width = page_size[0] - 2 * margin
-    available_height = page_size[1] - 2 * margin
-    mode = "charts"
-    measurement = measure_premium_layout(vm, available_width, available_height=available_height, benchmark_render_mode=mode)
-    if not measurement.fits:
-        mode = "compact_table"
-        measurement = measure_premium_layout(vm, available_width, available_height=available_height, benchmark_render_mode=mode)
-    logger.info(
-        "Premium layout member=%s header_height=%.2f cards_height=%.2f main_tables_height=%.2f benchmark_height=%.2f distribution_height=%.2f footer_height=%.2f total_height=%.2f available_height=%.2f fits=%s benchmark_render_mode=%s",
-        vm.member_id, measurement.header_height, measurement.cards_height, measurement.main_tables_height,
-        measurement.benchmark_height, measurement.distribution_height, measurement.footer_height,
-        measurement.total_height, measurement.available_height, measurement.fits, measurement.benchmark_render_mode,
-    )
+    logger.info("Premium layout member=%s uses natural stacked blocks", vm.member_id)
     fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=str(path.parent)); os.close(fd)
     try:
         doc = SimpleDocTemplate(tmp, pagesize=page_size, leftMargin=margin, rightMargin=margin, topMargin=margin, bottomMargin=margin, pageCompression=0)
-        story = build_premium_story(vm, config, available_width, measurement)
+        story = build_premium_story(vm, config, available_width)
         doc.build(story)
         data = Path(tmp).read_bytes()
-        if data.count(b"/Type /Page\n") > 1 and mode != "compact_table":
-            mode = "compact_table"
-            measurement = measure_premium_layout(vm, available_width, available_height=available_height, benchmark_render_mode=mode)
-            logger.warning("Premium layout retried with benchmark_render_mode=compact_table member=%s", vm.member_id)
-            doc = SimpleDocTemplate(tmp, pagesize=page_size, leftMargin=margin, rightMargin=margin, topMargin=margin, bottomMargin=margin, pageCompression=0)
-            doc.build(build_premium_story(vm, config, available_width, measurement))
-            data = Path(tmp).read_bytes()
         if data.count(b"/Type /Page\n") > 1:
             raise ValueError(OVERFLOW_MESSAGE)
         os.replace(tmp, path)
@@ -154,60 +106,62 @@ def _table_style(*commands):
     return TableStyle(list(commands), parent=None)
 
 
-def _section(title, flowables, width, height):
+def _section(title, flowables, width):
     from reportlab.platypus import Paragraph, Table, TableStyle
     from reportlab.lib import colors
     st = _premium_styles()
     inner = [Paragraph(title, st["h"])] + flowables
-    t = Table([[inner]], colWidths=[width], rowHeights=[height])
+    t = Table([[inner]], colWidths=[width])
     t.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("BOX", (0, 0), (-1, -1), .35, colors.HexColor("#D6DEE6")),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        ("ROUNDEDCORNERS", [4, 4, 4, 4]),
         ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
     return t
 
 
-def build_premium_story(vm, config, width, measurement: PremiumLayoutMeasurement):
+def build_premium_story(vm, config, width):
     from reportlab.platypus import Spacer, Table, TableStyle
-    story = [build_header_flowable(vm, config, width, measurement.header_height), Spacer(1, 3 * MM), build_summary_cards_flowable(vm, config, width, measurement.cards_height), Spacer(1, 3 * MM)]
+    story = [build_header_flowable(vm, config, width), Spacer(1, 2.5 * MM), build_summary_cards_flowable(vm, config, width), Spacer(1, 2.5 * MM)]
     gap = 5 * MM
     left_w = (width - gap) * .51
     right_w = width - gap - left_w
-    main = Table([
-        [build_production_section(vm, left_w, 30 * MM), build_economic_section(vm, right_w, 45 * MM)],
-        [build_commercial_section(vm, config, left_w, measurement.main_tables_height - 31 * MM), build_tax_section(vm, config, right_w, measurement.main_tables_height - 46 * MM)],
-    ], colWidths=[left_w, right_w], rowHeights=[31 * MM, measurement.main_tables_height - 31 * MM])
+    left_column = [build_production_section(vm, left_w), Spacer(1, 2 * MM), build_commercial_section(vm, config, left_w)]
+    right_column = [build_economic_section(vm, right_w), Spacer(1, 2 * MM), build_tax_section(vm, config, right_w)]
+    main = Table([[left_column, right_column]], colWidths=[left_w, right_w])
     main.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 0), ("RIGHTPADDING", (0,0), (-1,-1), 0), ("TOPPADDING", (0,0), (-1,-1), 0), ("BOTTOMPADDING", (0,0), (-1,-1), 0)]))
-    story += [main, Spacer(1, 3 * MM), build_benchmark_flowable(vm, width, measurement.benchmark_height, measurement.benchmark_render_mode), Spacer(1, 2 * MM)]
+    story += [main, Spacer(1, 2.5 * MM), build_benchmark_flowable(vm, width), Spacer(1, 2 * MM)]
     if config.get("show_distribution_bar", True):
-        story.append(build_distribution_flowable(vm, width, measurement.distribution_height))
+        story.append(build_distribution_flowable(vm, width))
         story.append(Spacer(1, 3 * MM))
-    story.append(build_footer_flowable(vm, config, width, measurement.footer_height))
+    story.append(build_footer_flowable(vm, config, width))
     return story
 
 
-def build_header_flowable(vm, config, width, height):
+def build_header_flowable(vm, config, width):
     from reportlab.platypus import Paragraph, Table, TableStyle
     from reportlab.lib import colors
     st = _premium_styles()
     left = [Paragraph("S.C.A. San Sebastián", st["small_b"]), Paragraph(str(config.get("title", "Liquidación de entrega")).upper(), st["title"])]
     center = [Paragraph(f"<b>{vm.remittance_name[:58]}</b>", st["small"]), Paragraph(f"Campaña {vm.campaign} · {vm.crop} · {vm.variety_text[:42]}", st["small"]), Paragraph(f"Periodo: {vm.period_from} – {vm.period_to} · Pago: {vm.payment_date or '—'}", st["small"])]
     right = [Paragraph(f"<b>Socio {vm.member_id:,}</b>".replace(',', '.'), st["right"]), Paragraph(vm.member_name[:42], st["right"]), Paragraph(f"NIF {vm.tax_id_masked}" if vm.tax_id_masked else vm.company[:38], st["right"])]
-    t = Table([[left, center, right]], colWidths=[width*.32, width*.43, width*.25], rowHeights=[height])
+    t = Table([[left, center, right]], colWidths=[width*.32, width*.43, width*.25])
     t.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP"), ("BOTTOMPADDING", (0,0), (-1,-1), 0), ("TOPPADDING", (0,0), (-1,-1), 0), ("TEXTCOLOR", (0,0), (-1,-1), colors.HexColor(TEXT_COLOR))]))
     return t
 
 
-def build_summary_cards_flowable(vm, config, width, height):
+def build_summary_cards_flowable(vm, config, width):
     from reportlab.platypus import Paragraph, Table, TableStyle
     from reportlab.lib import colors
     st = _premium_styles()
     vals = [("KILOS ENTREGADOS", format_kg(vm.effective_net_kg)), ("KILOS COMERCIALES", format_kg(vm.commercial_net_kg)), ("PRECIO MEDIO FINAL", format_unit_price(vm.final_average_price)), (str(config.get("total_label", "Total a percibir")).upper(), format_money(vm.total_amount))]
     cells = [[Paragraph(f"<b>{lab}</b><br/><font size='15'><b>{val}</b></font>", st["small"])] for lab, val in vals]
-    t = Table([cells], colWidths=[width/4]*4, rowHeights=[height])
-    t.setStyle(TableStyle([("ALIGN", (0,0), (-1,-1), "CENTER"), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("BACKGROUND", (0,0), (2,0), colors.HexColor(LIGHT_BACKGROUND)), ("BACKGROUND", (3,0), (3,0), colors.HexColor(ACCENT_COLOR)), ("BOX", (0,0), (-1,-1), .5, colors.HexColor(PRIMARY_COLOR)), ("INNERGRID", (0,0), (-1,-1), 4, colors.white)]))
+    card_w = (width - 9 * MM) / 4
+    t = Table([cells], colWidths=[card_w] * 4)
+    t.setStyle(TableStyle([("ALIGN", (0,0), (-1,-1), "CENTER"), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("BACKGROUND", (0,0), (2,0), colors.HexColor(LIGHT_BACKGROUND)), ("BACKGROUND", (3,0), (3,0), colors.HexColor(ACCENT_COLOR)), ("BOX", (0,0), (-1,-1), .5, colors.HexColor(PRIMARY_COLOR)), ("INNERGRID", (0,0), (-1,-1), 3 * MM, colors.white), ("ROUNDEDCORNERS", [6,6,6,6]), ("TOPPADDING", (0,0), (-1,-1), 5), ("BOTTOMPADDING", (0,0), (-1,-1), 5)]))
     return t
 
 
@@ -221,46 +175,51 @@ def _rl_table(rows, widths, font=8, header=True, accent_row=None):
     t.setStyle(TableStyle(cmds)); return t
 
 
-def build_production_section(vm, width, height):
+def build_production_section(vm, width):
     rows=[["Producción","Kilos","Precio","Importe"],["Comercial",format_kg(vm.commercial_net_kg),format_unit_price(vm.commercial_average_price),"—"],["Destrío",format_kg(vm.waste_net_kg),"—",format_money(vm.destruction_amount)],["Podrido/Hojas",format_kg(vm.rotten_net_kg),"—",format_money(vm.rotten_amount)],["Total entregado",format_kg(vm.effective_net_kg),"—",format_money(vm.gross_amount)]]
-    return _section("RESUMEN DE PRODUCCIÓN", [_rl_table(rows, [width*.34,width*.21,width*.22,width*.23])], width, height)
+    return _section("RESUMEN DE PRODUCCIÓN", [_rl_table(rows, [width*.34,width*.21,width*.22,width*.23])], width)
 
-def build_economic_section(vm, width, height):
+def build_economic_section(vm, width):
     rows=[["Concepto","Explicación","Importe"],["Importe bruto","Valor liquidado de producción.",format_signed_money(vm.gross_amount, force_positive=True)],["Recolección","Coste aplicado a entregas.",format_signed_money(vm.collection_amount, force_negative=True)],["Cuota Ha","Parte proporcional anual.",format_signed_money(vm.hectare_fee_amount, force_negative=True)],["Calidad","Bonificación/penalización.",format_signed_money(vm.quality_amount)],["Transporte","Bonificación o ajuste.",format_signed_money(vm.transport_amount)],["GlobalGAP","Bonificación certificación.",format_signed_money(vm.globalgap_amount)],["Base imponible","Antes de IVA y retención.",format_money(vm.taxable_base)]]
-    return _section("CÓMO SE FORMA SU LIQUIDACIÓN", [_rl_table(rows, [width*.32,width*.43,width*.25], font=7.7)], width, height)
+    return _section("CÓMO SE FORMA SU LIQUIDACIÓN", [_rl_table(rows, [width*.32,width*.43,width*.25], font=7.4)], width)
 
-def build_commercial_section(vm, config, width, height):
+def build_commercial_section(vm, config, width):
     rows=[["Categoría/calibre","Kilos","Precio","Importe"]]+[[r.category[:18],format_kg(r.kilograms),format_unit_price(r.price),format_money(r.amount)] for r in _visible_commercial_rows(vm)]
-    return _section("DESGLOSE COMERCIAL POR CATEGORÍAS", [_rl_table(rows, [width*.34,width*.21,width*.22,width*.23], font=8)], width, height)
+    return _section("DESGLOSE COMERCIAL POR CATEGORÍAS", [_rl_table(rows, [width*.34,width*.21,width*.22,width*.23], font=7.6)], width)
 
-def build_tax_section(vm, config, width, height):
+def build_tax_section(vm, config, width):
     rows=[["Base imponible",format_money(vm.taxable_base)],[f"IVA {format_percent(vm.vat_rate)}",format_signed_money(vm.vat_amount, force_positive=True)],[f"Retención {format_percent(vm.withholding_rate)}",format_signed_money(vm.withholding_amount, force_negative=True)],[str(config.get("total_label", "Total a percibir")).upper(),format_money(vm.total_amount)],["Precio medio final",format_unit_price(vm.final_average_price)]]
     if config.get("show_points_per_kg", True) and vm.final_average_price_pts is not None: rows.append(["Equivalencia", f"{format_decimal_es(vm.final_average_price_pts,2)} pts/kg"])
-    return _section("FISCALIDAD Y RESULTADO FINAL", [_rl_table(rows, [width*.55,width*.45], font=8.5, header=False, accent_row=3)], width, height)
+    return _section("FISCALIDAD Y RESULTADO FINAL", [_rl_table(rows, [width*.55,width*.45], font=8.1, header=False, accent_row=3)], width)
 
 
-def build_benchmark_flowable(vm, width, height, mode):
+def build_benchmark_flowable(vm, width):
     from reportlab.platypus import Paragraph, Table, TableStyle
-    from reportlab.lib import colors
     st = _premium_styles()
-    title = Paragraph("COMPARATIVA CON SU GRUPO VARIETAL", st["h"])
     if not vm.group_benchmark:
-        return _section("COMPARATIVA CON SU GRUPO VARIETAL", [Paragraph("Comparativa con el grupo varietal no disponible para esta liquidación.", st["small"])], width, height)
+        return _section("COMPARATIVA CON SU GRUPO VARIETAL", [Paragraph("Comparativa con el grupo varietal no disponible para esta liquidación.", st["small"])], width)
     b = vm.group_benchmark
     comparable = b.price_per_kg.valid_member_count if b.price_per_kg else 0
     subtitle = Paragraph(f"{b.group_label} · Campaña {b.campaign}" + (f" · {comparable} socios comparables" if comparable else ""), st["small"])
-    if mode == "compact_table":
-        rows = [["Indicador", "Usted", "Máximo", "Media", "Mínimo"], ["PRECIO MEDIO FINAL"] + [_fmt_metric(v, "€/kg") for v in (_metric_values(b.price_per_kg) or [None, None, None, None])], ["PRODUCCIÓN kg/ha"] + [_fmt_metric(v, "kg/ha") for v in (_metric_values(b.kilograms_per_hectare) or [None, None, None, None])], ["IMPORTE FINAL €/ha"] + [_fmt_metric(v, "€/ha") for v in (_metric_values(b.euros_per_hectare) or [None, None, None, None])]]
-        content = [subtitle, _rl_table(rows, [width*.24, width*.19, width*.19, width*.19, width*.19], font=8)]
-    else:
-        gap=2*MM; cw=(width-2*gap)/3; ch=26*MM
-        charts=[build_compact_benchmark_chart("PRECIO MEDIO FINAL", "€/kg", b.price_per_kg, cw, ch), build_compact_benchmark_chart("PRODUCCIÓN", "kg/ha", b.kilograms_per_hectare, cw, ch), build_compact_benchmark_chart("IMPORTE FINAL", "€/ha", b.euros_per_hectare, cw, ch)]
-        tt=Table([charts], colWidths=[cw]*3, rowHeights=[ch]); tt.setStyle(TableStyle([("LEFTPADDING", (0,0), (-1,-1), 0), ("RIGHTPADDING", (0,0), (-1,-1), 0), ("VALIGN", (0,0), (-1,-1), "TOP")]))
-        content=[subtitle, tt]
-    return _section("COMPARATIVA CON SU GRUPO VARIETAL", content, width, height)
+    gap = 2 * MM
+    card_w = (width - 2 * gap) / 3
+    chart_h = 23 * MM
+    charts = [
+        build_compact_benchmark_chart("PRECIO MEDIO FINAL", "€/kg", b.price_per_kg, card_w, chart_h),
+        build_compact_benchmark_chart("PRODUCCIÓN", "kg/ha", b.kilograms_per_hectare, card_w, chart_h),
+        build_compact_benchmark_chart("IMPORTE FINAL", "€/ha", b.euros_per_hectare, card_w, chart_h),
+    ]
+    table = Table([charts], colWidths=[card_w] * 3)
+    table.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    return _section("COMPARATIVA CON SU GRUPO VARIETAL", [subtitle, table], width)
 
-
-def build_distribution_flowable(vm, width, height):
+def build_distribution_flowable(vm, width):
     from reportlab.graphics.shapes import Drawing, Rect, String
     from reportlab.lib import colors
     from reportlab.platypus import Paragraph, Table, TableStyle
@@ -274,15 +233,15 @@ def build_distribution_flowable(vm, width, height):
     legend=[]
     for label,val,_,amount in parts:
         pct=format_decimal_es((abs(val)/total*Decimal("100")),1); legend.append(f"{label}: {amount} ({pct} %)")
-    return _section("DISTRIBUCIÓN DEL IMPORTE BRUTO ANTES DE FISCALIDAD", [d, Paragraph(" · ".join(legend), st["small"])], width, height)
+    return _section("DISTRIBUCIÓN DEL IMPORTE BRUTO ANTES DE FISCALIDAD", [d, Paragraph(" · ".join(legend), st["small"])], width)
 
 
-def build_footer_flowable(vm, config, width, height):
+def build_footer_flowable(vm, config, width):
     from datetime import datetime
     from reportlab.platypus import Paragraph, Table, TableStyle
     from reportlab.lib import colors
     st=_premium_styles(); left=Paragraph("S.C.A. San Sebastián · " + str(config.get("footer_message")), st["small"]); right=Paragraph(f"Generado {datetime.now():%d/%m/%Y} · Página 1 de 1 · {vm.remittance_name[:30]}", st["right"])
-    t=Table([[left,right]], colWidths=[width*.55,width*.45], rowHeights=[height])
+    t=Table([[left,right]], colWidths=[width*.55,width*.45])
     t.setStyle(TableStyle([("LINEABOVE", (0,0), (-1,0), .5, colors.HexColor(PRIMARY_COLOR)), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("TOPPADDING", (0,0), (-1,-1), 1)])); return t
 
 def _signed_label(value):

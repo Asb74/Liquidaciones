@@ -2,7 +2,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from domain.calculation_models import GradeBreakdown, LiquidationHeader, MemberLiquidation
-from exporters.premium_pdf_exporter import export_premium_member_pdf, measure_premium_layout
+from exporters.premium_pdf_exporter import export_premium_member_pdf
 from services.group_benchmark_service import BenchmarkMetric, PremiumGroupBenchmark
 from presentation.premium_liquidation_view_model import (
     format_kg, format_money, format_percent, format_signed_money, format_unit_price,
@@ -49,16 +49,6 @@ def test_view_model_maps_without_recalculating_amounts():
     assert vm.final_average_price_pts == Decimal("0.00")
     assert vm.tax_id_masked == "12*****8Z"
 
-
-
-def test_layout_measurement_and_compact_fallback_fit_available_height():
-    vm = from_member_liquidation(_header(), _member())
-    charts = measure_premium_layout(vm, 780, available_height=400, benchmark_render_mode="charts")
-    compact = measure_premium_layout(vm, 780, available_height=400, benchmark_render_mode="compact_table")
-    assert charts.benchmark_render_mode == "charts"
-    assert compact.benchmark_render_mode == "compact_table"
-    assert compact.benchmark_height < charts.benchmark_height
-    assert not charts.fits
 
 
 def test_pdf_generates_single_landscape_page_without_internal_terms(tmp_path: Path):
