@@ -253,6 +253,7 @@ class LiquidationResult:
     warnings: tuple[str, ...]
     hectare_fee_master: HectareFeeMaster | None = None
     hectare_fee_master_fingerprint: str = ""
+    variety_audit: tuple[object, ...] = ()
 
     @property
     def members(self) -> tuple[MemberLiquidation, ...]:

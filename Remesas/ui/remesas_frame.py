@@ -10,9 +10,11 @@ from tkinter import messagebox, ttk
 from data.db_connection import ReadOnlyDatabase, load_config, setup_logging
 from data.deliveries_repository import DeliveriesRepository
 from data.metadata_repository import MetadataRepository
+from data.variety_repository import VarietyRepository
 from data.hectare_fee_master_repository import HectareFeeCropRepository
 from data.remesas_repository import RemesasRepository
 from domain.models import DeliveryFilter, Period, Remesa
+from domain.varieties import STATUS_AMBIGUOUS, STATUS_EMPTY_GROUP, STATUS_GROUP, STATUS_NOT_FOUND, normalize_variety_text
 from domain.hectare_fee_master import HectareFeeMasterRepository
 from domain.validators import parse_user_date, validate_context, validate_period
 from domain.utils import format_currency_es, format_decimal_es, format_display_date, format_integer_es, format_percentage_es, format_price_es, parse_yes_no, safe_path_part
@@ -22,6 +24,7 @@ from services.remesas_service import RemesasService
 from services.calculation_service import CalculationService
 from services.hectare_fee_master_service import HectareFeeMasterService
 from services.local_database_sync_service import LocalDatabaseSyncService
+from services.variety_group_service import VarietyGroupService
 from ui.context_panel import ContextPanel
 from ui.deliveries_panel import COLUMNS, DeliveriesPanel
 from ui.remesa_panel import RemesaPanel
@@ -37,7 +40,7 @@ class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
         super().__init__(master, padding=8)
         self.config=load_config(config_path); setup_logging(self.config)
-        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.sync_results=[]; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
+        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.variety_service=None; self.selected_source_items=[]; self.variety_resolutions=[]; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.sync_results=[]; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
         self._build(); self._connect()
 
     def _build(self):
@@ -64,6 +67,8 @@ class RemesasFrame(ttk.Frame):
         for i,(name,var) in enumerate(self.option_vars.items()):
             ttk.Checkbutton(self.var_frame,text=name,variable=var,command=self._invalidate_calculation).grid(row=5+i//2,column=i%2,sticky="w",columnspan=1)
         self.prices=ttk.LabelFrame(self.var_frame,text="Precios") ; self.prices.grid(row=8,column=0,columnspan=3,sticky="ew")
+        self.resolved_selection_text=tk.StringVar(value="Selección resuelta: ")
+        ttk.Label(self.var_frame,textvariable=self.resolved_selection_text,wraplength=520,justify="left").grid(row=7,column=0,columnspan=3,sticky="ew",pady=(4,0))
         self.price_vars={f"P{i}":tk.StringVar(value="Pendiente") for i in range(12)} | {"PDESTRIO":tk.StringVar(value="Pendiente"),"PDMESA":tk.StringVar(value="Pendiente"),"PPODRIDO":tk.StringVar(value="Pendiente")}
         for i,(k,v) in enumerate(self.price_vars.items()): ttk.Label(self.prices,text=(f"Calibre {k[1:]}" if k.startswith('P') and k[1:].isdigit() else k)).grid(row=i//4,column=(i%4)*2); ttk.Label(self.prices,textvariable=v).grid(row=i//4,column=(i%4)*2+1)
 
@@ -110,7 +115,7 @@ class RemesasFrame(ttk.Frame):
 
     def _connect(self):
         try:
-            self.conn=self.db.connect_fruta_with_eepp(); self.meta=ContextService(MetadataRepository(self.conn)); self.deliveries=DeliveriesService(DeliveriesRepository(self.conn)); self.remesas=RemesasService(RemesasRepository(self.conn))
+            self.conn=self.db.connect_fruta_with_eepp(); self.meta=ContextService(MetadataRepository(self.conn)); self.variety_service=VarietyGroupService(VarietyRepository(self.conn)); self.deliveries=DeliveriesService(DeliveriesRepository(self.conn)); self.remesas=RemesasService(RemesasRepository(self.conn))
             self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.hectare_master_service=HectareFeeMasterService(self.master_repository, HectareFeeCropRepository(self.conn)); self.calculations=CalculationService(self.conn, self.config); self._refresh_database_status(); self._refresh_action_states()
         except Exception as exc:
             logger.exception("No se ha podido abrir la copia local de las bases SQLite")
@@ -190,23 +195,50 @@ class RemesasFrame(ttk.Frame):
                 desde=parse_user_date(d["desde"]); hasta=parse_user_date(d["hasta"])
         except ValueError:
             pass
-        for v in self.meta.variedades(ctx.campana,ctx.empresa,ctx.cultivo,desde,hasta): self.available.insert("end",v)
+        values = self.variety_service.list_selection_options(ctx.cultivo) if self.variety_service else ()
+        if not values:
+            values = self.meta.variedades(ctx.campana,ctx.empresa,ctx.cultivo,desde,hasta)
+        for v in values: self.available.insert("end",v)
     def _clear_selected_varieties(self, invalidate: bool = True):
         self.selected.delete(0,"end")
+        self.selected_source_items=[]; self.variety_resolutions=[]; self._refresh_resolved_selection_label()
         if invalidate:
             self._invalidate_calculation()
     def _add_var(self):
         for i in self.available.curselection():
-            v=self.available.get(i)
-            if v not in self.selected.get(0,"end"): self.selected.insert("end",v)
+            self._add_source_variety(self.available.get(i))
         self._invalidate_calculation()
+
     def _add_all_var(self):
-        self.selected.delete(0,"end")
-        for v in self.available.get(0,"end"): self.selected.insert("end",v)
+        self._clear_selected_varieties(invalidate=False)
+        for v in self.available.get(0,"end"): self._add_source_variety(v)
         self._invalidate_calculation()
+
     def _remove_var(self):
         for i in reversed(self.selected.curselection()): self.selected.delete(i)
-        self._invalidate_calculation()
+        self.selected_source_items=list(self.selected.get(0,"end")); self.variety_resolutions=[]; self._refresh_resolved_selection_label(); self._invalidate_calculation()
+
+    def _add_source_variety(self, value: str):
+        ctx=self.context_panel.context(); res=self.variety_service.resolve_selection(ctx.cultivo, value) if self.variety_service else None
+        if res and res.status == STATUS_AMBIGUOUS:
+            messagebox.showerror("Variedades", res.warnings[0]); return
+        if res and res.status in {STATUS_NOT_FOUND, STATUS_EMPTY_GROUP}:
+            messagebox.showwarning("Variedades", res.warnings[0] if res.warnings else f"No se pudo resolver {value}"); return
+        values = res.varieties if res else (value,)
+        if value not in self.selected_source_items: self.selected_source_items.append(value)
+        if res: self.variety_resolutions.append(res)
+        current={normalize_variety_text(v) for v in self.selected.get(0,"end")}
+        for variety in values:
+            if normalize_variety_text(variety) not in current:
+                self.selected.insert("end", variety); current.add(normalize_variety_text(variety))
+        self._refresh_resolved_selection_label()
+
+    def _refresh_resolved_selection_label(self):
+        lines=[]
+        for res in getattr(self, "variety_resolutions", []):
+            if res.varieties: lines.append(f"{res.source_value} → {', '.join(res.varieties)}")
+            elif res.warnings: lines.append(f"{res.source_value} → {res.status}: {'; '.join(res.warnings)}")
+        self.resolved_selection_text.set("Selección resuelta: " + ("\n".join(lines) if lines else ""))
     def _filters(self):
         ctx=self.context_panel.context(); validate_context(ctx); d=self.remesa_panel.data(); period=Period(parse_user_date(d["desde"]),parse_user_date(d["hasta"])); validate_period(period)
         return DeliveryFilter(ctx, period, list(self.selected.get(0,"end")), d.get("socio"), d.get("categoria") or None)
@@ -262,13 +294,17 @@ class RemesasFrame(ttk.Frame):
 
     def _restore_remesa_varieties(self, rem: Remesa) -> None:
         target=str(rem.values.get("VARIEDAD") or "").strip()
-        self.selected.delete(0,"end")
-        available=list(self.available.get(0,"end"))
-        if target and target in available: self.selected.insert("end", target)
-        elif target:
-            messagebox.showwarning("Variedades", f"No se pudo reconstruir exactamente la selección de variedades para '{target}'. Revise la selección antes de calcular.")
+        self._clear_selected_varieties(invalidate=False)
+        values=[v.strip() for v in target.split(",") if v.strip()]
+        unresolved=[]
+        for value in values:
+            before=len(self.selected.get(0,"end")); self._add_source_variety(value)
+            if len(self.selected.get(0,"end")) == before:
+                unresolved.append(value)
+        if unresolved:
+            messagebox.showwarning("Variedades", f"No se pudo reconstruir exactamente la selección de variedades para '{', '.join(unresolved)}'. Revise la selección antes de calcular.")
     def _clear(self):
-        self.current_remesa=None; self.remesa_panel.load({}); self.selected.delete(0,"end"); self.deliveries_panel.clear(); self.summary_panel.clear(); self.summary=None; self.current_calculation=None; self.calculation_valid=False; self.current_deliveries=[]; self.status.set("Filtros/resultados limpiados"); self._refresh_action_states()
+        self.current_remesa=None; self.remesa_panel.load({}); self.selected.delete(0,"end"); self.selected_source_items=[]; self.variety_resolutions=[]; self._refresh_resolved_selection_label(); self.deliveries_panel.clear(); self.summary_panel.clear(); self.summary=None; self.current_calculation=None; self.calculation_valid=False; self.current_deliveries=[]; self.status.set("Filtros/resultados limpiados"); self._refresh_action_states()
     def _context_ready(self) -> bool:
         try:
             self._filters()
@@ -304,7 +340,10 @@ class RemesasFrame(ttk.Frame):
                 self._search(); deliveries = self._deliveries()
             if not deliveries:
                 return
-            self.current_calculation = self.calculations.calculate(deliveries, self._calculation_remesa())
+            remesa = self._calculation_remesa()
+            self.current_calculation = self.calculations.calculate(deliveries, remesa)
+            if self.current_calculation and self.current_calculation.result:
+                object.__setattr__(self.current_calculation.result, "variety_audit", tuple(remesa.values.get("VARIEDAD_AUDIT", ())))
             self.calculation_valid=True
             self.summary_panel.set_calculation(self.current_calculation)
             self.status.set(f"Liquidación calculada: {self.current_calculation.member_count} socios, {format_decimal_es(self.current_calculation.net_kg, 3)} kg, importe comercial {format_currency_es(self.current_calculation.commercial_amount)}")
@@ -316,7 +355,9 @@ class RemesasFrame(ttk.Frame):
         base = dict(self.current_remesa.values) if self.current_remesa else {}
         base.update({k:v.get() for k,v in self.price_vars.items()})
         ctx=self.context_panel.context(); data=self.remesa_panel.data()
-        base.update({"CAMPAÑA":ctx.campana,"EMPRESA":ctx.empresa,"CULTIVO":ctx.cultivo,"REMESA":data.get("remesa"),"FECHARE":data.get("fecha_pago"),"PERIODO1":data.get("desde"),"PERIODO2":data.get("hasta"),"TipoLiq":data.get("tipo"),"CATEGORIA":data.get("categoria"),"IdSocio":data.get("socio"),"VARIEDAD":", ".join(self.selected.get(0,"end")),"AplRec":"S" if self.apply_collection_var.get() else "N","AplTte":"S" if self.apply_transport_var.get() else "N","AplCal":"S" if self.apply_quality_var.get() else "N","AplGlobal":"S" if self.apply_globalgap_var.get() else "N","AplCHa":"S" if self.apply_hectare_fee_var.get() else "N","AplPrecalibrado":"S" if self.apply_precalibrated_var.get() else "N"})
+        base.update({"CAMPAÑA":ctx.campana,"EMPRESA":ctx.empresa,"CULTIVO":ctx.cultivo,"REMESA":data.get("remesa"),"FECHARE":data.get("fecha_pago"),"PERIODO1":data.get("desde"),"PERIODO2":data.get("hasta"),"TipoLiq":data.get("tipo"),"CATEGORIA":data.get("categoria"),"IdSocio":data.get("socio"),"VARIEDAD":", ".join(self.selected_source_items or list(self.selected.get(0,"end"))),"AplRec":"S" if self.apply_collection_var.get() else "N","AplTte":"S" if self.apply_transport_var.get() else "N","AplCal":"S" if self.apply_quality_var.get() else "N","AplGlobal":"S" if self.apply_globalgap_var.get() else "N","AplCHa":"S" if self.apply_hectare_fee_var.get() else "N","AplPrecalibrado":"S" if self.apply_precalibrated_var.get() else "N"})
+        base["VARIEDADES_RESUELTAS"] = list(self.selected.get(0,"end"))
+        base["VARIEDAD_AUDIT"] = tuple(self.variety_resolutions)
         return Remesa(base)
 
     def _invalidate_master_changed(self):

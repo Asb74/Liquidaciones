@@ -183,6 +183,24 @@ def _hectare_fee_excel_value(member):
         return Decimal("0")
     return _number(member.hectare_fee_amount, "C. Has.")
 
+
+def _append_variety_audit_sheet(wb: Workbook, result: LiquidationResult) -> None:
+    ws = wb.create_sheet("Auditoría variedades")
+    headers = ["Campaña", "Empresa", "Cultivo", "Remesa", "Valor original", "Tipo resuelto", "Grupo", "Subgrupo", "Variedades resueltas", "Nº variedades", "Estado", "Advertencias", "Usado en consulta", "Alineado"]
+    ws.append(headers)
+    used = tuple(result.header.variedades or ())
+    used_norm = {str(v).strip().upper() for v in used}
+    for res in getattr(result, "variety_audit", ()) or ():
+        resolved = tuple(getattr(res, "varieties", ()) or ())
+        resolved_norm = {str(v).strip().upper() for v in resolved}
+        aligned = bool(resolved_norm) and resolved_norm.issubset(used_norm)
+        ws.append([
+            result.header.campana, result.header.empresa, result.header.cultivo, result.header.remesa_name,
+            getattr(res, "source_value", ""), "GROUP" if getattr(res, "is_group", False) else getattr(res, "status", ""),
+            getattr(res, "group", "") or "", getattr(res, "subgroup", "") or "", ", ".join(resolved), len(resolved),
+            getattr(res, "status", ""), "; ".join(getattr(res, "warnings", ()) or ()), ", ".join(used), "SÍ" if aligned else "NO",
+        ])
+
 def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
     _validate_result(result)
 
@@ -298,6 +316,7 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
             for cell in gg_ws[gg_ws.max_row]:
                 cell.fill = red_fill
 
+    _append_variety_audit_sheet(wb, result)
     _append_economic_audit_sheet(wb, result, summary_base_by_member, red_fill)
     _append_fiscal_audit_sheet(wb, result, summary_fiscal_by_member, red_fill)
 
