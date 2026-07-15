@@ -21,8 +21,8 @@ class SpanishFormatTests(unittest.TestCase):
         self.assertEqual(round_price(Decimal("0.123456")), Decimal("0.12346"))
 
     def test_citrus_labels(self):
-        self.assertEqual(get_price_labels("MANDARINA")[:3], ["I AAA", "I AA", "I A"])
-        self.assertEqual(get_price_labels("DIRECTO")[:3], ["P0", "P1", "P2"])
+        self.assertEqual(get_price_labels("MANDARINA")[:3], ["1 XXX", "1 XX", "1 X"])
+        self.assertEqual(get_price_labels("DIRECTO")[:3], ["CAL 0", "CAL 1", "CAL 2"])
 
 
 class CalculationStateTests(unittest.TestCase):

@@ -10,6 +10,7 @@ from typing import Any
 
 from domain.calculation_models import LiquidationHeader, MemberLiquidation
 from services.group_benchmark_service import PremiumGroupBenchmark
+from services.calibre_master_service import CalibreMasterService
 from domain.utils import format_decimal_es
 
 logger = logging.getLogger(__name__)
@@ -56,9 +57,14 @@ class PremiumLiquidationViewModel:
     waste_net_kg: Decimal
     rotten_net_kg: Decimal
     gross_amount: Decimal
+    commercial_amount: Decimal | None
     commercial_average_price: Decimal | None
     destruction_amount: Decimal | None
+    destruction_price: Decimal | None
     rotten_amount: Decimal | None
+    rotten_price: Decimal | None
+    gross_average_price: Decimal | None
+    commercial_breakdown_title: str
     collection_amount: Decimal | None
     hectare_fee_amount: Decimal | None
     quality_amount: Decimal | None
@@ -129,8 +135,8 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
         period_from=header.periodo_desde, period_to=header.periodo_hasta, payment_date=header.fecha_pago or None,
         effective_net_kg=member.net_kg, commercial_net_kg=member.commercial_kg,
         waste_net_kg=member.destruction_kg + member.table_destruction_kg, rotten_net_kg=member.rotten_kg,
-        gross_amount=member.gross_amount, commercial_average_price=member.commercial_average_price,
-        destruction_amount=member.destruction_amount + member.table_destruction_amount, rotten_amount=member.rotten_amount,
+        gross_amount=member.gross_amount, commercial_amount=member.commercial_amount, commercial_average_price=member.commercial_average_price,
+        destruction_amount=member.destruction_amount + member.table_destruction_amount, destruction_price=getattr(member, "destruction_price", None), rotten_amount=member.rotten_amount, rotten_price=getattr(member, "rotten_price", None), gross_average_price=(member.gross_amount / member.net_kg if member.net_kg else None), commercial_breakdown_title=CalibreMasterService().commercial_breakdown_title(header.cultivo),
         collection_amount=member.collection_amount, hectare_fee_amount=member.hectare_fee_amount,
         quality_amount=member.quality_amount, transport_amount=member.transport_amount, globalgap_amount=member.globalgap_amount,
         taxable_base=member.taxable_base, vat_rate=member.vat_rate, vat_amount=member.vat_amount,
