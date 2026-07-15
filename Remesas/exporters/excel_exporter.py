@@ -342,11 +342,12 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
                 cell.fill = red_fill
 
     parcelas_ws = wb.create_sheet("Parcelas cuota Ha")
-    parcelas_headers = ["Nº Socio", "Socio", "Boleta", "Campaña", "Empresa", "Cultivo", "CHA original", "CHA activo", "IdPM", "Pol", "Par", "Rec", "SupCul", "Baja", "Año", "Año máximo admitido", "Antigüedad suficiente", "Incluida", "Motivo exclusión", "Clave deduplicación"]
+    parcelas_headers = ["Nº Socio", "Socio", "Boleta", "RowId parcela", "Polígono", "Parcela", "Recinto", "Año", "SupCul", "CHA", "Baja", "Cumple antigüedad", "Incluida", "Motivo", "Superficie acumulada socio", "Cuota total anual", "Kilos elegibles", "Proporción", "Kilos remesa", "Cuota remesa"]
     parcelas_ws.append(parcelas_headers)
     for member in result.member_results:
         for row in getattr(member, "hectare_fee_parcels", ()):
-            parcelas_ws.append([member.member_id, member.member_name, row.get("Boleta DParcela") or row.get("Boleta DEEPP"), row.get("Campaña DParcela") or row.get("Campaña DEEPP"), row.get("Empresa DParcela") or row.get("Empresa DEEPP"), row.get("Cultivo DParcela") or row.get("Cultivo DEEPP"), row.get("CHA original"), row.get("CHA activo"), row.get("IdPM"), row.get("Pol"), row.get("Par"), row.get("Rec"), _number(row.get("SupCul DParcela") or row.get("SupCul DEEPP"), "SupCul"), row.get("Baja DParcela") or row.get("Baja DEEPP"), row.get("Año"), row.get("Año máximo admitido"), row.get("Antigüedad suficiente"), row.get("Incluida"), row.get("Motivo exclusión"), row.get("Clave deduplicación")])
+            audit_data = getattr(member, "hectare_fee_audit", None)
+            parcelas_ws.append([member.member_id, member.member_name, row.get("Boleta DParcela") or row.get("Boleta DEEPP"), row.get("RowId parcela"), row.get("Pol"), row.get("Par"), row.get("Rec"), row.get("Año"), _number(row.get("SupCul DParcela") or row.get("SupCul DEEPP"), "SupCul"), row.get("CHA original"), row.get("Baja DParcela") or row.get("Baja DEEPP"), row.get("Antigüedad suficiente"), row.get("Incluida"), row.get("Motivo") or row.get("Motivo exclusión"), _number(getattr(audit_data, "applicable_hectares", None), "Superficie acumulada socio"), _number(getattr(audit_data, "total_theoretical_fee", None), "Cuota total anual"), _number(getattr(audit_data, "total_effective_kg", None), "Kilos elegibles"), _number(getattr(audit_data, "rate_per_kg", None), "Proporción"), _number(getattr(audit_data, "line_effective_kg", None), "Kilos remesa"), _number(getattr(audit_data, "line_fee", None), "Cuota remesa")])
 
     entregas_ws = wb.create_sheet("Entregas prorrateo cuota Ha")
     entregas_headers = ["Nº Socio", "Socio", "Registro", "Fecha", "Campaña", "Empresa", "Cultivo", "Variedad", "Boleta", "Neto", "NetoPartida", "NetoEfectivo", "Incluida en denominador", "Motivo exclusión", "Boleta apta para cuota", "Relevancia de boleta"]
