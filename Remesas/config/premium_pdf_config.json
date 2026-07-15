@@ -7,5 +7,6 @@
   "show_commercial_breakdown": true,
   "total_label": "Total a percibir",
   "footer_message": "Gracias por confiar su producción a la Cooperativa.",
-  "logo_path": "assets/logo_sansebas.png"
+  "logo_path": "assets/logo_sansebas.png",
+  "generate_combined_premium_pdf": false
 }
