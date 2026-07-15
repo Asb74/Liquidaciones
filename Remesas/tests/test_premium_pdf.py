@@ -82,4 +82,29 @@ def test_pdf_with_group_benchmark_stays_single_page(tmp_path: Path):
     text = path.read_bytes().decode("latin1", errors="ignore")
     assert path.read_bytes().count(b"/Type /Page\n") == 1
     assert "COMPARATIVA CON SU GRUPO VARIETAL" in text
-    assert "Precio medio final" in text and "Producci" in text and "Importe final" in text
+    assert "PRECIO MEDIO FINAL" in text and "PRODUCCI" in text and "IMPORTE FINAL" in text
+    assert "DISTRIBUCI" in text and "IMPORTE BRUTO" in text
+
+
+def test_pdf_with_partial_benchmark_and_no_surface_stays_single_page(tmp_path: Path):
+    b = PremiumGroupBenchmark(
+        "BLANCA TEMPRANA", "CITRICOS", "BLANCA", "TEMPRANA", ("BLANCA",), "2026", "SANSEBAS", "Normal", "Primera",
+        BenchmarkMetric(Decimal("0.33558"), Decimal("0.40000"), Decimal("0.25000"), Decimal("0.33000"), 34, 0, "ok"),
+        BenchmarkMetric(None, None, None, None, 0, 1, "unavailable", "No se ha podido determinar una superficie productiva válida."),
+        BenchmarkMetric(None, None, None, None, 0, 1, "unavailable", "No se ha podido determinar una superficie productiva válida."),
+    )
+    vm = from_member_liquidation(_header(), _member(member_name="SOCIO CON NOMBRE EXTRAORDINARIAMENTE LARGO PARA VALIDAR CABECERA"), group_benchmark=b)
+    path = export_premium_member_pdf(vm, tmp_path / "partial_benchmark.pdf")
+    text = path.read_bytes().decode("latin1", errors="ignore")
+    assert path.read_bytes().count(b"/Type /Page\n") == 1
+    assert "No disponible" in text
+    assert "DISTRIBUCI" in text
+
+
+def test_pdf_with_no_benchmark_shows_discreet_message_and_single_page(tmp_path: Path):
+    vm = from_member_liquidation(_header(), _member())
+    path = export_premium_member_pdf(vm, tmp_path / "no_benchmark.pdf")
+    text = path.read_bytes().decode("latin1", errors="ignore")
+    assert path.read_bytes().count(b"/Type /Page\n") == 1
+    assert "Comparativa con el grupo varietal no disponible" in text
+    assert "DISTRIBUCI" in text

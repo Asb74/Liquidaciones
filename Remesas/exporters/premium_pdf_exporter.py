@@ -23,6 +23,15 @@ LIGHT_BACKGROUND = "#F4F6F8"
 TEXT_COLOR = "#1F2933"
 POSITIVE_COLOR = "#2E7D32"
 NEGATIVE_COLOR = "#B23B3B"
+BENCHMARK_OWN_COLOR = PRIMARY_COLOR
+BENCHMARK_MAX_COLOR = "#81C784"
+BENCHMARK_AVERAGE_COLOR = "#F6B26B"
+BENCHMARK_MIN_COLOR = "#8F9AA3"
+DISTRIBUTION_BASE_COLOR = PRIMARY_COLOR
+DISTRIBUTION_COLLECTION_COLOR = "#C97A35"
+DISTRIBUTION_HECTARE_COLOR = "#8F9AA3"
+DISTRIBUTION_POSITIVE_ADJUSTMENT_COLOR = "#81C784"
+DISTRIBUTION_NEGATIVE_ADJUSTMENT_COLOR = "#D98C8C"
 ENABLE_QR = False
 MM = 72 / 25.4
 GENERATE_COMBINED_PREMIUM_PDF = False
@@ -68,9 +77,11 @@ def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, confi
         build_commercial_breakdown(c, Table, TableStyle, colors, vm, m, y2, left_w, config)
         build_tax_summary(c, Table, TableStyle, colors, vm, config, right_x, y2, right_w)
         if vm.group_benchmark:
-            build_benchmark_section(c, vm, m, 54*MM, w - 2*m)
-        elif config.get("show_distribution_bar", True):
-            build_distribution_bar(c, vm, right_x, 29*MM, right_w)
+            build_benchmark_section(c, vm, m, 73*MM, w - 2*m)
+        else:
+            build_benchmark_unavailable(c, m, 104*MM, w - 2*m)
+        if config.get("show_distribution_bar", True):
+            build_distribution_bar(c, vm, m, 44*MM, w - 2*m)
         build_footer(c, vm, config, m, 13*MM, w - 2*m)
         c.showPage(); c.save(); os.replace(tmp, path)
     except PermissionError as exc:
@@ -127,14 +138,34 @@ def build_tax_summary(c, Table, TS, colors, vm, config, x, y, width):
     if config.get("show_points_per_kg", True) and vm.final_average_price_pts is not None: rows.append(["Equivalencia", f"{format_decimal_es(vm.final_average_price_pts,2)} pts/kg"])
     _draw_table(c, Table, rows, x, y-5, [width*.55,width*.45], TS([('BOX',(0,0),(-1,-1),.8,colors.HexColor(PRIMARY_COLOR)),('INNERGRID',(0,0),(-1,-1),.25,colors.lightgrey),('BACKGROUND',(0,3),(-1,3),colors.HexColor(ACCENT_COLOR)),('FONT',(0,3),(-1,3),'Helvetica-Bold',12),('FONT',(0,0),(-1,-1),'Helvetica',9),('ALIGN',(1,0),(1,-1),'RIGHT')]))
 
+def _signed_label(value):
+    return format_signed_money(value) if value else "—"
+
 def build_distribution_bar(c, vm, x, y, width):
-    gross = vm.gross_amount or 0
-    if gross <= 0: return
-    parts=[(vm.taxable_base or 0, PRIMARY_COLOR),(abs(vm.collection_amount or 0), NEGATIVE_COLOR),(abs(vm.hectare_fee_amount or 0), "#777777"),(abs((vm.quality_amount or 0)+(vm.transport_amount or 0)+(vm.globalgap_amount or 0)), POSITIVE_COLOR)]
-    total=sum(p[0] for p in parts) or gross; xx=x; _font(c,8,True,PRIMARY_COLOR); c.drawString(x,y+12,"Distribución visual del importe bruto")
-    for val, color in parts:
-        ww=width*float(val/total); c.setFillColor(color); c.rect(xx,y,ww,6,fill=1,stroke=0); xx+=ww
-    _font(c,7); c.drawString(x,y-9,"Valor para el socio · Recolección · Cuota Ha · Otros ajustes")
+    base_before_tax = vm.taxable_base or Decimal("0")
+    collection = vm.collection_amount or Decimal("0")
+    hectare_fee = vm.hectare_fee_amount or Decimal("0")
+    net_adjustments = (vm.quality_amount or Decimal("0")) + (vm.transport_amount or Decimal("0")) + (vm.globalgap_amount or Decimal("0"))
+    parts = [
+        ("Base antes de fiscalidad", base_before_tax, DISTRIBUTION_BASE_COLOR, format_money(base_before_tax)),
+        ("Recolección", collection, DISTRIBUTION_COLLECTION_COLOR, format_signed_money(collection, force_negative=True)),
+        ("Cuota Ha", hectare_fee, DISTRIBUTION_HECTARE_COLOR, format_signed_money(hectare_fee, force_negative=True)),
+        ("Ajustes netos", net_adjustments, DISTRIBUTION_POSITIVE_ADJUSTMENT_COLOR if net_adjustments >= 0 else DISTRIBUTION_NEGATIVE_ADJUSTMENT_COLOR, _signed_label(net_adjustments)),
+    ]
+    total = sum(abs(p[1]) for p in parts)
+    if total <= 0: return
+    _font(c, 8, True, PRIMARY_COLOR); c.drawString(x, y+25, "DISTRIBUCIÓN DEL IMPORTE BRUTO ANTES DE FISCALIDAD")
+    xx = x; bar_y = y + 14; bar_h = 6
+    for _, val, color, _ in parts:
+        ww = width * float(abs(val) / total)
+        c.setFillColor(color); c.rect(xx, bar_y, ww, bar_h, fill=1, stroke=0); xx += ww
+    c.setStrokeColor("#D6DEE6"); c.rect(x, bar_y, width, bar_h, fill=0, stroke=1)
+    legend = []
+    for label, val, _, amount in parts:
+        pct = format_decimal_es((abs(val) / total * Decimal("100")), 1) if total else "0,0"
+        legend.append(f"{label}: {amount} ({pct} %)")
+    _font(c, 6.7, False, TEXT_COLOR); c.drawString(x, y+4, " · ".join(legend)[:170])
+    c.drawString(x, y-5, "Los ajustes pueden ser positivos o negativos. No incluye IVA ni retención.")
 
 def build_footer(c, vm, config, x, y, width):
     from datetime import datetime
@@ -147,37 +178,66 @@ def _metric_values(metric):
 
 def _fmt_metric(value, unit):
     if value is None: return "—"
-    if unit == "€/kg": return f"{format_decimal_es(value,5)} €/kg"
-    return f"{format_decimal_es(value,0)} {unit}"
+    if unit == "€/kg": return format_decimal_es(value, 5)
+    return format_decimal_es(value, 0)
 
-def build_benchmark_chart(title: str, unit: str, metric, width: float, height: float):
-    from reportlab.graphics.shapes import Drawing, String
-    from reportlab.graphics.charts.barcharts import VerticalBarChart
+def _benchmark_difference_text(metric):
+    if metric.own_value is None or metric.average_value in (None, 0): return ""
+    diff = (metric.own_value - metric.average_value) / metric.average_value * Decimal("100")
+    if abs(diff) < Decimal("0.05"): return "Igual que la media"
+    where = "sobre la media" if diff > 0 else "por debajo de la media"
+    return f"{format_decimal_es(abs(diff), 1)} % {where}"
+
+def build_compact_benchmark_chart(title: str, unit: str, metric, width: float, height: float):
+    from reportlab.graphics.shapes import Drawing, String, Rect, Line
     from reportlab.lib import colors
-    d=Drawing(width,height)
-    d.add(String(0,height-8,title,fontName="Helvetica-Bold",fontSize=7.5,fillColor=colors.HexColor(PRIMARY_COLOR)))
-    vals=_metric_values(metric)
+    d = Drawing(width, height)
+    d.add(Rect(0, 0, width, height, rx=4, ry=4, fillColor=colors.HexColor("#FFFFFF"), strokeColor=colors.HexColor("#D6DEE6"), strokeWidth=.6))
+    d.add(String(width/2, height-9, title.upper(), textAnchor="middle", fontName="Helvetica-Bold", fontSize=7.6, fillColor=colors.HexColor(PRIMARY_COLOR)))
+    d.add(String(width/2, height-18, unit, textAnchor="middle", fontName="Helvetica", fontSize=7.0, fillColor=colors.HexColor(TEXT_COLOR)))
+    vals = _metric_values(metric)
     if vals is None:
-        d.add(String(width/2,height/2,"No disponible",textAnchor="middle",fontName="Helvetica-Bold",fontSize=8,fillColor=colors.HexColor(TEXT_COLOR)))
-        if metric.warning: d.add(String(width/2,height/2-11,metric.warning[:72],textAnchor="middle",fontName="Helvetica",fontSize=5.8,fillColor=colors.HexColor(TEXT_COLOR)))
+        d.add(String(width/2, height/2-2, "No disponible", textAnchor="middle", fontName="Helvetica-Bold", fontSize=8, fillColor=colors.HexColor(TEXT_COLOR)))
+        if metric.warning:
+            d.add(String(width/2, height/2-12, metric.warning[:62], textAnchor="middle", fontName="Helvetica", fontSize=5.8, fillColor=colors.HexColor(TEXT_COLOR)))
         return d
-    numeric=[float(v or 0) for v in vals]
-    chart=VerticalBarChart(); chart.x=12; chart.y=18; chart.width=width-24; chart.height=height-34; chart.data=[numeric]; chart.categoryAxis.categoryNames=["Propio","Máximo","Media","Mínimo"]; chart.categoryAxis.labels.fontSize=5.6; chart.valueAxis.labels.fontSize=0; chart.valueAxis.visibleGrid=0; chart.valueAxis.strokeColor=None
-    chart.bars[0].fillColor=colors.HexColor(ACCENT_COLOR); chart.bars[1].fillColor=colors.HexColor("#9CA3AF"); chart.bars[2].fillColor=colors.HexColor("#6B7280"); chart.bars[3].fillColor=colors.HexColor("#D1D5DB")
-    d.add(chart)
-    maxv=max(numeric) or 1
-    for i,v in enumerate(vals):
-        x=18+i*((width-36)/4)+(width-36)/8; y=20+(float(v or 0)/maxv)*(height-38)
-        d.add(String(x,min(height-16,y+4),_fmt_metric(v,unit),textAnchor="middle",fontName="Helvetica",fontSize=5.3,fillColor=colors.HexColor(TEXT_COLOR)))
+    labels = ["Usted", "Máximo", "Media", "Mínimo"]
+    palette = [BENCHMARK_OWN_COLOR, BENCHMARK_MAX_COLOR, BENCHMARK_AVERAGE_COLOR, BENCHMARK_MIN_COLOR]
+    numeric = [float(v) for v in vals if v is not None]
+    maxv = max(numeric) if numeric else 0
+    chart_x = 12; chart_y = 22; chart_w = width - 24; max_h = height - 47; bar_w = min(12, chart_w/7)
+    step = chart_w / 4
+    for i, v in enumerate(vals):
+        cx = chart_x + step*i + step/2
+        if v is None:
+            d.add(String(cx, chart_y+max_h/2, "No disponible", textAnchor="middle", fontName="Helvetica", fontSize=5.5, fillColor=colors.HexColor(TEXT_COLOR)))
+        else:
+            fv = float(v)
+            bh = 0 if maxv <= 0 or fv <= 0 else max(2.5*MM, (fv/maxv)*max_h)
+            if bh <= 0:
+                d.add(Line(cx-bar_w/2, chart_y, cx+bar_w/2, chart_y, strokeColor=colors.HexColor(palette[i]), strokeWidth=1))
+            else:
+                d.add(Rect(cx-bar_w/2, chart_y, bar_w, bh, fillColor=colors.HexColor(palette[i]), strokeColor=None))
+            d.add(String(cx, min(height-21, chart_y+bh+3), _fmt_metric(v, unit), textAnchor="middle", fontName="Helvetica-Bold" if i == 0 else "Helvetica", fontSize=7.2 if i == 0 else 6.8, fillColor=colors.HexColor(TEXT_COLOR)))
+        d.add(String(cx, 10, labels[i], textAnchor="middle", fontName="Helvetica", fontSize=7.5, fillColor=colors.HexColor(TEXT_COLOR)))
+    diff = _benchmark_difference_text(metric)
+    if diff:
+        d.add(String(width/2, 2.5, diff, textAnchor="middle", fontName="Helvetica", fontSize=6.8, fillColor=colors.HexColor(TEXT_COLOR)))
     return d
+
+def build_benchmark_unavailable(c, x, y, width):
+    c.setFillColor(LIGHT_BACKGROUND); c.roundRect(x, y-11*MM, width, 11*MM, 4, fill=1, stroke=0)
+    c.setStrokeColor("#D6DEE6"); c.roundRect(x, y-11*MM, width, 11*MM, 4, fill=0, stroke=1)
+    _font(c, 8, True, PRIMARY_COLOR); c.drawString(x+4*MM, y-7*MM, "Comparativa con el grupo varietal no disponible para esta liquidación.")
 
 def build_benchmark_section(c, vm, x, y, width):
     from reportlab.graphics import renderPDF
-    b=vm.group_benchmark
-    _font(c,10,True,PRIMARY_COLOR); c.drawString(x,y+43*MM,"COMPARATIVA CON SU GRUPO VARIETAL")
-    _font(c,8,False,TEXT_COLOR); c.drawString(x,y+39*MM,f"{b.group_label} · Campaña {b.campaign}")
-    gap=5*MM; cw=(width-2*gap)/3; ch=37*MM
-    charts=[("Precio medio final","€/kg",b.price_per_kg),("Producción","kg/ha",b.kilograms_per_hectare),("Importe final","€/ha",b.euros_per_hectare)]
-    for i,(title,unit,metric) in enumerate(charts):
-        d=build_benchmark_chart(title,unit,metric,cw,ch)
-        renderPDF.draw(d,c,x+i*(cw+gap),y)
+    b = vm.group_benchmark
+    _font(c, 9, True, PRIMARY_COLOR); c.drawString(x, y+35*MM, "COMPARATIVA CON SU GRUPO VARIETAL")
+    comparable = b.price_per_kg.valid_member_count if b.price_per_kg else 0
+    suffix = f" · {comparable} socios comparables" if comparable else ""
+    _font(c, 7.4, False, TEXT_COLOR); c.drawString(x, y+31*MM, f"{b.group_label} · Campaña {b.campaign}{suffix}")
+    gap = 4*MM; cw = (width-2*gap)/3; ch = 28*MM
+    charts = [("PRECIO MEDIO FINAL", "€/kg", b.price_per_kg), ("PRODUCCIÓN", "kg/ha", b.kilograms_per_hectare), ("IMPORTE FINAL", "€/ha", b.euros_per_hectare)]
+    for i, (title, unit, metric) in enumerate(charts):
+        renderPDF.draw(build_compact_benchmark_chart(title, unit, metric, cw, ch), c, x+i*(cw+gap), y)
