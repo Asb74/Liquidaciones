@@ -58,6 +58,9 @@ class HectareRepository:
         self.last_surface_audit_rows: tuple[dict[str, Any], ...] = ()
         self.last_surface_filter_counts: dict[str, Any] = {}
         self.last_delivery_audit_rows: tuple[dict[str, Any], ...] = ()
+        self.last_deepp_sql = ""
+        self.last_deepp_params: list[Any] = []
+        self.last_dparcela_sql = ""
 
     def calculate_applicable_hectares(self, member_id: int, campaign: int | str, company: int | str, applicable_crops: Sequence[str] | None = None) -> tuple[Decimal, tuple[str, ...]]:
         """Return SUM(DParcela.SupCul) after auditable staged filtering.
@@ -69,6 +72,8 @@ class HectareRepository:
         """
         crops = tuple(dict.fromkeys((c or "").strip().upper() for c in (applicable_crops or ("CITRICOS", "MANDARINA")) if (c or "").strip()))
         start = time.perf_counter()
+        self.last_deepp_sql = self._deepp_sql(crops)
+        self.last_deepp_params = [member_id, str(campaign), str(company), *crops]
         deepp_rows = self._deepp_candidate_rows(member_id, campaign, company, crops)
         cha_summary = self._cha_summary(member_id, campaign, company, crops)
         active_deepp = [r for r in deepp_rows if is_active_cha(r[7])]
@@ -84,7 +89,9 @@ class HectareRepository:
 
         for d in deepp_rows:
             if not is_active_cha(d[7]):
-                audit_rows.append(self._audit_excluded_deepp(member_id, d))
+                row = self._audit_excluded_deepp(member_id, d)
+                row["Número DEEPP encontrados"] = len(deepp_rows)
+                audit_rows.append(row)
 
         for d in active_deepp:
             boleta = d[1]
@@ -92,6 +99,7 @@ class HectareRepository:
             dparcela_by_boleta[str(boleta)] = dp_rows
             for idx, dp in enumerate(dp_rows):
                 row, included_flag, reason, key = self._audit_dp_row(member_id, d, dp, campaign, company, crops)
+                row["Número DEEPP encontrados"] = len(deepp_rows)
                 if included_flag:
                     sup = decimal_or_zero(dp[8])
                     if key in included:
@@ -107,7 +115,9 @@ class HectareRepository:
                         included[key] = sup
                 audit_rows.append(row)
             if not dp_rows:
-                audit_rows.append(self._audit_no_dp(member_id, d))
+                row = self._audit_no_dp(member_id, d)
+                row["Número DEEPP encontrados"] = len(deepp_rows)
+                audit_rows.append(row)
 
         total = sum(included.values(), Decimal("0"))
         filter_counts.update(self._dparcela_counts(dparcela_by_boleta, active_deepp, campaign, company, crops, len(included), total))
@@ -208,6 +218,7 @@ class HectareRepository:
             WHERE TRIM(CAST(dp.Boleta AS TEXT)) = TRIM(CAST(? AS TEXT))
             ORDER BY dp.CAMPAÑA, dp.EMPRESA, dp.CULTIVO, dp.IdPM, dp.Pol, dp.Par, dp.Rec
         """
+        self.last_dparcela_sql = sql
         return self.conn.execute(sql, [boleta]).fetchall()
 
     def _base_counts(self, member_id: int, campaign: int | str, company: int | str, crops: Sequence[str]) -> dict[str, Any]:
@@ -256,10 +267,10 @@ class HectareRepository:
         elif not is_old_enough_for_hectare_fee(year, int(campaign)): reasons.append("PLANTACION_MENOR_CINCO_ANOS")
         if decimal_or_zero(dp[8]) <= 0: reasons.append("SUPERFICIE_CERO")
         reason = "; ".join(reasons)
-        return ({"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Boleta DParcela": dp[0], "Campaña DParcela": dp[1], "Empresa DParcela": dp[2], "Cultivo DParcela": dp[3], "IdPM": dp[4], "Pol": dp[5], "Par": dp[6], "Rec": dp[7], "SupCul DParcela": dp[8], "SupRec": dp[9], "SupApor": dp[10], "Baja DParcela": dp[12], "Año": year, "Año máximo admitido": int(campaign)-5, "Antigüedad suficiente": "Sí" if year is not None and is_old_enough_for_hectare_fee(year, int(campaign)) else "No", "Incluida": "Sí" if not reason else "No", "Motivo exclusión": reason, "Clave deduplicación": "|".join(key)}, not reason, reason, key)
+        return ({"Consulta SQL DEEPP": self.last_deepp_sql, "Parámetros DEEPP": list(self.last_deepp_params), "Consulta SQL DParcela": self.last_dparcela_sql, "Parámetros DParcela": [dp[0]], "IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Variedad DEEPP": d[6], "Boleta DParcela": dp[0], "Campaña DParcela": dp[1], "Empresa DParcela": dp[2], "Cultivo DParcela": dp[3], "IdPM": dp[4], "Pol": dp[5], "Par": dp[6], "Rec": dp[7], "SupCul DParcela": dp[8], "SupRec": dp[9], "SupApor": dp[10], "Alta DParcela": dp[11], "Baja DParcela": dp[12], "Año": year, "Año máximo admitido": int(campaign)-5, "Antigüedad": (int(campaign) - year) if year is not None else "", "Antigüedad suficiente": "Sí" if year is not None and is_old_enough_for_hectare_fee(year, int(campaign)) else "No", "Incluida": "Sí" if not reason else "No", "Motivo exclusión": reason, "Clave deduplicación": "|".join(key)}, not reason, reason, key)
 
     def _audit_no_dp(self, member_id: int, d: Any) -> dict[str, Any]:
-        return {"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Incluida": "No", "Motivo exclusión": "Sin filas DParcela por Boleta", "Clave deduplicación": ""}
+        return {"Consulta SQL DEEPP": self.last_deepp_sql, "Parámetros DEEPP": list(self.last_deepp_params), "IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Variedad DEEPP": d[6], "Incluida": "No", "Motivo exclusión": "Sin filas DParcela por Boleta", "Clave deduplicación": ""}
 
     def _audit_excluded_deepp(self, member_id: int, d: Any) -> dict[str, Any]:
         reasons = []
@@ -267,4 +278,4 @@ class HectareRepository:
             reasons.append("CHA_NO_ACTIVO")
         if not is_active_baja(d[9]):
             reasons.append("BAJA DEEPP informada")
-        return {"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí" if is_active_cha(d[7]) else "No", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Incluida": "No", "Motivo exclusión": "; ".join(reasons), "Clave deduplicación": ""}
+        return {"Consulta SQL DEEPP": self.last_deepp_sql, "Parámetros DEEPP": list(self.last_deepp_params), "IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí" if is_active_cha(d[7]) else "No", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Variedad DEEPP": d[6], "Incluida": "No", "Motivo exclusión": "; ".join(reasons), "Clave deduplicación": ""}
