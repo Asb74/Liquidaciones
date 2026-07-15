@@ -12,6 +12,7 @@ from data.deliveries_repository import DeliveriesRepository
 from data.metadata_repository import MetadataRepository
 from data.variety_repository import VarietyRepository
 from data.hectare_fee_master_repository import HectareFeeCropRepository
+from data.group_benchmark_repository import GroupBenchmarkRepository
 from data.remesas_repository import RemesasRepository
 from domain.models import DeliveryFilter, Period, Remesa
 from domain.varieties import STATUS_AMBIGUOUS, STATUS_EMPTY_GROUP, STATUS_GROUP, STATUS_NOT_FOUND, normalize_variety_text
@@ -25,6 +26,7 @@ from services.calculation_service import CalculationService
 from services.hectare_fee_master_service import HectareFeeMasterService
 from services.local_database_sync_service import LocalDatabaseSyncService
 from services.variety_group_service import VarietyGroupService
+from services.group_benchmark_service import GroupBenchmarkService
 from ui.context_panel import ContextPanel
 from ui.deliveries_panel import COLUMNS, DeliveriesPanel
 from ui.remesa_panel import RemesaPanel
@@ -43,7 +45,7 @@ class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
         super().__init__(master, padding=8)
         self.config=load_config(config_path); setup_logging(self.config)
-        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.variety_service=None; self.selected_source_items=[]; self.variety_resolutions=[]; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.sync_results=[]; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
+        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.variety_service=None; self.selected_source_items=[]; self.variety_resolutions=[]; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.sync_results=[]; self.current_group_benchmarks={}; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
         self._build(); self._connect()
 
     def _build(self):
@@ -181,7 +183,7 @@ class RemesasFrame(ttk.Frame):
         self.db_status_text.set("   ".join(parts))
 
     def _context_changed(self):
-        self.current_remesa=None; self.remesa_panel.load({}); self._clear_selected_varieties(invalidate=False); self.deliveries_panel.clear(); self.summary_panel.clear(); self.current_calculation=None; self.calculation_valid=False; self.current_deliveries=[]
+        self.current_remesa=None; self.remesa_panel.load({}); self._clear_selected_varieties(invalidate=False); self.deliveries_panel.clear(); self.summary_panel.clear(); self.current_calculation=None; self.calculation_valid=False; self.current_deliveries=[]; self.current_group_benchmarks={}
         ctx=self.context_panel.context()
         try:
             if ctx.campana and not ctx.empresa: self.context_panel.empresa_cb["values"]=self.meta.empresas(ctx.campana)
@@ -270,7 +272,7 @@ class RemesasFrame(ttk.Frame):
             self.apply_hectare_fee_var.set(parse_yes_no(rem.values.get("AplCHa")))
             self.apply_precalibrated_var.set(parse_yes_no(rem.values.get("AplPrecalibrado")))
             self._load_varieties(); self._restore_remesa_varieties(rem)
-            self.deliveries_panel.clear(); self.summary_panel.clear(); self.current_deliveries=[]; self.current_calculation=None; self.calculation_valid=False
+            self.deliveries_panel.clear(); self.summary_panel.clear(); self.current_deliveries=[]; self.current_calculation=None; self.current_group_benchmarks={}; self.calculation_valid=False
             self._refresh_action_states()
             if messagebox.askyesno("Buscar entregas", "¿Desea buscar las entregas correspondientes a esta remesa?"):
                 self._search()
@@ -347,7 +349,9 @@ class RemesasFrame(ttk.Frame):
                 return
             remesa = self._calculation_remesa()
             self.current_calculation = self.calculations.calculate(deliveries, remesa)
+            self.current_group_benchmarks = {}
             if self.current_calculation and self.current_calculation.result:
+                self.current_group_benchmarks = GroupBenchmarkService(GroupBenchmarkRepository(self.conn)).build_benchmarks(self.current_calculation.result.header, self.current_calculation.result.member_results)
                 object.__setattr__(self.current_calculation.result, "variety_audit", tuple(remesa.values.get("VARIEDAD_AUDIT", ())))
                 audit_paths = export_hectare_fee_audit(self.current_calculation.result, self._output_dir())
                 if audit_paths:
@@ -506,9 +510,19 @@ class RemesasFrame(ttk.Frame):
         variety = f" · {member.variety}" if getattr(member, "variety", "") else ""
         return f"{member.member_id} - {member.member_name}{variety}"
 
+
+    def _benchmark_for_member(self, member):
+        result = self.current_calculation.result if self.current_calculation and self.current_calculation.result else None
+        if not result:
+            return None
+        for key, benchmark in getattr(self, "current_group_benchmarks", {}).items():
+            if key[0] == member.member_id and member.variety and member.variety.upper() in benchmark.varieties:
+                return benchmark
+        return None
+
     def _premium_member_path(self, member) -> Path:
         result = self.current_calculation.result
-        vm = from_member_liquidation(result.header, member)
+        vm = from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member))
         return self._output_dir() / "socios" / premium_member_filename(vm)
 
     def _write_premium_trace(self, *, mode: str, available, selected=None, paths=(), errors=0, error_text="") -> None:
@@ -544,7 +558,7 @@ class RemesasFrame(ttk.Frame):
         result = self.current_calculation.result
         paths = []
         for member in members:
-            vm = from_member_liquidation(result.header, member)
+            vm = from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member))
             paths.append(export_premium_member_pdf(vm, self._premium_member_path(member)))
         if preview and paths:
             if hasattr(os, "startfile"):

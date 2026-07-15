@@ -3,6 +3,7 @@ from pathlib import Path
 
 from domain.calculation_models import GradeBreakdown, LiquidationHeader, MemberLiquidation
 from exporters.premium_pdf_exporter import export_premium_member_pdf
+from services.group_benchmark_service import BenchmarkMetric, PremiumGroupBenchmark
 from presentation.premium_liquidation_view_model import (
     format_kg, format_money, format_percent, format_signed_money, format_unit_price,
     from_member_liquidation, mask_tax_id, sanitize_filename,
@@ -67,3 +68,18 @@ def test_zero_values_show_dash_in_view_model_pdf(tmp_path: Path):
     vm = from_member_liquidation(_header(), _member(hectare_fee_amount=Decimal("0"), globalgap_amount=Decimal("0"), transport_amount=Decimal("0")))
     path = export_premium_member_pdf(vm, tmp_path / "zero.pdf")
     assert path.exists()
+
+
+def test_pdf_with_group_benchmark_stays_single_page(tmp_path: Path):
+    b = PremiumGroupBenchmark(
+        "NAVEL TEMPRANA", "CITRICOS", "NAVEL", "TEMPRANA", ("FUKUMOTO", "NAVELINA", "NEWHALL"), "2026", "SANSEBAS", "Normal", "Primera",
+        BenchmarkMetric(Decimal("0.31660"), Decimal("0.40000"), Decimal("0.25000"), Decimal("0.35455"), 2, 0, "ok"),
+        BenchmarkMetric(Decimal("43212"), Decimal("50000"), Decimal("30000"), Decimal("41000"), 2, 0, "ok"),
+        BenchmarkMetric(Decimal("15003"), Decimal("18000"), Decimal("10000"), Decimal("14500"), 2, 0, "ok"),
+    )
+    vm = from_member_liquidation(_header(), _member(variety="NAVELINA"), group_benchmark=b)
+    path = export_premium_member_pdf(vm, tmp_path / "benchmark.pdf")
+    text = path.read_bytes().decode("latin1", errors="ignore")
+    assert path.read_bytes().count(b"/Type /Page\n") == 1
+    assert "COMPARATIVA CON SU GRUPO VARIETAL" in text
+    assert "Precio medio final" in text and "Producci" in text and "Importe final" in text
