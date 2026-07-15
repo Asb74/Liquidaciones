@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import is_dataclass
 import logging
 import os
 import tempfile
@@ -33,6 +34,7 @@ def premium_member_filename(vm: PremiumLiquidationViewModel) -> str:
 
 
 def export_premium_member_pdfs(result: LiquidationResult, output_dir: Path, config_path: str | Path = "config/premium_pdf_config.json") -> tuple[Path, ...]:
+    logger.info("LiquidationHeader=%s", vars(result.header) if is_dataclass(result.header) else result.header)
     target_dir = output_dir / "socios"
     target_dir.mkdir(parents=True, exist_ok=True)
     return tuple(export_premium_member_pdf(from_member_liquidation(result.header, m), target_dir / premium_member_filename(from_member_liquidation(result.header, m)), config_path) for m in result.member_results)

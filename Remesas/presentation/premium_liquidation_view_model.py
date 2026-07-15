@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 import json
+import logging
 import re
 from typing import Any
 
 from domain.calculation_models import LiquidationHeader, MemberLiquidation
 from domain.utils import format_decimal_es
+
+logger = logging.getLogger(__name__)
 
 PESETA_RATE = Decimal("166.386")
 
@@ -108,6 +111,7 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
     each item carries one ``member_id`` and one ``variety`` plus its own grade rows.
     The Premium PDF therefore emits one page/file per existing member-variety item.
     """
+    logger.info("LiquidationHeader=%s", vars(header) if is_dataclass(header) else header)
     pts = getattr(member, "final_average_price_pts", None)
     if pts is None and member.final_average_price is not None:
         pts = (member.final_average_price * PESETA_RATE).quantize(Decimal("0.01"), ROUND_HALF_UP)
