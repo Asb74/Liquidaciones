@@ -32,6 +32,7 @@ from ui.summary_panel import SummaryPanel
 from ui.hectare_fee_master_dialog import HectareFeeMasterDialog
 from exporters.excel_exporter import export_liquidation_summary
 from exporters.file_lock import FileLockedError
+from exporters.hectare_fee_auditor import export_hectare_fee_audit
 
 logger = logging.getLogger(__name__)
 from exporters.pdf_exporter import export_member_pdf
@@ -345,6 +346,9 @@ class RemesasFrame(ttk.Frame):
             self.current_calculation = self.calculations.calculate(deliveries, remesa)
             if self.current_calculation and self.current_calculation.result:
                 object.__setattr__(self.current_calculation.result, "variety_audit", tuple(remesa.values.get("VARIEDAD_AUDIT", ())))
+                audit_paths = export_hectare_fee_audit(self.current_calculation.result, self._output_dir())
+                if audit_paths:
+                    logger.info("Auditoría Cuota Ha generada: log=%s excel=%s", audit_paths[0], audit_paths[1])
             self.calculation_valid=True
             self.summary_panel.set_calculation(self.current_calculation)
             self.status.set(f"Liquidación calculada: {self.current_calculation.member_count} socios, {format_decimal_es(self.current_calculation.net_kg, 3)} kg, importe comercial {format_currency_es(self.current_calculation.commercial_amount)}")
