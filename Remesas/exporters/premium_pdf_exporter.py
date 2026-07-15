@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import is_dataclass
+from dataclasses import dataclass, is_dataclass
 import logging
 import os
 import tempfile
@@ -39,6 +39,43 @@ LOCKED_PDF_MESSAGE = "No se puede generar el PDF porque el archivo está abierto
 OVERFLOW_MESSAGE = "No se puede generar la liquidación Premium en una sola hoja porque el desglose contiene demasiadas líneas."
 
 
+@dataclass(frozen=True)
+class PremiumLayoutMeasurement:
+    header_height: float
+    cards_height: float
+    main_tables_height: float
+    benchmark_height: float
+    distribution_height: float
+    footer_height: float
+    spacing_height: float
+    total_height: float
+    available_height: float
+    fits: bool
+    benchmark_render_mode: str = "charts"
+
+
+def _visible_commercial_rows(vm: PremiumLiquidationViewModel, max_rows: int = 9):
+    rows = [r for r in vm.commercial_breakdown if (r.kilograms and r.kilograms != 0) or (r.amount and r.amount != 0)]
+    if len(rows) <= max_rows:
+        return rows
+    return rows[:max_rows]
+
+
+def measure_premium_layout(vm: PremiumLiquidationViewModel, available_width: float, *, available_height: float | None = None, benchmark_render_mode: str = "charts") -> PremiumLayoutMeasurement:
+    header_height = 26 * MM
+    cards_height = 21 * MM
+    main_tables_height = 72 * MM if len(_visible_commercial_rows(vm)) > 6 else 68 * MM
+    benchmark_height = (35 if benchmark_render_mode == "charts" else 22) * MM
+    distribution_height = 14 * MM
+    footer_height = 9 * MM
+    spacing_height = 14 * MM
+    if available_height is None:
+        from reportlab.lib.pagesizes import A4, landscape
+        available_height = landscape(A4)[1] - 20 * MM
+    total_height = header_height + cards_height + main_tables_height + benchmark_height + distribution_height + footer_height + spacing_height
+    return PremiumLayoutMeasurement(header_height, cards_height, main_tables_height, benchmark_height, distribution_height, footer_height, spacing_height, total_height, available_height, total_height <= available_height, benchmark_render_mode)
+
+
 def premium_member_filename(vm: PremiumLiquidationViewModel) -> str:
     return sanitize_filename(f"Liquidacion_Premium_{vm.member_id}_{vm.member_name}_{vm.remittance_name}_{vm.variety_text}") + ".pdf"
 
@@ -52,10 +89,8 @@ def export_premium_member_pdfs(result: LiquidationResult, output_dir: Path, conf
 
 def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, config_path: str | Path = "config/premium_pdf_config.json") -> Path:
     try:
-        from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.pdfgen import canvas
-        from reportlab.platypus import Table, TableStyle
+        from reportlab.platypus import SimpleDocTemplate
     except ImportError as exc:
         raise RuntimeError("reportlab no está instalado. Instale requirements.txt para generar PDF.") from exc
     config = load_premium_pdf_config(config_path)
@@ -64,26 +99,37 @@ def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, confi
         raise ValueError(OVERFLOW_MESSAGE)
     path.parent.mkdir(parents=True, exist_ok=True)
     ensure_target_is_writable(path)
+    page_size = landscape(A4)
+    margin = 7 * MM
+    available_width = page_size[0] - 2 * margin
+    available_height = page_size[1] - 2 * margin
+    mode = "charts"
+    measurement = measure_premium_layout(vm, available_width, available_height=available_height, benchmark_render_mode=mode)
+    if not measurement.fits:
+        mode = "compact_table"
+        measurement = measure_premium_layout(vm, available_width, available_height=available_height, benchmark_render_mode=mode)
+    logger.info(
+        "Premium layout member=%s header_height=%.2f cards_height=%.2f main_tables_height=%.2f benchmark_height=%.2f distribution_height=%.2f footer_height=%.2f total_height=%.2f available_height=%.2f fits=%s benchmark_render_mode=%s",
+        vm.member_id, measurement.header_height, measurement.cards_height, measurement.main_tables_height,
+        measurement.benchmark_height, measurement.distribution_height, measurement.footer_height,
+        measurement.total_height, measurement.available_height, measurement.fits, measurement.benchmark_render_mode,
+    )
     fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=str(path.parent)); os.close(fd)
     try:
-        c = canvas.Canvas(tmp, pagesize=landscape(A4), pageCompression=0)
-        w, h = landscape(A4); m = 12 * MM; y = h - 10 * MM
-        build_header(c, vm, config, m, y, w - 2*m); y -= 36*MM
-        build_summary_cards(c, vm, config, m, y, w - 2*m); y -= 27*MM
-        left_w = (w - 2*m) * 0.51; right_x = m + left_w + 7*MM; right_w = w - m - right_x
-        build_production_table(c, Table, TableStyle, colors, vm, m, y, left_w, config)
-        build_economic_breakdown(c, Table, TableStyle, colors, vm, right_x, y, right_w)
-        y2 = y - 59*MM
-        build_commercial_breakdown(c, Table, TableStyle, colors, vm, m, y2, left_w, config)
-        build_tax_summary(c, Table, TableStyle, colors, vm, config, right_x, y2, right_w)
-        if vm.group_benchmark:
-            build_benchmark_section(c, vm, m, 73*MM, w - 2*m)
-        else:
-            build_benchmark_unavailable(c, m, 104*MM, w - 2*m)
-        if config.get("show_distribution_bar", True):
-            build_distribution_bar(c, vm, m, 44*MM, w - 2*m)
-        build_footer(c, vm, config, m, 13*MM, w - 2*m)
-        c.showPage(); c.save(); os.replace(tmp, path)
+        doc = SimpleDocTemplate(tmp, pagesize=page_size, leftMargin=margin, rightMargin=margin, topMargin=margin, bottomMargin=margin, pageCompression=0)
+        story = build_premium_story(vm, config, available_width, measurement)
+        doc.build(story)
+        data = Path(tmp).read_bytes()
+        if data.count(b"/Type /Page\n") > 1 and mode != "compact_table":
+            mode = "compact_table"
+            measurement = measure_premium_layout(vm, available_width, available_height=available_height, benchmark_render_mode=mode)
+            logger.warning("Premium layout retried with benchmark_render_mode=compact_table member=%s", vm.member_id)
+            doc = SimpleDocTemplate(tmp, pagesize=page_size, leftMargin=margin, rightMargin=margin, topMargin=margin, bottomMargin=margin, pageCompression=0)
+            doc.build(build_premium_story(vm, config, available_width, measurement))
+            data = Path(tmp).read_bytes()
+        if data.count(b"/Type /Page\n") > 1:
+            raise ValueError(OVERFLOW_MESSAGE)
+        os.replace(tmp, path)
     except PermissionError as exc:
         raise FileLockedError(path) from exc
     finally:
@@ -91,93 +137,163 @@ def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, confi
     return path
 
 
-def _font(c, size=9, bold=False, color=TEXT_COLOR):
-    c.setFont("Helvetica-Bold" if bold else "Helvetica", size); c.setFillColor(color)
+def _premium_styles():
+    from reportlab.lib.styles import ParagraphStyle
+    return {
+        "title": ParagraphStyle("premium_title", fontName="Helvetica-Bold", fontSize=18, leading=19, textColor=PRIMARY_COLOR),
+        "h": ParagraphStyle("premium_h", fontName="Helvetica-Bold", fontSize=10, leading=11, textColor=PRIMARY_COLOR, spaceAfter=2),
+        "small": ParagraphStyle("premium_small", fontName="Helvetica", fontSize=7.4, leading=8.4, textColor=TEXT_COLOR),
+        "small_b": ParagraphStyle("premium_small_b", fontName="Helvetica-Bold", fontSize=8, leading=9, textColor=TEXT_COLOR),
+        "right": ParagraphStyle("premium_right", fontName="Helvetica", fontSize=8, leading=9, alignment=2, textColor=TEXT_COLOR),
+    }
 
-def build_header(c, vm, config, x, y, width):
-    _font(c, 9, True, PRIMARY_COLOR); c.drawString(x, y, "S.C.A. San Sebastián")
-    logo = Path(config.get("logo_path") or "")
-    if logo.exists(): c.drawImage(str(logo), x, y-19, width=28, height=18, preserveAspectRatio=True, mask='auto')
-    _font(c, 18, True, PRIMARY_COLOR); c.drawString(x, y-30, str(config.get("title", "Liquidación de entrega")).upper())
-    cx = x + width * .34; _font(c, 12, True); c.drawString(cx, y, vm.remittance_name[:48])
-    _font(c, 9); c.drawString(cx, y-13, f"Campaña {vm.campaign} · {vm.crop} · {vm.variety_text[:36]}")
-    c.drawString(cx, y-26, f"Periodo: {vm.period_from} – {vm.period_to}"); c.drawString(cx, y-39, f"Fecha de pago: {vm.payment_date or '—'}")
-    _font(c, 13, True); c.drawRightString(x+width, y, f"Socio {vm.member_id:,}".replace(',', '.'))
-    _font(c, 10, True); c.drawRightString(x+width, y-15, vm.member_name[:38])
-    _font(c, 9); c.drawRightString(x+width, y-28, f"NIF {vm.tax_id_masked}" if vm.tax_id_masked else vm.company[:38])
 
-def build_summary_cards(c, vm, config, x, y, width):
+def _table_style(*commands):
+    from reportlab.lib import colors
+    from reportlab.platypus import TableStyle
+    return TableStyle(list(commands), parent=None)
+
+
+def _section(title, flowables, width, height):
+    from reportlab.platypus import Paragraph, Table, TableStyle
+    from reportlab.lib import colors
+    st = _premium_styles()
+    inner = [Paragraph(title, st["h"])] + flowables
+    t = Table([[inner]], colWidths=[width], rowHeights=[height])
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (-1, -1), .35, colors.HexColor("#D6DEE6")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return t
+
+
+def build_premium_story(vm, config, width, measurement: PremiumLayoutMeasurement):
+    from reportlab.platypus import Spacer, Table, TableStyle
+    story = [build_header_flowable(vm, config, width, measurement.header_height), Spacer(1, 3 * MM), build_summary_cards_flowable(vm, config, width, measurement.cards_height), Spacer(1, 3 * MM)]
+    gap = 5 * MM
+    left_w = (width - gap) * .51
+    right_w = width - gap - left_w
+    main = Table([
+        [build_production_section(vm, left_w, 30 * MM), build_economic_section(vm, right_w, 45 * MM)],
+        [build_commercial_section(vm, config, left_w, measurement.main_tables_height - 31 * MM), build_tax_section(vm, config, right_w, measurement.main_tables_height - 46 * MM)],
+    ], colWidths=[left_w, right_w], rowHeights=[31 * MM, measurement.main_tables_height - 31 * MM])
+    main.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 0), ("RIGHTPADDING", (0,0), (-1,-1), 0), ("TOPPADDING", (0,0), (-1,-1), 0), ("BOTTOMPADDING", (0,0), (-1,-1), 0)]))
+    story += [main, Spacer(1, 3 * MM), build_benchmark_flowable(vm, width, measurement.benchmark_height, measurement.benchmark_render_mode), Spacer(1, 2 * MM)]
+    if config.get("show_distribution_bar", True):
+        story.append(build_distribution_flowable(vm, width, measurement.distribution_height))
+        story.append(Spacer(1, 3 * MM))
+    story.append(build_footer_flowable(vm, config, width, measurement.footer_height))
+    return story
+
+
+def build_header_flowable(vm, config, width, height):
+    from reportlab.platypus import Paragraph, Table, TableStyle
+    from reportlab.lib import colors
+    st = _premium_styles()
+    left = [Paragraph("S.C.A. San Sebastián", st["small_b"]), Paragraph(str(config.get("title", "Liquidación de entrega")).upper(), st["title"])]
+    center = [Paragraph(f"<b>{vm.remittance_name[:58]}</b>", st["small"]), Paragraph(f"Campaña {vm.campaign} · {vm.crop} · {vm.variety_text[:42]}", st["small"]), Paragraph(f"Periodo: {vm.period_from} – {vm.period_to} · Pago: {vm.payment_date or '—'}", st["small"])]
+    right = [Paragraph(f"<b>Socio {vm.member_id:,}</b>".replace(',', '.'), st["right"]), Paragraph(vm.member_name[:42], st["right"]), Paragraph(f"NIF {vm.tax_id_masked}" if vm.tax_id_masked else vm.company[:38], st["right"])]
+    t = Table([[left, center, right]], colWidths=[width*.32, width*.43, width*.25], rowHeights=[height])
+    t.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP"), ("BOTTOMPADDING", (0,0), (-1,-1), 0), ("TOPPADDING", (0,0), (-1,-1), 0), ("TEXTCOLOR", (0,0), (-1,-1), colors.HexColor(TEXT_COLOR))]))
+    return t
+
+
+def build_summary_cards_flowable(vm, config, width, height):
+    from reportlab.platypus import Paragraph, Table, TableStyle
+    from reportlab.lib import colors
+    st = _premium_styles()
     vals = [("KILOS ENTREGADOS", format_kg(vm.effective_net_kg)), ("KILOS COMERCIALES", format_kg(vm.commercial_net_kg)), ("PRECIO MEDIO FINAL", format_unit_price(vm.final_average_price)), (str(config.get("total_label", "Total a percibir")).upper(), format_money(vm.total_amount))]
-    cw = width/4 - 3
-    for i,(label,val) in enumerate(vals):
-        xx=x+i*(cw+4); accent=i==3; c.setFillColor(ACCENT_COLOR if accent else LIGHT_BACKGROUND); c.roundRect(xx,y-20*MM,cw,20*MM,4,fill=1,stroke=0); c.setStrokeColor(ACCENT_COLOR if accent else PRIMARY_COLOR); c.roundRect(xx,y-20*MM,cw,20*MM,4,fill=0,stroke=1)
-        _font(c,8,True); c.drawCentredString(xx+cw/2,y-7,label); _font(c,16 if not accent else 18,True); c.drawCentredString(xx+cw/2,y-25,val)
+    cells = [[Paragraph(f"<b>{lab}</b><br/><font size='15'><b>{val}</b></font>", st["small"])] for lab, val in vals]
+    t = Table([cells], colWidths=[width/4]*4, rowHeights=[height])
+    t.setStyle(TableStyle([("ALIGN", (0,0), (-1,-1), "CENTER"), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("BACKGROUND", (0,0), (2,0), colors.HexColor(LIGHT_BACKGROUND)), ("BACKGROUND", (3,0), (3,0), colors.HexColor(ACCENT_COLOR)), ("BOX", (0,0), (-1,-1), .5, colors.HexColor(PRIMARY_COLOR)), ("INNERGRID", (0,0), (-1,-1), 4, colors.white)]))
+    return t
 
-def _draw_table(c, Table, rows, x, y, widths, style):
-    t=Table(rows, colWidths=widths, repeatRows=1); t.setStyle(style); _, th=t.wrapOn(c, sum(widths), 220); t.drawOn(c,x,y-th); return th
 
-def build_production_table(c, Table, TS, colors, vm, x, y, width, config):
-    _font(c,11,True,PRIMARY_COLOR); c.drawString(x,y,"RESUMEN DE PRODUCCIÓN")
+def _rl_table(rows, widths, font=8, header=True, accent_row=None):
+    from reportlab.platypus import Table, TableStyle
+    from reportlab.lib import colors
+    t = Table(rows, colWidths=widths, repeatRows=1 if header else 0)
+    cmds = [("GRID", (0,0), (-1,-1), .25, colors.lightgrey), ("FONT", (0,0), (-1,-1), "Helvetica", font), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("ALIGN", (1,1), (-1,-1), "RIGHT"), ("TOPPADDING", (0,0), (-1,-1), 1.4), ("BOTTOMPADDING", (0,0), (-1,-1), 1.4)]
+    if header: cmds += [("BACKGROUND", (0,0), (-1,0), colors.HexColor(LIGHT_BACKGROUND)), ("TEXTCOLOR", (0,0), (-1,0), colors.HexColor(PRIMARY_COLOR)), ("FONT", (0,0), (-1,0), "Helvetica-Bold", font)]
+    if accent_row is not None: cmds += [("BACKGROUND", (0,accent_row), (-1,accent_row), colors.HexColor(ACCENT_COLOR)), ("FONT", (0,accent_row), (-1,accent_row), "Helvetica-Bold", max(font, 9))]
+    t.setStyle(TableStyle(cmds)); return t
+
+
+def build_production_section(vm, width, height):
     rows=[["Producción","Kilos","Precio","Importe"],["Comercial",format_kg(vm.commercial_net_kg),format_unit_price(vm.commercial_average_price),"—"],["Destrío",format_kg(vm.waste_net_kg),"—",format_money(vm.destruction_amount)],["Podrido/Hojas",format_kg(vm.rotten_net_kg),"—",format_money(vm.rotten_amount)],["Total entregado",format_kg(vm.effective_net_kg),"—",format_money(vm.gross_amount)]]
-    _draw_table(c, Table, rows, x, y-5, [width*.34,width*.21,width*.22,width*.23], TS([('BACKGROUND',(0,0),(-1,0),colors.HexColor(LIGHT_BACKGROUND)),('TEXTCOLOR',(0,0),(-1,0),colors.HexColor(PRIMARY_COLOR)),('GRID',(0,0),(-1,-1),.25,colors.lightgrey),('FONT',(0,0),(-1,0),'Helvetica-Bold',8.5),('FONT',(0,1),(-1,-1),'Helvetica',8.5),('ALIGN',(1,1),(-1,-1),'RIGHT')]))
+    return _section("RESUMEN DE PRODUCCIÓN", [_rl_table(rows, [width*.34,width*.21,width*.22,width*.23])], width, height)
 
-def build_economic_breakdown(c, Table, TS, colors, vm, x, y, width):
-    _font(c,11,True,PRIMARY_COLOR); c.drawString(x,y,"CÓMO SE FORMA SU LIQUIDACIÓN")
-    rows=[["Concepto","Explicación","Importe"],["Importe bruto de la fruta","Valor liquidado de la producción.",format_signed_money(vm.gross_amount, force_positive=True)],["Recolección","Coste de recolección aplicado a sus entregas.",format_signed_money(vm.collection_amount, force_negative=True)],["Cuota por hectárea","Parte proporcional de la cuota anual.",format_signed_money(vm.hectare_fee_amount, force_negative=True)],["Calidad","Bonificación o penalización según calidad.",format_signed_money(vm.quality_amount)],["Transporte","Bonificación o ajuste de transporte.",format_signed_money(vm.transport_amount)],["GlobalGAP","Bonificación asociada a la certificación.",format_signed_money(vm.globalgap_amount)],["Base imponible","Resultado fiscal antes de IVA y retención.",format_money(vm.taxable_base)]]
-    _draw_table(c, Table, rows, x, y-5, [width*.34,width*.43,width*.23], TS([('BACKGROUND',(0,0),(-1,0),colors.HexColor(LIGHT_BACKGROUND)),('TEXTCOLOR',(0,0),(-1,0),colors.HexColor(PRIMARY_COLOR)),('GRID',(0,0),(-1,-1),.25,colors.lightgrey),('FONT',(0,0),(-1,0),'Helvetica-Bold',8),('FONT',(0,1),(-1,-1),'Helvetica',7.8),('FONT',(0,-1),(-1,-1),'Helvetica-Bold',8),('ALIGN',(2,1),(2,-1),'RIGHT')]))
+def build_economic_section(vm, width, height):
+    rows=[["Concepto","Explicación","Importe"],["Importe bruto","Valor liquidado de producción.",format_signed_money(vm.gross_amount, force_positive=True)],["Recolección","Coste aplicado a entregas.",format_signed_money(vm.collection_amount, force_negative=True)],["Cuota Ha","Parte proporcional anual.",format_signed_money(vm.hectare_fee_amount, force_negative=True)],["Calidad","Bonificación/penalización.",format_signed_money(vm.quality_amount)],["Transporte","Bonificación o ajuste.",format_signed_money(vm.transport_amount)],["GlobalGAP","Bonificación certificación.",format_signed_money(vm.globalgap_amount)],["Base imponible","Antes de IVA y retención.",format_money(vm.taxable_base)]]
+    return _section("CÓMO SE FORMA SU LIQUIDACIÓN", [_rl_table(rows, [width*.32,width*.43,width*.25], font=7.7)], width, height)
 
-def build_commercial_breakdown(c, Table, TS, colors, vm, x, y, width, config):
-    if not config.get("show_commercial_breakdown", True) or not vm.commercial_breakdown: return
-    _font(c,10,True,PRIMARY_COLOR); c.drawString(x,y,"DESGLOSE COMERCIAL POR CATEGORÍAS")
-    rows=[["Categoría/calibre","Kilos","Precio","Importe"]]+[[r.category[:18],format_kg(r.kilograms),format_unit_price(r.price),format_money(r.amount)] for r in vm.commercial_breakdown[:13]]
-    _draw_table(c, Table, rows, x, y-5, [width*.34,width*.21,width*.22,width*.23], TS([('BACKGROUND',(0,0),(-1,0),colors.HexColor(LIGHT_BACKGROUND)),('GRID',(0,0),(-1,-1),.25,colors.lightgrey),('FONT',(0,0),(-1,0),'Helvetica-Bold',7.5),('FONT',(0,1),(-1,-1),'Helvetica',7.2),('ALIGN',(1,1),(-1,-1),'RIGHT')]))
+def build_commercial_section(vm, config, width, height):
+    rows=[["Categoría/calibre","Kilos","Precio","Importe"]]+[[r.category[:18],format_kg(r.kilograms),format_unit_price(r.price),format_money(r.amount)] for r in _visible_commercial_rows(vm)]
+    return _section("DESGLOSE COMERCIAL POR CATEGORÍAS", [_rl_table(rows, [width*.34,width*.21,width*.22,width*.23], font=8)], width, height)
 
-def build_tax_summary(c, Table, TS, colors, vm, config, x, y, width):
-    _font(c,11,True,PRIMARY_COLOR); c.drawString(x,y,"FISCALIDAD Y RESULTADO FINAL")
+def build_tax_section(vm, config, width, height):
     rows=[["Base imponible",format_money(vm.taxable_base)],[f"IVA {format_percent(vm.vat_rate)}",format_signed_money(vm.vat_amount, force_positive=True)],[f"Retención {format_percent(vm.withholding_rate)}",format_signed_money(vm.withholding_amount, force_negative=True)],[str(config.get("total_label", "Total a percibir")).upper(),format_money(vm.total_amount)],["Precio medio final",format_unit_price(vm.final_average_price)]]
     if config.get("show_points_per_kg", True) and vm.final_average_price_pts is not None: rows.append(["Equivalencia", f"{format_decimal_es(vm.final_average_price_pts,2)} pts/kg"])
-    _draw_table(c, Table, rows, x, y-5, [width*.55,width*.45], TS([('BOX',(0,0),(-1,-1),.8,colors.HexColor(PRIMARY_COLOR)),('INNERGRID',(0,0),(-1,-1),.25,colors.lightgrey),('BACKGROUND',(0,3),(-1,3),colors.HexColor(ACCENT_COLOR)),('FONT',(0,3),(-1,3),'Helvetica-Bold',12),('FONT',(0,0),(-1,-1),'Helvetica',9),('ALIGN',(1,0),(1,-1),'RIGHT')]))
+    return _section("FISCALIDAD Y RESULTADO FINAL", [_rl_table(rows, [width*.55,width*.45], font=8.5, header=False, accent_row=3)], width, height)
+
+
+def build_benchmark_flowable(vm, width, height, mode):
+    from reportlab.platypus import Paragraph, Table, TableStyle
+    from reportlab.lib import colors
+    st = _premium_styles()
+    title = Paragraph("COMPARATIVA CON SU GRUPO VARIETAL", st["h"])
+    if not vm.group_benchmark:
+        return _section("COMPARATIVA CON SU GRUPO VARIETAL", [Paragraph("Comparativa con el grupo varietal no disponible para esta liquidación.", st["small"])], width, height)
+    b = vm.group_benchmark
+    comparable = b.price_per_kg.valid_member_count if b.price_per_kg else 0
+    subtitle = Paragraph(f"{b.group_label} · Campaña {b.campaign}" + (f" · {comparable} socios comparables" if comparable else ""), st["small"])
+    if mode == "compact_table":
+        rows = [["Indicador", "Usted", "Máximo", "Media", "Mínimo"], ["PRECIO MEDIO FINAL"] + [_fmt_metric(v, "€/kg") for v in (_metric_values(b.price_per_kg) or [None, None, None, None])], ["PRODUCCIÓN kg/ha"] + [_fmt_metric(v, "kg/ha") for v in (_metric_values(b.kilograms_per_hectare) or [None, None, None, None])], ["IMPORTE FINAL €/ha"] + [_fmt_metric(v, "€/ha") for v in (_metric_values(b.euros_per_hectare) or [None, None, None, None])]]
+        content = [subtitle, _rl_table(rows, [width*.24, width*.19, width*.19, width*.19, width*.19], font=8)]
+    else:
+        gap=2*MM; cw=(width-2*gap)/3; ch=26*MM
+        charts=[build_compact_benchmark_chart("PRECIO MEDIO FINAL", "€/kg", b.price_per_kg, cw, ch), build_compact_benchmark_chart("PRODUCCIÓN", "kg/ha", b.kilograms_per_hectare, cw, ch), build_compact_benchmark_chart("IMPORTE FINAL", "€/ha", b.euros_per_hectare, cw, ch)]
+        tt=Table([charts], colWidths=[cw]*3, rowHeights=[ch]); tt.setStyle(TableStyle([("LEFTPADDING", (0,0), (-1,-1), 0), ("RIGHTPADDING", (0,0), (-1,-1), 0), ("VALIGN", (0,0), (-1,-1), "TOP")]))
+        content=[subtitle, tt]
+    return _section("COMPARATIVA CON SU GRUPO VARIETAL", content, width, height)
+
+
+def build_distribution_flowable(vm, width, height):
+    from reportlab.graphics.shapes import Drawing, Rect, String
+    from reportlab.lib import colors
+    from reportlab.platypus import Paragraph, Table, TableStyle
+    st=_premium_styles(); base=vm.taxable_base or Decimal("0"); collection=vm.collection_amount or Decimal("0"); hectare=vm.hectare_fee_amount or Decimal("0"); adj=(vm.quality_amount or Decimal("0"))+(vm.transport_amount or Decimal("0"))+(vm.globalgap_amount or Decimal("0"))
+    parts=[("Base antes de fiscalidad", base, DISTRIBUTION_BASE_COLOR, format_money(base)), ("Recolección", collection, DISTRIBUTION_COLLECTION_COLOR, format_signed_money(collection, force_negative=True)), ("Cuota Ha", hectare, DISTRIBUTION_HECTARE_COLOR, format_signed_money(hectare, force_negative=True)), ("Ajustes", adj, DISTRIBUTION_POSITIVE_ADJUSTMENT_COLOR if adj>=0 else DISTRIBUTION_NEGATIVE_ADJUSTMENT_COLOR, _signed_label(adj))]
+    total=sum(abs(p[1]) for p in parts) or Decimal("1")
+    d=Drawing(width-8, 9); x=0
+    for _, val, color, _ in parts:
+        ww=(width-8)*float(abs(val)/total); d.add(Rect(x, 1, ww, 6, fillColor=colors.HexColor(color), strokeColor=None)); x+=ww
+    d.add(Rect(0,1,width-8,6,fillColor=None,strokeColor=colors.HexColor("#D6DEE6"),strokeWidth=.5))
+    legend=[]
+    for label,val,_,amount in parts:
+        pct=format_decimal_es((abs(val)/total*Decimal("100")),1); legend.append(f"{label}: {amount} ({pct} %)")
+    return _section("DISTRIBUCIÓN DEL IMPORTE BRUTO ANTES DE FISCALIDAD", [d, Paragraph(" · ".join(legend), st["small"])], width, height)
+
+
+def build_footer_flowable(vm, config, width, height):
+    from datetime import datetime
+    from reportlab.platypus import Paragraph, Table, TableStyle
+    from reportlab.lib import colors
+    st=_premium_styles(); left=Paragraph("S.C.A. San Sebastián · " + str(config.get("footer_message")), st["small"]); right=Paragraph(f"Generado {datetime.now():%d/%m/%Y} · Página 1 de 1 · {vm.remittance_name[:30]}", st["right"])
+    t=Table([[left,right]], colWidths=[width*.55,width*.45], rowHeights=[height])
+    t.setStyle(TableStyle([("LINEABOVE", (0,0), (-1,0), .5, colors.HexColor(PRIMARY_COLOR)), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("TOPPADDING", (0,0), (-1,-1), 1)])); return t
 
 def _signed_label(value):
     return format_signed_money(value) if value else "—"
-
-def build_distribution_bar(c, vm, x, y, width):
-    base_before_tax = vm.taxable_base or Decimal("0")
-    collection = vm.collection_amount or Decimal("0")
-    hectare_fee = vm.hectare_fee_amount or Decimal("0")
-    net_adjustments = (vm.quality_amount or Decimal("0")) + (vm.transport_amount or Decimal("0")) + (vm.globalgap_amount or Decimal("0"))
-    parts = [
-        ("Base antes de fiscalidad", base_before_tax, DISTRIBUTION_BASE_COLOR, format_money(base_before_tax)),
-        ("Recolección", collection, DISTRIBUTION_COLLECTION_COLOR, format_signed_money(collection, force_negative=True)),
-        ("Cuota Ha", hectare_fee, DISTRIBUTION_HECTARE_COLOR, format_signed_money(hectare_fee, force_negative=True)),
-        ("Ajustes netos", net_adjustments, DISTRIBUTION_POSITIVE_ADJUSTMENT_COLOR if net_adjustments >= 0 else DISTRIBUTION_NEGATIVE_ADJUSTMENT_COLOR, _signed_label(net_adjustments)),
-    ]
-    total = sum(abs(p[1]) for p in parts)
-    if total <= 0: return
-    _font(c, 8, True, PRIMARY_COLOR); c.drawString(x, y+25, "DISTRIBUCIÓN DEL IMPORTE BRUTO ANTES DE FISCALIDAD")
-    xx = x; bar_y = y + 14; bar_h = 6
-    for _, val, color, _ in parts:
-        ww = width * float(abs(val) / total)
-        c.setFillColor(color); c.rect(xx, bar_y, ww, bar_h, fill=1, stroke=0); xx += ww
-    c.setStrokeColor("#D6DEE6"); c.rect(x, bar_y, width, bar_h, fill=0, stroke=1)
-    legend = []
-    for label, val, _, amount in parts:
-        pct = format_decimal_es((abs(val) / total * Decimal("100")), 1) if total else "0,0"
-        legend.append(f"{label}: {amount} ({pct} %)")
-    _font(c, 6.7, False, TEXT_COLOR); c.drawString(x, y+4, " · ".join(legend)[:170])
-    c.drawString(x, y-5, "Los ajustes pueden ser positivos o negativos. No incluye IVA ni retención.")
-
-def build_footer(c, vm, config, x, y, width):
-    from datetime import datetime
-    c.setStrokeColor(PRIMARY_COLOR); c.line(x,y+8,width+x,y+8); _font(c,8); c.drawString(x,y,"S.C.A. San Sebastián · " + str(config.get("footer_message"))); c.drawRightString(x+width,y,f"Generado {datetime.now():%d/%m/%Y} · Página 1 de 1 · {vm.remittance_name[:30]}")
-
 
 def _metric_values(metric):
     vals = [metric.own_value, metric.maximum_value, metric.average_value, metric.minimum_value]
     return vals if any(v is not None for v in vals) else None
 
 def _fmt_metric(value, unit):
-    if value is None: return "—"
+    if value is None: return "No disponible"
     if unit == "€/kg": return format_decimal_es(value, 5)
     return format_decimal_es(value, 0)
 
@@ -224,20 +340,3 @@ def build_compact_benchmark_chart(title: str, unit: str, metric, width: float, h
     if diff:
         d.add(String(width/2, 2.5, diff, textAnchor="middle", fontName="Helvetica", fontSize=6.8, fillColor=colors.HexColor(TEXT_COLOR)))
     return d
-
-def build_benchmark_unavailable(c, x, y, width):
-    c.setFillColor(LIGHT_BACKGROUND); c.roundRect(x, y-11*MM, width, 11*MM, 4, fill=1, stroke=0)
-    c.setStrokeColor("#D6DEE6"); c.roundRect(x, y-11*MM, width, 11*MM, 4, fill=0, stroke=1)
-    _font(c, 8, True, PRIMARY_COLOR); c.drawString(x+4*MM, y-7*MM, "Comparativa con el grupo varietal no disponible para esta liquidación.")
-
-def build_benchmark_section(c, vm, x, y, width):
-    from reportlab.graphics import renderPDF
-    b = vm.group_benchmark
-    _font(c, 9, True, PRIMARY_COLOR); c.drawString(x, y+35*MM, "COMPARATIVA CON SU GRUPO VARIETAL")
-    comparable = b.price_per_kg.valid_member_count if b.price_per_kg else 0
-    suffix = f" · {comparable} socios comparables" if comparable else ""
-    _font(c, 7.4, False, TEXT_COLOR); c.drawString(x, y+31*MM, f"{b.group_label} · Campaña {b.campaign}{suffix}")
-    gap = 4*MM; cw = (width-2*gap)/3; ch = 28*MM
-    charts = [("PRECIO MEDIO FINAL", "€/kg", b.price_per_kg), ("PRODUCCIÓN", "kg/ha", b.kilograms_per_hectare), ("IMPORTE FINAL", "€/ha", b.euros_per_hectare)]
-    for i, (title, unit, metric) in enumerate(charts):
-        renderPDF.draw(build_compact_benchmark_chart(title, unit, metric, cw, ch), c, x+i*(cw+gap), y)
