@@ -125,6 +125,7 @@ def _section(title, flowables, width):
 
 def build_premium_story(vm, config, width):
     from reportlab.platypus import Spacer, Table, TableStyle
+    content_bottom_limit = 17 * MM  # Footer line plus 8-10 mm reserved clearance on A4 landscape.
     story = [build_header_flowable(vm, config, width), Spacer(1, 2.5 * MM), build_summary_cards_flowable(vm, config, width), Spacer(1, 2.5 * MM)]
     gap = 5 * MM
     left_w = (width - gap) * .51
@@ -133,7 +134,7 @@ def build_premium_story(vm, config, width):
     right_column = [build_economic_section(vm, right_w), Spacer(1, 2 * MM), build_tax_section(vm, config, right_w)]
     main = Table([[left_column, right_column]], colWidths=[left_w, right_w])
     main.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 0), ("RIGHTPADDING", (0,0), (-1,-1), 0), ("TOPPADDING", (0,0), (-1,-1), 0), ("BOTTOMPADDING", (0,0), (-1,-1), 0)]))
-    story += [main, Spacer(1, 2.5 * MM), build_benchmark_flowable(vm, width), Spacer(1, 2 * MM)]
+    story += [main, Spacer(1, 2.5 * MM), build_benchmark_flowable(vm, width, content_bottom_limit=content_bottom_limit), Spacer(1, 2.5 * MM)]
     if config.get("show_distribution_bar", True):
         story.append(build_distribution_flowable(vm, width))
         story.append(Spacer(1, 3 * MM))
@@ -153,15 +154,44 @@ def build_header_flowable(vm, config, width):
     return t
 
 
-def build_summary_cards_flowable(vm, config, width):
-    from reportlab.platypus import Paragraph, Table, TableStyle
+def fit_card_value_font(text: str, card_width: float, preferred_size: float, minimum_size: float = 12) -> float:
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    usable_width = max(1, card_width - 8 * MM)
+    size = preferred_size
+    while size > minimum_size and stringWidth(text, "Helvetica-Bold", size) > usable_width:
+        size -= 0.25
+    return max(minimum_size, size)
+
+
+def build_summary_card(label: str, value: str, width: float, height: float, *, highlighted: bool = False):
+    from reportlab.graphics.shapes import Drawing, Rect, String
     from reportlab.lib import colors
-    st = _premium_styles()
+    d = Drawing(width, height)
+    fill = ACCENT_COLOR if highlighted else LIGHT_BACKGROUND
+    preferred_value_size = 16.5 if highlighted else 15.0
+    value_size = fit_card_value_font(value, width, preferred_value_size)
+    d.add(Rect(0, 0, width, height, rx=6, ry=6, fillColor=colors.HexColor(fill), strokeColor=colors.HexColor(PRIMARY_COLOR), strokeWidth=.55))
+    d.add(String(width / 2, height - 10, label, textAnchor="middle", fontName="Helvetica-Bold", fontSize=7.8, fillColor=colors.HexColor(PRIMARY_COLOR)))
+    d.add(String(width / 2, height / 2 - 4, value, textAnchor="middle", fontName="Helvetica-Bold", fontSize=value_size, fillColor=colors.HexColor(TEXT_COLOR)))
+    return d
+
+
+def build_summary_cards_flowable(vm, config, width):
+    from reportlab.platypus import Table, TableStyle
     vals = [("KILOS ENTREGADOS", format_kg(vm.effective_net_kg)), ("KILOS COMERCIALES", format_kg(vm.commercial_net_kg)), ("PRECIO MEDIO FINAL", format_unit_price(vm.final_average_price)), (str(config.get("total_label", "Total a percibir")).upper(), format_money(vm.total_amount))]
-    cells = [[Paragraph(f"<b>{lab}</b><br/><font size='15'><b>{val}</b></font>", st["small"])] for lab, val in vals]
-    card_w = (width - 9 * MM) / 4
-    t = Table([cells], colWidths=[card_w] * 4)
-    t.setStyle(TableStyle([("ALIGN", (0,0), (-1,-1), "CENTER"), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("BACKGROUND", (0,0), (2,0), colors.HexColor(LIGHT_BACKGROUND)), ("BACKGROUND", (3,0), (3,0), colors.HexColor(ACCENT_COLOR)), ("BOX", (0,0), (-1,-1), .5, colors.HexColor(PRIMARY_COLOR)), ("INNERGRID", (0,0), (-1,-1), 3 * MM, colors.white), ("ROUNDEDCORNERS", [6,6,6,6]), ("TOPPADDING", (0,0), (-1,-1), 5), ("BOTTOMPADDING", (0,0), (-1,-1), 5)]))
+    gap = 3.5 * MM
+    card_w = (width - 3 * gap) / 4
+    card_h = 19 * MM
+    row = []
+    col_widths = []
+    for idx, (lab, val) in enumerate(vals):
+        if idx:
+            row.append("")
+            col_widths.append(gap)
+        row.append(build_summary_card(lab, val, card_w, card_h, highlighted=idx == 3))
+        col_widths.append(card_w)
+    t = Table([row], colWidths=col_widths, rowHeights=[card_h])
+    t.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("LEFTPADDING", (0,0), (-1,-1), 0), ("RIGHTPADDING", (0,0), (-1,-1), 0), ("TOPPADDING", (0,0), (-1,-1), 0), ("BOTTOMPADDING", (0,0), (-1,-1), 0)]))
     return t
 
 
@@ -193,7 +223,7 @@ def build_tax_section(vm, config, width):
     return _section("FISCALIDAD Y RESULTADO FINAL", [_rl_table(rows, [width*.55,width*.45], font=8.1, header=False, accent_row=3)], width)
 
 
-def build_benchmark_flowable(vm, width):
+def build_benchmark_flowable(vm, width, *, content_bottom_limit: float | None = None):
     from reportlab.platypus import Paragraph, Table, TableStyle
     st = _premium_styles()
     if not vm.group_benchmark:
@@ -203,7 +233,7 @@ def build_benchmark_flowable(vm, width):
     subtitle = Paragraph(f"{b.group_label} · Campaña {b.campaign}" + (f" · {comparable} socios comparables" if comparable else ""), st["small"])
     gap = 2 * MM
     card_w = (width - 2 * gap) / 3
-    chart_h = 23 * MM
+    chart_h = 31 * MM
     charts = [
         build_compact_benchmark_chart("PRECIO MEDIO FINAL", "€/kg", b.price_per_kg, card_w, chart_h),
         build_compact_benchmark_chart("PRODUCCIÓN", "kg/ha", b.kilograms_per_hectare, card_w, chart_h),
@@ -280,7 +310,7 @@ def build_compact_benchmark_chart(title: str, unit: str, metric, width: float, h
     palette = [BENCHMARK_OWN_COLOR, BENCHMARK_MAX_COLOR, BENCHMARK_AVERAGE_COLOR, BENCHMARK_MIN_COLOR]
     numeric = [float(v) for v in vals if v is not None]
     maxv = max(numeric) if numeric else 0
-    chart_x = 12; chart_y = 22; chart_w = width - 24; max_h = height - 47; bar_w = min(12, chart_w/7)
+    chart_x = 12; chart_y = 28; chart_w = width - 24; max_h = height - 58; bar_w = min(14, chart_w/6.5)
     step = chart_w / 4
     for i, v in enumerate(vals):
         cx = chart_x + step*i + step/2
@@ -293,9 +323,9 @@ def build_compact_benchmark_chart(title: str, unit: str, metric, width: float, h
                 d.add(Line(cx-bar_w/2, chart_y, cx+bar_w/2, chart_y, strokeColor=colors.HexColor(palette[i]), strokeWidth=1))
             else:
                 d.add(Rect(cx-bar_w/2, chart_y, bar_w, bh, fillColor=colors.HexColor(palette[i]), strokeColor=None))
-            d.add(String(cx, min(height-21, chart_y+bh+3), _fmt_metric(v, unit), textAnchor="middle", fontName="Helvetica-Bold" if i == 0 else "Helvetica", fontSize=7.2 if i == 0 else 6.8, fillColor=colors.HexColor(TEXT_COLOR)))
-        d.add(String(cx, 10, labels[i], textAnchor="middle", fontName="Helvetica", fontSize=7.5, fillColor=colors.HexColor(TEXT_COLOR)))
+            d.add(String(cx, min(height-25, chart_y+bh+4), _fmt_metric(v, unit), textAnchor="middle", fontName="Helvetica-Bold" if i == 0 else "Helvetica", fontSize=7.0 if i == 0 else 6.8, fillColor=colors.HexColor(TEXT_COLOR)))
+        d.add(String(cx, 15, labels[i], textAnchor="middle", fontName="Helvetica", fontSize=7.3, fillColor=colors.HexColor(TEXT_COLOR)))
     diff = _benchmark_difference_text(metric)
     if diff:
-        d.add(String(width/2, 2.5, diff, textAnchor="middle", fontName="Helvetica", fontSize=6.8, fillColor=colors.HexColor(TEXT_COLOR)))
+        d.add(String(width/2, 5, diff, textAnchor="middle", fontName="Helvetica", fontSize=6.8, fillColor=colors.HexColor(TEXT_COLOR)))
     return d

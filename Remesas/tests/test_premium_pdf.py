@@ -2,7 +2,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from domain.calculation_models import GradeBreakdown, LiquidationHeader, MemberLiquidation
-from exporters.premium_pdf_exporter import export_premium_member_pdf
+from exporters.premium_pdf_exporter import (
+    build_summary_card, export_premium_member_pdf, fit_card_value_font,
+)
 from services.group_benchmark_service import BenchmarkMetric, PremiumGroupBenchmark
 from presentation.premium_liquidation_view_model import (
     format_kg, format_money, format_percent, format_signed_money, format_unit_price,
@@ -49,6 +51,28 @@ def test_view_model_maps_without_recalculating_amounts():
     assert vm.final_average_price_pts == Decimal("0.00")
     assert vm.tax_id_masked == "12*****8Z"
 
+
+
+def test_summary_cards_use_separate_drawing_strings_and_fit_long_values():
+    card = build_summary_card("TOTAL A PERCIBIR", "123.456,78 €", 95, 54, highlighted=True)
+    strings = [node for node in card.contents if node.__class__.__name__ == "String"]
+    assert len(strings) == 2
+    assert strings[0].text == "TOTAL A PERCIBIR"
+    assert strings[1].text == "123.456,78 €"
+    assert strings[0].y > strings[1].y
+    assert strings[0].fontSize == 7.8
+    assert 12 <= strings[1].fontSize <= 16.5
+    assert fit_card_value_font("1.234.567,89 €", 80, 16.5) < 16.5
+
+
+def test_premium_pdf_layout_source_avoids_single_paragraph_summary_cards():
+    source = Path("exporters/premium_pdf_exporter.py").read_text(encoding="utf-8")
+    summary_source = source[source.index("def build_summary_cards_flowable"):source.index("def _rl_table")]
+    assert "<br/>" not in summary_source
+    assert "INNERGRID" not in summary_source
+    assert "build_summary_card" in summary_source
+    assert "31 * MM" in source
+    assert "content_bottom_limit" in source
 
 
 def test_pdf_generates_single_landscape_page_without_internal_terms(tmp_path: Path):
