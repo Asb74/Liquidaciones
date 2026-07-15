@@ -126,10 +126,9 @@ def format_percentage_es(value: Decimal, decimals: int = 2) -> str:
 
 
 def get_price_labels(crop: str) -> list[str]:
-    normalized = _normalize_token(crop)
-    if normalized in {"MANDARINA", "CLEMENTINA", "NARANJA", "CITRICOS", "CITRICO"}:
-        return ["I AAA", "I AA", "I A", "I B", "I C", "I D", "II AAA", "II AA", "II A", "II B", "II C", "II D"]
-    return [f"P{i}" for i in range(12)]
+    from services.calibre_master_service import CalibreMasterService
+    service = CalibreMasterService()
+    return [service.resolve_label(crop, i) for i in range(12)]
 
 
 def get_grade_labels(crop: str) -> list[str]:

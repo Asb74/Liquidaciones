@@ -1,0 +1,780 @@
+{
+  "version": 1,
+  "crop_aliases": {
+    "CITRICO": "CITRICOS",
+    "CÍTRICOS": "CITRICOS",
+    "MANDARINAS": "MANDARINA",
+    "KAKI": "KAKIS",
+    "CAQUI": "KAKIS",
+    "CAQUIS": "KAKIS"
+  },
+  "display_types": {
+    "CITRICOS": "calibres",
+    "CLEMENTINA": "calibres",
+    "PRECALIBRADO": "calibres",
+    "CIRUELA": "calibres",
+    "MANDARINA": "calibres",
+    "SANDIA": "calibres",
+    "FRUTA": "categorias",
+    "MALLAS": "categorias",
+    "KAKIS": "categorias"
+  },
+  "items": [
+    {
+      "base": "c0",
+      "crop": "CITRICOS",
+      "label": "CAL 0",
+      "order": 0,
+      "active": true
+    },
+    {
+      "base": "c1",
+      "crop": "CITRICOS",
+      "label": "CAL 1",
+      "order": 1,
+      "active": true
+    },
+    {
+      "base": "c2",
+      "crop": "CITRICOS",
+      "label": "CAL 2",
+      "order": 2,
+      "active": true
+    },
+    {
+      "base": "c3",
+      "crop": "CITRICOS",
+      "label": "CAL 3",
+      "order": 3,
+      "active": true
+    },
+    {
+      "base": "c4",
+      "crop": "CITRICOS",
+      "label": "CAL 4",
+      "order": 4,
+      "active": true
+    },
+    {
+      "base": "c5",
+      "crop": "CITRICOS",
+      "label": "CAL 5",
+      "order": 5,
+      "active": true
+    },
+    {
+      "base": "c6",
+      "crop": "CITRICOS",
+      "label": "CAL 6",
+      "order": 6,
+      "active": true
+    },
+    {
+      "base": "c7",
+      "crop": "CITRICOS",
+      "label": "CAL 7",
+      "order": 7,
+      "active": true
+    },
+    {
+      "base": "c8",
+      "crop": "CITRICOS",
+      "label": "CAL 8",
+      "order": 8,
+      "active": true
+    },
+    {
+      "base": "c9",
+      "crop": "CITRICOS",
+      "label": "CAL 9",
+      "order": 9,
+      "active": true
+    },
+    {
+      "base": "c10",
+      "crop": "CITRICOS",
+      "label": "CAL 10",
+      "order": 10,
+      "active": true
+    },
+    {
+      "base": "c11",
+      "crop": "CITRICOS",
+      "label": "CAL 11",
+      "order": 11,
+      "active": true
+    },
+    {
+      "base": "c0",
+      "crop": "FRUTA",
+      "label": "AAA 1ª",
+      "order": 0,
+      "active": true
+    },
+    {
+      "base": "c1",
+      "crop": "FRUTA",
+      "label": "AA 1ª",
+      "order": 1,
+      "active": true
+    },
+    {
+      "base": "c2",
+      "crop": "FRUTA",
+      "label": "A 1ª",
+      "order": 2,
+      "active": true
+    },
+    {
+      "base": "c3",
+      "crop": "FRUTA",
+      "label": "B 1ª",
+      "order": 3,
+      "active": true
+    },
+    {
+      "base": "c4",
+      "crop": "FRUTA",
+      "label": "C 1ª",
+      "order": 4,
+      "active": true
+    },
+    {
+      "base": "c5",
+      "crop": "FRUTA",
+      "label": "D 1ª",
+      "order": 5,
+      "active": true
+    },
+    {
+      "base": "c6",
+      "crop": "FRUTA",
+      "label": "AAA 2ª",
+      "order": 6,
+      "active": true
+    },
+    {
+      "base": "c7",
+      "crop": "FRUTA",
+      "label": "AA 2ª",
+      "order": 7,
+      "active": true
+    },
+    {
+      "base": "c8",
+      "crop": "FRUTA",
+      "label": "A 2ª",
+      "order": 8,
+      "active": true
+    },
+    {
+      "base": "c9",
+      "crop": "FRUTA",
+      "label": "B 2ª",
+      "order": 9,
+      "active": true
+    },
+    {
+      "base": "c10",
+      "crop": "FRUTA",
+      "label": "C 2ª",
+      "order": 10,
+      "active": true
+    },
+    {
+      "base": "c11",
+      "crop": "FRUTA",
+      "label": "D 2ª",
+      "order": 11,
+      "active": true
+    },
+    {
+      "base": "c0",
+      "crop": "CLEMENTINA",
+      "label": "1 XXX",
+      "order": 0,
+      "active": true
+    },
+    {
+      "base": "c1",
+      "crop": "CLEMENTINA",
+      "label": "1 XX",
+      "order": 1,
+      "active": true
+    },
+    {
+      "base": "c2",
+      "crop": "CLEMENTINA",
+      "label": "1 X",
+      "order": 2,
+      "active": true
+    },
+    {
+      "base": "c3",
+      "crop": "CLEMENTINA",
+      "label": "CAL 1",
+      "order": 3,
+      "active": true
+    },
+    {
+      "base": "c4",
+      "crop": "CLEMENTINA",
+      "label": "CAL 2",
+      "order": 4,
+      "active": true
+    },
+    {
+      "base": "c5",
+      "crop": "CLEMENTINA",
+      "label": "CAL 3",
+      "order": 5,
+      "active": true
+    },
+    {
+      "base": "c6",
+      "crop": "CLEMENTINA",
+      "label": "CAL 4",
+      "order": 6,
+      "active": true
+    },
+    {
+      "base": "c7",
+      "crop": "CLEMENTINA",
+      "label": "CAL 5",
+      "order": 7,
+      "active": true
+    },
+    {
+      "base": "c8",
+      "crop": "CLEMENTINA",
+      "label": "CAL 6",
+      "order": 8,
+      "active": true
+    },
+    {
+      "base": "c9",
+      "crop": "CLEMENTINA",
+      "label": "CAL 7",
+      "order": 9,
+      "active": true
+    },
+    {
+      "base": "c10",
+      "crop": "CLEMENTINA",
+      "label": "CAL 8",
+      "order": 10,
+      "active": true
+    },
+    {
+      "base": "c11",
+      "crop": "CLEMENTINA",
+      "label": "CAL 9",
+      "order": 11,
+      "active": true
+    },
+    {
+      "base": "c0",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 0",
+      "order": 0,
+      "active": true
+    },
+    {
+      "base": "c1",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 1",
+      "order": 1,
+      "active": true
+    },
+    {
+      "base": "c2",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 2",
+      "order": 2,
+      "active": true
+    },
+    {
+      "base": "c3",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 3",
+      "order": 3,
+      "active": true
+    },
+    {
+      "base": "c4",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 4",
+      "order": 4,
+      "active": true
+    },
+    {
+      "base": "c5",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 5",
+      "order": 5,
+      "active": true
+    },
+    {
+      "base": "c6",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 6",
+      "order": 6,
+      "active": true
+    },
+    {
+      "base": "c7",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 7",
+      "order": 7,
+      "active": true
+    },
+    {
+      "base": "c8",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 8",
+      "order": 8,
+      "active": true
+    },
+    {
+      "base": "c9",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 9",
+      "order": 9,
+      "active": true
+    },
+    {
+      "base": "c10",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 10",
+      "order": 10,
+      "active": true
+    },
+    {
+      "base": "c11",
+      "crop": "PRECALIBRADO",
+      "label": "CAL 11",
+      "order": 11,
+      "active": true
+    },
+    {
+      "base": "c0",
+      "crop": "MALLAS",
+      "label": "AAA 1ª",
+      "order": 0,
+      "active": true
+    },
+    {
+      "base": "c1",
+      "crop": "MALLAS",
+      "label": "AA 1ª",
+      "order": 1,
+      "active": true
+    },
+    {
+      "base": "c2",
+      "crop": "MALLAS",
+      "label": "A 1ª",
+      "order": 2,
+      "active": true
+    },
+    {
+      "base": "c3",
+      "crop": "MALLAS",
+      "label": "B 1ª",
+      "order": 3,
+      "active": true
+    },
+    {
+      "base": "c4",
+      "crop": "MALLAS",
+      "label": "C 1ª",
+      "order": 4,
+      "active": true
+    },
+    {
+      "base": "c5",
+      "crop": "MALLAS",
+      "label": "D 1ª",
+      "order": 5,
+      "active": true
+    },
+    {
+      "base": "c6",
+      "crop": "MALLAS",
+      "label": "AAA 2ª",
+      "order": 6,
+      "active": true
+    },
+    {
+      "base": "c7",
+      "crop": "MALLAS",
+      "label": "AA 2ª",
+      "order": 7,
+      "active": true
+    },
+    {
+      "base": "c8",
+      "crop": "MALLAS",
+      "label": "A 2ª",
+      "order": 8,
+      "active": true
+    },
+    {
+      "base": "c9",
+      "crop": "MALLAS",
+      "label": "B 2ª",
+      "order": 9,
+      "active": true
+    },
+    {
+      "base": "c10",
+      "crop": "MALLAS",
+      "label": "C 2ª",
+      "order": 10,
+      "active": true
+    },
+    {
+      "base": "c11",
+      "crop": "MALLAS",
+      "label": "D 2ª",
+      "order": 11,
+      "active": true
+    },
+    {
+      "base": "c0",
+      "crop": "CIRUELA",
+      "label": "4",
+      "order": 0,
+      "active": true
+    },
+    {
+      "base": "c1",
+      "crop": "CIRUELA",
+      "label": "5",
+      "order": 1,
+      "active": true
+    },
+    {
+      "base": "c2",
+      "crop": "CIRUELA",
+      "label": "6",
+      "order": 2,
+      "active": true
+    },
+    {
+      "base": "c3",
+      "crop": "CIRUELA",
+      "label": "7",
+      "order": 3,
+      "active": true
+    },
+    {
+      "base": "c4",
+      "crop": "CIRUELA",
+      "label": "8",
+      "order": 4,
+      "active": true
+    },
+    {
+      "base": "c5",
+      "crop": "CIRUELA",
+      "label": "9",
+      "order": 5,
+      "active": true
+    },
+    {
+      "base": "c6",
+      "crop": "CIRUELA",
+      "label": "10",
+      "order": 6,
+      "active": true
+    },
+    {
+      "base": "c7",
+      "crop": "CIRUELA",
+      "label": "11",
+      "order": 7,
+      "active": true
+    },
+    {
+      "base": "c8",
+      "crop": "CIRUELA",
+      "label": "12",
+      "order": 8,
+      "active": true
+    },
+    {
+      "base": "c9",
+      "crop": "CIRUELA",
+      "label": "13",
+      "order": 9,
+      "active": true
+    },
+    {
+      "base": "c10",
+      "crop": "CIRUELA",
+      "label": "14",
+      "order": 10,
+      "active": true
+    },
+    {
+      "base": "c11",
+      "crop": "CIRUELA",
+      "label": "15",
+      "order": 11,
+      "active": true
+    },
+    {
+      "base": "c0",
+      "crop": "MANDARINA",
+      "label": "1 XXX",
+      "order": 0,
+      "active": true
+    },
+    {
+      "base": "c1",
+      "crop": "MANDARINA",
+      "label": "1 XX",
+      "order": 1,
+      "active": true
+    },
+    {
+      "base": "c2",
+      "crop": "MANDARINA",
+      "label": "1 X",
+      "order": 2,
+      "active": true
+    },
+    {
+      "base": "c3",
+      "crop": "MANDARINA",
+      "label": "CAL 1",
+      "order": 3,
+      "active": true
+    },
+    {
+      "base": "c4",
+      "crop": "MANDARINA",
+      "label": "CAL 2",
+      "order": 4,
+      "active": true
+    },
+    {
+      "base": "c5",
+      "crop": "MANDARINA",
+      "label": "CAL 3",
+      "order": 5,
+      "active": true
+    },
+    {
+      "base": "c6",
+      "crop": "MANDARINA",
+      "label": "CAL 4",
+      "order": 6,
+      "active": true
+    },
+    {
+      "base": "c7",
+      "crop": "MANDARINA",
+      "label": "CAL 5",
+      "order": 7,
+      "active": true
+    },
+    {
+      "base": "c8",
+      "crop": "MANDARINA",
+      "label": "CAL 6",
+      "order": 8,
+      "active": true
+    },
+    {
+      "base": "c9",
+      "crop": "MANDARINA",
+      "label": "CAL 7",
+      "order": 9,
+      "active": true
+    },
+    {
+      "base": "c10",
+      "crop": "MANDARINA",
+      "label": "CAL 8",
+      "order": 10,
+      "active": true
+    },
+    {
+      "base": "c11",
+      "crop": "MANDARINA",
+      "label": "CAL 9",
+      "order": 11,
+      "active": true
+    },
+    {
+      "base": "c0",
+      "crop": "KAKIS",
+      "label": "AAA 1ª",
+      "order": 0,
+      "active": true
+    },
+    {
+      "base": "c1",
+      "crop": "KAKIS",
+      "label": "AA 1ª",
+      "order": 1,
+      "active": true
+    },
+    {
+      "base": "c2",
+      "crop": "KAKIS",
+      "label": "A 1ª",
+      "order": 2,
+      "active": true
+    },
+    {
+      "base": "c3",
+      "crop": "KAKIS",
+      "label": "B 1ª",
+      "order": 3,
+      "active": true
+    },
+    {
+      "base": "c4",
+      "crop": "KAKIS",
+      "label": "C 1ª",
+      "order": 4,
+      "active": true
+    },
+    {
+      "base": "c5",
+      "crop": "KAKIS",
+      "label": "D 1ª",
+      "order": 5,
+      "active": true
+    },
+    {
+      "base": "c6",
+      "crop": "KAKIS",
+      "label": "AAA 2ª",
+      "order": 6,
+      "active": true
+    },
+    {
+      "base": "c7",
+      "crop": "KAKIS",
+      "label": "AA 2ª",
+      "order": 7,
+      "active": true
+    },
+    {
+      "base": "c8",
+      "crop": "KAKIS",
+      "label": "A 2ª",
+      "order": 8,
+      "active": true
+    },
+    {
+      "base": "c9",
+      "crop": "KAKIS",
+      "label": "B 2ª",
+      "order": 9,
+      "active": true
+    },
+    {
+      "base": "c10",
+      "crop": "KAKIS",
+      "label": "C 2ª",
+      "order": 10,
+      "active": true
+    },
+    {
+      "base": "c11",
+      "crop": "KAKIS",
+      "label": "D 2ª",
+      "order": 11,
+      "active": true
+    },
+    {
+      "base": "c0",
+      "crop": "SANDIA",
+      "label": "CAL 1 1ª",
+      "order": 0,
+      "active": true
+    },
+    {
+      "base": "c1",
+      "crop": "SANDIA",
+      "label": "CAL 2 1ª",
+      "order": 1,
+      "active": true
+    },
+    {
+      "base": "c2",
+      "crop": "SANDIA",
+      "label": "CAL 3 1ª",
+      "order": 2,
+      "active": true
+    },
+    {
+      "base": "c3",
+      "crop": "SANDIA",
+      "label": "CAL 4 1ª",
+      "order": 3,
+      "active": true
+    },
+    {
+      "base": "c4",
+      "crop": "SANDIA",
+      "label": "CAL 5 1ª",
+      "order": 4,
+      "active": true
+    },
+    {
+      "base": "c5",
+      "crop": "SANDIA",
+      "label": "CAL 6 1ª",
+      "order": 5,
+      "active": true
+    },
+    {
+      "base": "c6",
+      "crop": "SANDIA",
+      "label": "CAL 7 1ª",
+      "order": 6,
+      "active": true
+    },
+    {
+      "base": "c7",
+      "crop": "SANDIA",
+      "label": "CAL 8 1ª",
+      "order": 7,
+      "active": true
+    },
+    {
+      "base": "c8",
+      "crop": "SANDIA",
+      "label": "CAL 9 1ª",
+      "order": 8,
+      "active": true
+    },
+    {
+      "base": "c9",
+      "crop": "SANDIA",
+      "label": "CAL 10 1ª",
+      "order": 9,
+      "active": true
+    },
+    {
+      "base": "c10",
+      "crop": "SANDIA",
+      "label": "CAL 1/6 2ª",
+      "order": 10,
+      "active": true
+    },
+    {
+      "base": "c11",
+      "crop": "SANDIA",
+      "label": "CAL 6/10 2ª",
+      "order": 11,
+      "active": true
+    }
+  ]
+}

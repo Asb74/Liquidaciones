@@ -9,7 +9,8 @@ from domain.calculation_models import CalculationStatus, FiscalCalculation, Grad
 from domain.financial_rules import applied_amount_or_zero, calculate_quality_adjustment
 from domain.hectare_fee import calculate_line_hectare_fee
 from domain.models import Delivery, Remesa
-from domain.utils import get_price_labels, is_liquidated, parse_yes_no, round_money, round_price, to_decimal
+from domain.utils import is_liquidated, parse_yes_no, round_money, round_price, to_decimal
+from services.calibre_master_service import CalibreMasterService
 from domain.audit import current_audit
 
 PRICE_FIELDS = [f"P{i}" for i in range(12)] + ["PDESTRIO", "PDMESA", "PPODRIDO"]
@@ -103,6 +104,7 @@ class LiquidacionCalculator:
         self.fiscal_regime_repository = fiscal_regime_repository
         self.hectare_config = hectare_config
         self.hectare_master = None
+        self.calibre_master_service = CalibreMasterService()
         self.logger = logging.getLogger(__name__)
 
     def calculate(self, deliveries: list[Delivery], remesa: Remesa | None) -> LiquidationCalculationResult:
@@ -133,14 +135,16 @@ class LiquidacionCalculator:
             for i in range(12):
                 data["grades"][i] += to_decimal(extra.get(f"Cal{i}"))
             data["des"] += to_decimal(extra.get("DesLinea")); data["mesa"] += to_decimal(extra.get("DesMesa")); data["pod"] += to_decimal(extra.get("Podrido"))
-        labels = get_price_labels(header.cultivo)
         members: list[MemberLiquidation] = []
         member_indexes: dict[int, list[int]] = defaultdict(list)
         for (socio, name, variety), data in sorted(grouped.items()):
             grades=[]; commercial_amount=Decimal("0"); commercial_kg=Decimal("0")
             for i, kg in enumerate(data["grades"]):
                 amount=round_money(kg*prices[f"P{i}"]); commercial_amount += amount; commercial_kg += kg
-                grades.append(GradeBreakdown(f"P{i}", labels[i] if i < len(labels) else f"P{i}", kg, round_price(prices[f"P{i}"]), amount))
+                price = round_price(prices[f"P{i}"])
+                label = self.calibre_master_service.resolve_label(header.cultivo, i)
+                self.calibre_master_service.audit_resolution(campaign=header.campana, company=header.empresa, crop=header.cultivo, calibre_index=i, label=label, kilograms=kg, price=price, amount=amount)
+                grades.append(GradeBreakdown(f"c{i}", label, kg, price, amount))
             des_amount=round_money(data["des"]*prices["PDESTRIO"]); mesa_amount=round_money(data["mesa"]*prices["PDMESA"]); pod_amount=round_money(data["pod"]*prices["PPODRIDO"])
             gross=round_money(commercial_amount+des_amount+mesa_amount+pod_amount)
             detected_collection, collection = calculate_member_collection(data["deliveries"], options["Recolección"])

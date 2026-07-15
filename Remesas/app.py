@@ -5,6 +5,7 @@ from tkinter import messagebox, ttk
 from ui.remesas_frame import RemesasFrame
 from ui.main_menu import MainMenuHandlers, build_main_menu
 from ui.styles import apply_styles
+from ui.calibre_master_dialog import CalibreMasterDialog
 from data.db_connection import load_config, setup_logging
 from services.local_database_sync_service import LocalDatabaseSyncService
 
@@ -59,6 +60,6 @@ def main() -> None:
         root.destroy(); return
     root.deiconify()
     frame=RemesasFrame(root); frame.pack(fill="both", expand=True)
-    root.config(menu=build_main_menu(root, MainMenuHandlers(close=root.destroy, open_hectare_fee_master=frame.open_hectare_fee_master, show_about=frame.show_about, refresh_local_databases=lambda: frame.synchronize_local_databases(manual=True), open_data_folder=frame.open_data_folder)))
+    root.config(menu=build_main_menu(root, MainMenuHandlers(close=root.destroy, open_hectare_fee_master=frame.open_hectare_fee_master, open_calibre_master=lambda: CalibreMasterDialog(root), show_about=frame.show_about, refresh_local_databases=lambda: frame.synchronize_local_databases(manual=True), open_data_folder=frame.open_data_folder)))
     root.mainloop()
 if __name__ == "__main__": main()
