@@ -1,0 +1,11 @@
+{
+  "title": "Liquidación de entrega",
+  "show_points_per_kg": true,
+  "show_price_references": true,
+  "show_distribution_bar": true,
+  "show_qr": false,
+  "show_commercial_breakdown": true,
+  "total_label": "Total a percibir",
+  "footer_message": "Gracias por confiar su producción a la Cooperativa.",
+  "logo_path": "assets/logo_sansebas.png"
+}
