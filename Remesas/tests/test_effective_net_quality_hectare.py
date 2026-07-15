@@ -83,7 +83,7 @@ class EffectiveNetQualityHectareTests(unittest.TestCase):
             hectares, warnings = HectareRepository(conn).calculate_applicable_hectares(1, "2026", "1")
         except sqlite3.OperationalError as exc:
             self.fail(f"La consulta real de superficie para MANDARINA no debe fallar: {exc}")
-        self.assertEqual(hectares, Decimal("99.0"))
+        self.assertEqual(hectares, Decimal("198.0"))
         self.assertFalse(warnings)
 
 
