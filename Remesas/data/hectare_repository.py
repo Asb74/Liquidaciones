@@ -57,6 +57,7 @@ class HectareRepository:
         self.logger = logging.getLogger(__name__)
         self.last_surface_audit_rows: tuple[dict[str, Any], ...] = ()
         self.last_surface_filter_counts: dict[str, Any] = {}
+        self.last_delivery_audit_rows: tuple[dict[str, Any], ...] = ()
 
     def calculate_applicable_hectares(self, member_id: int, campaign: int | str, company: int | str, applicable_crops: Sequence[str] | None = None) -> tuple[Decimal, tuple[str, ...]]:
         """Return SUM(DParcela.SupCul) after auditable staged filtering.
@@ -141,10 +142,38 @@ class HectareRepository:
         params = [member_id, str(campaign), str(company), *delivery_crops]
         start = time.perf_counter(); value = self.conn.execute(sql, params).fetchone()[0]; elapsed_ms = (time.perf_counter() - start) * 1000
         total = decimal_or_zero(value)
+        self.last_delivery_audit_rows = self._delivery_proration_rows(member_id, campaign, company, delivery_crops)
         audit = current_audit()
         if audit:
-            audit.subsection("KILOS CAMPAÑA"); audit.audit_sql("kilos campaña socio", sql, params, 1, elapsed_ms); audit.line(f"Kilos totales: {total}")
+            audit.subsection("CuotaHa.Prorrateo"); audit.audit_sql("kilos campaña socio", sql, params, 1, elapsed_ms)
+            for crop in delivery_crops:
+                kg = sum((r["NetoEfectivo"] for r in self.last_delivery_audit_rows if r["Cultivo"] == crop), Decimal("0"))
+                audit.line(f"kg_{crop.lower()}={kg}")
+            audit.line(f"total_effective_kg={total}")
         return total
+
+    def _delivery_proration_rows(self, member_id: int, campaign: int | str, company: int | str, delivery_crops: Sequence[str]) -> tuple[dict[str, Any], ...]:
+        placeholders = ",".join("?" for _ in delivery_crops)
+        sql = f"""
+            SELECT p.IdSocio, {self._local_col('PesosFres','Socio')}, {self._local_col('PesosFres','Registro')},
+                   {self._local_col('PesosFres','Fecha')}, p.CAMPAÑA, p.EMPRESA, p.CULTIVO,
+                   {self._local_col('PesosFres','Variedad')}, {self._local_col('PesosFres','Boleta')},
+                   p.Neto, p.NetoPartida, {EFFECTIVE_NET_SQL.format(alias='p')} AS NetoEfectivo
+            FROM PesosFres AS p
+            WHERE p.IdSocio=? AND CAST(p.CAMPAÑA AS TEXT)=CAST(? AS TEXT)
+              AND CAST(p.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(p.CULTIVO)) IN ({placeholders})
+            ORDER BY p.CULTIVO
+        """
+        rows = self.conn.execute(sql, [member_id, str(campaign), str(company), *delivery_crops]).fetchall()
+        out = []
+        for r in rows:
+            out.append({"Nº Socio": r[0], "Socio": r[1], "Registro": r[2], "Fecha": r[3], "Campaña": r[4], "Empresa": r[5], "Cultivo": str(r[6] or "").strip().upper(), "Variedad": r[7], "Boleta": r[8], "Neto": r[9], "NetoPartida": r[10], "NetoEfectivo": decimal_or_zero(r[11]), "Incluida en denominador": "Sí", "Motivo exclusión": "", "Boleta apta para cuota": "Informativa", "Relevancia de boleta": "No interviene en el prorrateo"})
+        return tuple(out)
+
+    def _local_col(self, table: str, name: str, alias: str | None = None) -> str:
+        cols = {r[1].upper() for r in self.conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        out = alias or name
+        return f"p.{name} AS {out}" if name.upper() in cols else f"NULL AS {out}"
 
     def _col(self, table: str, name: str, alias: str | None = None) -> str:
         cols = {r[1].upper() for r in self.conn.execute(f"PRAGMA eepp.table_info('{table}')").fetchall()}

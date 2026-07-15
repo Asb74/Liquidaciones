@@ -101,7 +101,23 @@ class HectareFeeAuditData:
     candidate_parcels: int = 0
     included_parcels: int = 0
     excluded_parcels: int = 0
+    young_parcels: int = 0
+    inactive_parcels: int = 0
+    kg_by_crop: tuple[tuple[str, Decimal], ...] = ()
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class MemberHectareFeeContext:
+    member_id: int
+    applicable_hectares: Decimal
+    total_member_fee: Decimal
+    total_effective_kg: Decimal
+    rate_per_kg: Decimal | None
+    status: CalculationStatus
+    warnings: tuple[str, ...]
+    parcel_audit: tuple[dict, ...]
+    delivery_audit: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -184,7 +200,9 @@ class MemberLiquidation:
     hectare_fee_rate_per_kg: Decimal | None = None
     hectare_fee_status: CalculationStatus = CalculationStatus.NOT_APPLICABLE
     hectare_fee_rounding_adjustment: Decimal = Decimal("0")
+    line_effective_kg: Decimal = Decimal("0")
     hectare_fee_parcels: tuple[dict, ...] = ()
+    hectare_fee_delivery_audit: tuple[dict, ...] = ()
     hectare_fee_audit: HectareFeeAuditData | None = None
     taxable_base: Decimal | None = None
     fiscal_regime_name: str = ""
