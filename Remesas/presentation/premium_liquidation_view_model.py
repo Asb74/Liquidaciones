@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 from domain.calculation_models import LiquidationHeader, MemberLiquidation
+from services.group_benchmark_service import PremiumGroupBenchmark
 from domain.utils import format_decimal_es
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ class PremiumLiquidationViewModel:
     price_average_reference: Decimal | None = None
     price_max_reference: Decimal | None = None
     price_min_reference: Decimal | None = None
+    group_benchmark: PremiumGroupBenchmark | None = None
 
     @property
     def variety_text(self) -> str:
@@ -104,7 +106,7 @@ def load_premium_pdf_config(path: str | Path = "config/premium_pdf_config.json")
     return config
 
 
-def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation, *, tax_id: object = None) -> PremiumLiquidationViewModel:
+def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation, *, tax_id: object = None, group_benchmark: PremiumGroupBenchmark | None = None) -> PremiumLiquidationViewModel:
     """Adapt a calculated MemberLiquidation to presentation data without economic recalculation.
 
     MemberLiquidation currently groups the liquidated result by member and variety:
@@ -134,7 +136,7 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
         taxable_base=member.taxable_base, vat_rate=member.vat_rate, vat_amount=member.vat_amount,
         withholding_rate=member.withholding_rate, withholding_amount=member.withholding_amount,
         total_amount=member.total_amount, final_average_price=member.final_average_price, final_average_price_pts=pts,
-        commercial_breakdown=rows,
+        commercial_breakdown=rows, group_benchmark=group_benchmark,
     )
 
 

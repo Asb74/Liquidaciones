@@ -6,6 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from decimal import Decimal
 from domain.calculation_models import LiquidationResult
 from exporters.file_lock import FileLockedError, ensure_target_is_writable
 from presentation.premium_liquidation_view_model import (
@@ -66,7 +67,9 @@ def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, confi
         y2 = y - 59*MM
         build_commercial_breakdown(c, Table, TableStyle, colors, vm, m, y2, left_w, config)
         build_tax_summary(c, Table, TableStyle, colors, vm, config, right_x, y2, right_w)
-        if config.get("show_distribution_bar", True):
+        if vm.group_benchmark:
+            build_benchmark_section(c, vm, m, 54*MM, w - 2*m)
+        elif config.get("show_distribution_bar", True):
             build_distribution_bar(c, vm, right_x, 29*MM, right_w)
         build_footer(c, vm, config, m, 13*MM, w - 2*m)
         c.showPage(); c.save(); os.replace(tmp, path)
@@ -136,3 +139,45 @@ def build_distribution_bar(c, vm, x, y, width):
 def build_footer(c, vm, config, x, y, width):
     from datetime import datetime
     c.setStrokeColor(PRIMARY_COLOR); c.line(x,y+8,width+x,y+8); _font(c,8); c.drawString(x,y,"S.C.A. San Sebastián · " + str(config.get("footer_message"))); c.drawRightString(x+width,y,f"Generado {datetime.now():%d/%m/%Y} · Página 1 de 1 · {vm.remittance_name[:30]}")
+
+
+def _metric_values(metric):
+    vals = [metric.own_value, metric.maximum_value, metric.average_value, metric.minimum_value]
+    return vals if any(v is not None for v in vals) else None
+
+def _fmt_metric(value, unit):
+    if value is None: return "—"
+    if unit == "€/kg": return f"{format_decimal_es(value,5)} €/kg"
+    return f"{format_decimal_es(value,0)} {unit}"
+
+def build_benchmark_chart(title: str, unit: str, metric, width: float, height: float):
+    from reportlab.graphics.shapes import Drawing, String
+    from reportlab.graphics.charts.barcharts import VerticalBarChart
+    from reportlab.lib import colors
+    d=Drawing(width,height)
+    d.add(String(0,height-8,title,fontName="Helvetica-Bold",fontSize=7.5,fillColor=colors.HexColor(PRIMARY_COLOR)))
+    vals=_metric_values(metric)
+    if vals is None:
+        d.add(String(width/2,height/2,"No disponible",textAnchor="middle",fontName="Helvetica-Bold",fontSize=8,fillColor=colors.HexColor(TEXT_COLOR)))
+        if metric.warning: d.add(String(width/2,height/2-11,metric.warning[:72],textAnchor="middle",fontName="Helvetica",fontSize=5.8,fillColor=colors.HexColor(TEXT_COLOR)))
+        return d
+    numeric=[float(v or 0) for v in vals]
+    chart=VerticalBarChart(); chart.x=12; chart.y=18; chart.width=width-24; chart.height=height-34; chart.data=[numeric]; chart.categoryAxis.categoryNames=["Propio","Máximo","Media","Mínimo"]; chart.categoryAxis.labels.fontSize=5.6; chart.valueAxis.labels.fontSize=0; chart.valueAxis.visibleGrid=0; chart.valueAxis.strokeColor=None
+    chart.bars[0].fillColor=colors.HexColor(ACCENT_COLOR); chart.bars[1].fillColor=colors.HexColor("#9CA3AF"); chart.bars[2].fillColor=colors.HexColor("#6B7280"); chart.bars[3].fillColor=colors.HexColor("#D1D5DB")
+    d.add(chart)
+    maxv=max(numeric) or 1
+    for i,v in enumerate(vals):
+        x=18+i*((width-36)/4)+(width-36)/8; y=20+(float(v or 0)/maxv)*(height-38)
+        d.add(String(x,min(height-16,y+4),_fmt_metric(v,unit),textAnchor="middle",fontName="Helvetica",fontSize=5.3,fillColor=colors.HexColor(TEXT_COLOR)))
+    return d
+
+def build_benchmark_section(c, vm, x, y, width):
+    from reportlab.graphics import renderPDF
+    b=vm.group_benchmark
+    _font(c,10,True,PRIMARY_COLOR); c.drawString(x,y+43*MM,"COMPARATIVA CON SU GRUPO VARIETAL")
+    _font(c,8,False,TEXT_COLOR); c.drawString(x,y+39*MM,f"{b.group_label} · Campaña {b.campaign}")
+    gap=5*MM; cw=(width-2*gap)/3; ch=37*MM
+    charts=[("Precio medio final","€/kg",b.price_per_kg),("Producción","kg/ha",b.kilograms_per_hectare),("Importe final","€/ha",b.euros_per_hectare)]
+    for i,(title,unit,metric) in enumerate(charts):
+        d=build_benchmark_chart(title,unit,metric,cw,ch)
+        renderPDF.draw(d,c,x+i*(cw+gap),y)
