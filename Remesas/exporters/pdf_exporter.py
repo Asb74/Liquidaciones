@@ -1,8 +1,12 @@
 from __future__ import annotations
+from dataclasses import is_dataclass
 from pathlib import Path
+import logging
 from domain.calculation_models import LiquidationResult
 from domain.utils import format_currency_es, format_decimal_es, format_integer_es, format_price_es
 
+
+logger = logging.getLogger(__name__)
 
 def export_member_pdf(result: LiquidationResult, path: Path) -> Path:
     try:
@@ -12,6 +16,7 @@ def export_member_pdf(result: LiquidationResult, path: Path) -> Path:
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
     except ImportError as exc:
         raise RuntimeError("reportlab no está instalado. Instale requirements.txt para generar PDF.") from exc
+    logger.info("LiquidationHeader=%s", vars(result.header) if is_dataclass(result.header) else result.header)
     path.parent.mkdir(parents=True, exist_ok=True)
     styles = getSampleStyleSheet(); story=[]
     for idx, m in enumerate(result.member_results):

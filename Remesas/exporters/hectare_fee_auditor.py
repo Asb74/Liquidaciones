@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import is_dataclass
 from datetime import datetime
+import logging
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 DEBUG_HECTARE_FEE = True
 PERCECO_REFERENCE: dict[int, Decimal] = {883: Decimal("1036.55"), 869: Decimal("179.40")}
@@ -40,6 +44,7 @@ def export_hectare_fee_audit(result: Any, output_dir: Path) -> tuple[Path, Path]
     log_path = output_dir / "auditoria_cuota_ha.log"
     xlsx_path = output_dir / "auditoria_cuota_ha.xlsx"
     header = result.header
+    logger.info("LiquidationHeader=%s", vars(header) if is_dataclass(header) else header)
     master = getattr(result, "hectare_fee_master", None)
     price = getattr(master, "price_per_hectare", None)
     surface_crops = tuple(getattr(master, "surface_crops", ()))
@@ -59,7 +64,7 @@ def export_hectare_fee_audit(result: Any, output_dir: Path) -> tuple[Path, Path]
     line(f"Campaña: {header.campana}")
     line(f"Empresa: {header.empresa}")
     line(f"Cultivo remesa: {header.cultivo}")
-    line(f"Remesa: {header.name} ({header.remesa_id})")
+    line(f"Remesa: {header.remesa_name} ({header.remesa_id})")
     line(f"Precio hectárea: {price}")
     line(f"Cultivos configurados para calcular superficie: {', '.join(surface_crops)}")
     line(f"Cultivos configurados para calcular kilos: {', '.join(delivery_crops)}")
