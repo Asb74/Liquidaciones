@@ -83,8 +83,44 @@ class EffectiveNetQualityHectareTests(unittest.TestCase):
             hectares, warnings = HectareRepository(conn).calculate_applicable_hectares(1, "2026", "1")
         except sqlite3.OperationalError as exc:
             self.fail(f"La consulta real de superficie para MANDARINA no debe fallar: {exc}")
-        self.assertEqual(hectares, Decimal("3.5"))
+        self.assertEqual(hectares, Decimal("99.0"))
         self.assertFalse(warnings)
+
+
+    def test_hectare_flags_age_baja_and_surface_rules(self):
+        from data.hectare_repository import HectareRepository, is_active_flag, is_old_enough_for_hectare_fee
+        self.assertTrue(is_active_flag(-1))
+        self.assertTrue(is_active_flag("SÍ"))
+        self.assertFalse(is_active_flag(0))
+        self.assertTrue(is_old_enough_for_hectare_fee(2021, 2026))
+        self.assertFalse(is_old_enough_for_hectare_fee(2022, 2026))
+        self.assertFalse(is_old_enough_for_hectare_fee("", 2026))
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute("ATTACH DATABASE ':memory:' AS eepp")
+        conn.execute("CREATE TABLE eepp.DEEPP(Boleta TEXT, IdSocio INTEGER, CAMPAÑA TEXT, EMPRESA TEXT, CULTIVO TEXT, CHA TEXT, BAJA TEXT, SupCul TEXT)")
+        conn.execute("CREATE TABLE eepp.DParcela(Boleta TEXT, CAMPAÑA TEXT, EMPRESA TEXT, CULTIVO TEXT, IdPM TEXT, Pol TEXT, Par TEXT, Rec TEXT, SupCul TEXT, SupApor TEXT, BAJA TEXT, Año TEXT)")
+        conn.executemany("INSERT INTO eepp.DEEPP VALUES(?,?,?,?,?,?,?,?)", [
+            ("B0", 1, "2026", "1", "CITRICOS", "0", None, "9"),
+            ("B1", 1, "2026", "1", "CITRICOS", "-1", None, "9"),
+            ("B2", 1, "2026", "1", "CITRICOS", "S", None, "9"),
+            ("B3", 1, "2026", "1", "CITRICOS", "1", None, "9"),
+        ])
+        conn.executemany("INSERT INTO eepp.DParcela VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [
+            ("B0", "2026", "1", "CITRICOS", "PM0", "P", "A", "R", "0,44", "99", None, "2000"),
+            ("B1", "2026", "1", "CITRICOS", "PM1", "P", "A", "R", "1,50", "99", None, "2021"),
+            ("B1", "2026", "1", "CITRICOS", "PM2", "P", "B", "R", "2", "99", None, "2022"),
+            ("B2", "2026", "1", "CITRICOS", "PM3", "P", "C", "R", "3", "99", "2024-01-01", "2000"),
+            ("B3", "2026", "1", "CITRICOS", "PM4", "P", "D", "R", "4", "99", None, "abc"),
+        ])
+        repo = HectareRepository(conn)
+        hectares, warnings = repo.calculate_applicable_hectares(1, "2026", "1", ("CITRICOS",))
+        self.assertEqual(hectares, Decimal("1.50"))
+        reasons = ";".join(str(r.get("Motivo exclusión")) for r in repo.last_surface_audit_rows)
+        self.assertIn("CHA_NO_ACTIVO", reasons)
+        self.assertIn("PLANTACION_MENOR_CINCO_ANOS", reasons)
+        self.assertIn("PARCELA_DADA_DE_BAJA", reasons)
+        self.assertIn("ANO_NO_VALIDO", reasons)
 
     def test_status_values(self):
         self.assertEqual(CalculationStatus.NOT_APPLICABLE.value, "not_applicable")
