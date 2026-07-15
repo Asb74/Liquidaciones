@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import logging
 import sqlite3
 import time
@@ -10,15 +10,41 @@ from domain.audit import current_audit
 from domain.financial_rules import EFFECTIVE_NET_SQL
 from domain.utils import decimal_or_zero, parse_yes_no
 
-def is_active_cha(value: object) -> bool:
-    """Normalize heterogeneous CHA flags from SQLite/Access."""
+
+def is_active_flag(value: object) -> bool:
+    """Normalize Access/SQLite active flags for CHA."""
     if value is None:
         return False
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float, Decimal)):
-        return Decimal(str(value)) in {Decimal("-1"), Decimal("1")}
-    return parse_yes_no(value)
+        try:
+            return Decimal(str(value)) in {Decimal("-1"), Decimal("1")}
+        except InvalidOperation:
+            return False
+    text = str(value or "").strip().replace(",", ".")
+    try:
+        return Decimal(text) in {Decimal("-1"), Decimal("1")}
+    except InvalidOperation:
+        return parse_yes_no(value)
+
+
+def parse_plantation_year(value: object) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(Decimal(text.replace(",", ".")))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def is_old_enough_for_hectare_fee(plantation_year: object, campaign: int) -> bool:
+    year = parse_plantation_year(plantation_year)
+    return year is not None and year <= int(campaign) - 5
+
+def is_active_cha(value: object) -> bool:
+    return is_active_flag(value)
 
 
 def is_active_baja(value: object) -> bool:
@@ -33,18 +59,18 @@ class HectareRepository:
         self.last_surface_filter_counts: dict[str, Any] = {}
 
     def calculate_applicable_hectares(self, member_id: int, campaign: int | str, company: int | str, applicable_crops: Sequence[str] | None = None) -> tuple[Decimal, tuple[str, ...]]:
-        """Return SUM(DParcela.SupApor) after auditable staged filtering.
+        """Return SUM(DParcela.SupCul) after auditable staged filtering.
 
         Stages:
         A. candidate DEEPP rows by socio/campaña/empresa and CITRICOS/MANDARINA;
         B. DParcela lookup only by Boleta;
-        C. context filters in Python: campaña, empresa, productive crop, baja and SupApor.
+        C. context filters in Python: campaña, empresa, productive crop, baja, Año and SupCul.
         """
         crops = tuple(dict.fromkeys((c or "").strip().upper() for c in (applicable_crops or ("CITRICOS", "MANDARINA")) if (c or "").strip()))
         start = time.perf_counter()
         deepp_rows = self._deepp_candidate_rows(member_id, campaign, company, crops)
         cha_summary = self._cha_summary(member_id, campaign, company, crops)
-        active_deepp = [r for r in deepp_rows if is_active_cha(r[7]) and is_active_baja(r[9])]
+        active_deepp = [r for r in deepp_rows if is_active_cha(r[7])]
 
         audit_rows: list[dict[str, Any]] = []
         included: dict[tuple[str, ...], Decimal] = {}
@@ -56,7 +82,7 @@ class HectareRepository:
         filter_counts["G. Boletas activas"] = ", ".join(str(r[1]) for r in active_deepp) or "(ninguna)"
 
         for d in deepp_rows:
-            if not is_active_cha(d[7]) or not is_active_baja(d[9]):
+            if not is_active_cha(d[7]):
                 audit_rows.append(self._audit_excluded_deepp(member_id, d))
 
         for d in active_deepp:
@@ -66,14 +92,15 @@ class HectareRepository:
             for idx, dp in enumerate(dp_rows):
                 row, included_flag, reason, key = self._audit_dp_row(member_id, d, dp, campaign, company, crops)
                 if included_flag:
-                    sup = decimal_or_zero(dp[10])
+                    sup = decimal_or_zero(dp[8])
                     if key in included:
                         if included[key] != sup:
-                            msg = f"Conflicto SupApor socio={member_id} clave={key}: {included[key]} vs {sup}; se conserva la primera."
+                            msg = f"CONFLICTO_SUPERFICIE socio={member_id} clave={key}: {included[key]} vs {sup}; se excluye hasta revisión."
                             warnings.append(msg)
+                            included.pop(key, None)
                             row["Motivo exclusión"] = msg
                         else:
-                            row["Motivo exclusión"] = "Duplicada"
+                            row["Motivo exclusión"] = "DUPLICADO"
                         row["Incluida"] = "No"
                     else:
                         included[key] = sup
@@ -171,7 +198,8 @@ class HectareRepository:
         emp = [r for r in camp if str(r[2]).strip() == str(company).strip()]
         crop = [r for r in emp if str(r[3] or '').strip().upper() in crops]
         baja = [r for r in crop if is_active_baja(r[12])]
-        sup = [r for r in baja if decimal_or_zero(r[10]) > 0]
+        age = [r for r in baja if is_old_enough_for_hectare_fee(r[13], int(campaign))]
+        sup = [r for r in age if decimal_or_zero(r[8]) > 0]
         return {
             "H. Filas DParcela sólo por boleta": len(all_rows),
             "I. Campañas disponibles": ", ".join(sorted({str(r[1]) for r in all_rows})) or "(ninguna)",
@@ -181,21 +209,25 @@ class HectareRepository:
             "M. Filas tras empresa": len(emp),
             "N. Filas tras cultivo": len(crop),
             "O. Filas tras baja": len(baja),
-            "P. Filas tras SupApor > 0": len(sup),
-            "Q. Parcelas únicas": unique_count,
-            "R. Superficie final": total,
+            "P. Filas tras Año <= campaña - 5": len(age),
+            "Q. Filas tras SupCul > 0": len(sup),
+            "R. Parcelas únicas": unique_count,
+            "S. Superficie final": total,
         }
 
     def _audit_dp_row(self, member_id: int, d: Any, dp: Any, campaign: Any, company: Any, crops: Sequence[str]) -> tuple[dict[str, Any], bool, str, tuple[str, ...]]:
         key = tuple(str(v or "").strip().upper() for v in (dp[0], dp[1], dp[2], dp[3], dp[4], dp[5], dp[6], dp[7]))
         reasons = []
-        if str(dp[1]).strip() != str(campaign).strip(): reasons.append("Campaña distinta")
-        if str(dp[2]).strip() != str(company).strip(): reasons.append("Empresa distinta")
-        if str(dp[3] or "").strip().upper() not in crops: reasons.append("Cultivo no productivo")
-        if not is_active_baja(dp[12]): reasons.append("BAJA DParcela informada")
-        if decimal_or_zero(dp[10]) <= 0: reasons.append("SupApor <= 0")
+        if str(dp[1]).strip() != str(campaign).strip(): reasons.append("CAMPANA_DISTINTA")
+        if str(dp[2]).strip() != str(company).strip(): reasons.append("EMPRESA_DISTINTA")
+        if str(dp[3] or "").strip().upper() not in crops: reasons.append("CULTIVO_NO_CONFIGURADO")
+        if not is_active_baja(dp[12]): reasons.append("PARCELA_DADA_DE_BAJA")
+        year = parse_plantation_year(dp[13])
+        if year is None: reasons.append("ANO_NO_VALIDO")
+        elif not is_old_enough_for_hectare_fee(year, int(campaign)): reasons.append("PLANTACION_MENOR_CINCO_ANOS")
+        if decimal_or_zero(dp[8]) <= 0: reasons.append("SUPERFICIE_CERO")
         reason = "; ".join(reasons)
-        return ({"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Boleta DParcela": dp[0], "Campaña DParcela": dp[1], "Empresa DParcela": dp[2], "Cultivo DParcela": dp[3], "IdPM": dp[4], "Pol": dp[5], "Par": dp[6], "Rec": dp[7], "SupCul DParcela": dp[8], "SupRec": dp[9], "SupApor": dp[10], "Baja DParcela": dp[12], "Incluida": "Sí" if not reason else "No", "Motivo exclusión": reason, "Clave deduplicación": "|".join(key)}, not reason, reason, key)
+        return ({"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Boleta DParcela": dp[0], "Campaña DParcela": dp[1], "Empresa DParcela": dp[2], "Cultivo DParcela": dp[3], "IdPM": dp[4], "Pol": dp[5], "Par": dp[6], "Rec": dp[7], "SupCul DParcela": dp[8], "SupRec": dp[9], "SupApor": dp[10], "Baja DParcela": dp[12], "Año": year, "Año máximo admitido": int(campaign)-5, "Antigüedad suficiente": "Sí" if year is not None and is_old_enough_for_hectare_fee(year, int(campaign)) else "No", "Incluida": "Sí" if not reason else "No", "Motivo exclusión": reason, "Clave deduplicación": "|".join(key)}, not reason, reason, key)
 
     def _audit_no_dp(self, member_id: int, d: Any) -> dict[str, Any]:
         return {"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Incluida": "No", "Motivo exclusión": "Sin filas DParcela por Boleta", "Clave deduplicación": ""}
@@ -203,7 +235,7 @@ class HectareRepository:
     def _audit_excluded_deepp(self, member_id: int, d: Any) -> dict[str, Any]:
         reasons = []
         if not is_active_cha(d[7]):
-            reasons.append("CHA inactivo")
+            reasons.append("CHA_NO_ACTIVO")
         if not is_active_baja(d[9]):
             reasons.append("BAJA DEEPP informada")
         return {"IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí" if is_active_cha(d[7]) else "No", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Incluida": "No", "Motivo exclusión": "; ".join(reasons), "Clave deduplicación": ""}

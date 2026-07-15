@@ -96,6 +96,12 @@ class HectareFeeAuditData:
     line_fee: Decimal | None
     status: CalculationStatus
     warnings: tuple[str, ...] = ()
+    candidate_boletas: int = 0
+    active_cha_boletas: int = 0
+    candidate_parcels: int = 0
+    included_parcels: int = 0
+    excluded_parcels: int = 0
+    reason: str = ""
 
 
 @dataclass(frozen=True)

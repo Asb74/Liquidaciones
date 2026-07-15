@@ -23,3 +23,14 @@ def calculate_quality_adjustment(effective_net: Decimal, quality_rate: Decimal, 
 
 def calculate_total_hectare_fee(applicable_hectares: Decimal, price_per_hectare: Decimal) -> Decimal:
     return round_money(applicable_hectares * price_per_hectare)
+
+
+def applied_amount_or_zero(amount: Decimal | None, status: Any) -> Decimal | None:
+    calculated = {"calculated", "calculated_with_warning"}
+    not_applied = {"not_applicable", "disabled"}
+    value = getattr(status, "value", str(status)).lower()
+    if value in calculated:
+        return amount or Decimal("0")
+    if value in not_applied:
+        return Decimal("0")
+    return None
