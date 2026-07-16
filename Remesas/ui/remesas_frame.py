@@ -33,6 +33,8 @@ from ui.remesa_panel import RemesaPanel
 from ui.summary_panel import SummaryPanel
 from ui.hectare_fee_master_dialog import HectareFeeMasterDialog
 from exporters.excel_exporter import export_liquidation_summary
+from exporters.batch_liquidation_excel_exporter import export_batch_liquidation_summary
+from services.batch_remittance_service import BatchProgress, BatchRemittanceService, SelectedRemittance, SingleRemittanceBatchResult
 from exporters.file_lock import FileLockedError
 from exporters.hectare_fee_auditor import export_hectare_fee_audit
 from presentation.premium_liquidation_view_model import from_member_liquidation
@@ -45,7 +47,7 @@ class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
         super().__init__(master, padding=8)
         self.config=load_config(config_path); setup_logging(self.config)
-        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.variety_service=None; self.selected_source_items=[]; self.variety_resolutions=[]; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.sync_results=[]; self.current_group_benchmarks={}; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
+        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.batch_cancel_requested=False; self.batch_running=False; self.variety_service=None; self.selected_source_items=[]; self.variety_resolutions=[]; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.sync_results=[]; self.current_group_benchmarks={}; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
         self._build(); self._connect()
 
     def _build(self):
@@ -261,8 +263,15 @@ class RemesasFrame(ttk.Frame):
             messagebox.showwarning("Contexto obligatorio", "Seleccione campaña, empresa y cultivo antes de cargar una remesa."); return
         try:
             items=self.remesas.list_remesas(ctx.campana, ctx.empresa, ctx.cultivo)
-            remesa_id=self._select_remesa_dialog(items, ctx)
-            if not remesa_id: return
+            selected=self._select_remesa_dialog(items, ctx)
+            if not selected: return
+            if isinstance(selected, list):
+                if len(selected) > 1:
+                    self._process_selected_remittances(selected)
+                    return
+                remesa_id=selected[0].remittance_id
+            else:
+                remesa_id=selected
             rem=self.remesas.get_remesa(remesa_id); self.current_remesa=rem; self.remesa_panel.load(rem.values)
             for k,v in rem.prices.items(): self.price_vars[k].set(str(v if v is not None else ""))
             self.apply_collection_var.set(parse_yes_no(rem.values.get("AplRec")))
@@ -278,24 +287,139 @@ class RemesasFrame(ttk.Frame):
                 self._search()
         except Exception as exc: messagebox.showerror("Error",str(exc))
 
+    def _selected_remittance_from_values(self, values, ctx) -> SelectedRemittance:
+        def parse_or_none(value):
+            try:
+                return parse_user_date(value) if value else None
+            except Exception:
+                return None
+        return SelectedRemittance(
+            remittance_id=int(values[0]),
+            name=str(values[1] or ""),
+            payment_date=parse_or_none(values[2]),
+            period_from=parse_or_none(values[3]),
+            period_to=parse_or_none(values[4]),
+            category=str(values[5] or ""),
+            liquidation_type=str(values[6] or ""),
+            campaign=str(ctx.campana),
+            company=str(ctx.empresa),
+            crop=str(ctx.cultivo),
+        )
+
     def _select_remesa_dialog(self, items, ctx):
-        win=tk.Toplevel(self); win.title("Seleccionar remesa"); win.transient(self.winfo_toplevel()); win.grab_set(); win.geometry("900x430")
+        win=tk.Toplevel(self); win.title("Seleccionar remesa"); win.transient(self.winfo_toplevel()); win.grab_set(); win.geometry("980x500")
         ttk.Label(win,text=f"Campaña: {ctx.campana} | Empresa: {ctx.empresa} | Cultivo: {ctx.cultivo}").pack(anchor="w",padx=8,pady=4)
         query=tk.StringVar(); ttk.Entry(win,textvariable=query).pack(fill="x",padx=8,pady=4)
+        selected_text=tk.StringVar(value="Remesas seleccionadas: 0")
+        ttk.Label(win,textvariable=selected_text).pack(anchor="w",padx=8,pady=(0,4))
         cols=("IdREMESA","REMESA","FECHARE","PERIODO1","PERIODO2","CATEGORIA","TipoLiq")
-        tree=ttk.Treeview(win,columns=cols,show="headings"); [tree.heading(c,text=c) for c in cols]; [tree.column(c,width=120,anchor="w") for c in cols]; tree.pack(fill="both",expand=True,padx=8,pady=4)
-        result={"id":None}
+        tree=ttk.Treeview(win,columns=cols,show="headings",selectmode="extended")
+        [tree.heading(c,text=c) for c in cols]; [tree.column(c,width=130,anchor="w") for c in cols]; tree.pack(fill="both",expand=True,padx=8,pady=4)
+        result={"items":None}
+        def update_count(_=None):
+            selected_text.set(f"Remesas seleccionadas: {len(tree.selection())}")
         def fill():
             tree.delete(*tree.get_children()); q=query.get().strip().upper()
             for row in items:
                 hay=" ".join(str(row.get(k) or "") for k in ("IdREMESA","REMESA","CATEGORIA","TipoLiq")).upper()
                 if not q or q in hay: tree.insert("","end",values=[row.get(c) or "" for c in cols])
+            update_count()
+        def select_all():
+            tree.selection_set(tree.get_children()); update_count()
+        def clear_selection():
+            tree.selection_remove(tree.selection()); update_count()
         def load(_=None):
-            sel=tree.selection();
-            if sel: result["id"]=tree.item(sel[0],"values")[0]; win.destroy()
-        query.trace_add("write", lambda *_: fill()); tree.bind("<Double-1>", load); win.bind("<Return>", load); win.bind("<Escape>", lambda e: win.destroy())
-        bf=ttk.Frame(win); bf.pack(fill="x",padx=8,pady=6); ttk.Button(bf,text="Cargar",command=load).pack(side="right",padx=4); ttk.Button(bf,text="Cancelar",command=win.destroy).pack(side="right")
-        fill(); win.wait_window(); return result["id"]
+            sel=tree.selection()
+            if not sel:
+                messagebox.showwarning("Seleccionar remesa", "Seleccione al menos una remesa."); return
+            remittances=[self._selected_remittance_from_values(tree.item(i,"values"), ctx) for i in sel]
+            lines="\n".join(f"{r.remittance_id} - {r.name}" for r in remittances)
+            if not messagebox.askyesno("Confirmar lote", f"Se van a procesar {len(remittances)} remesas:\n\n{lines}\n\nCada remesa se calculará de forma independiente.\nSe generará un único Excel resumen acumulado.\n\n¿Desea continuar?"):
+                return
+            result["items"]=remittances; win.destroy()
+        query.trace_add("write", lambda *_: fill()); tree.bind("<Double-1>", load); tree.bind("<<TreeviewSelect>>", update_count); win.bind("<Return>", load); win.bind("<Escape>", lambda e: win.destroy())
+        bf=ttk.Frame(win); bf.pack(fill="x",padx=8,pady=6)
+        ttk.Button(bf,text="Seleccionar todas",command=select_all).pack(side="left",padx=4)
+        ttk.Button(bf,text="Limpiar selección",command=clear_selection).pack(side="left",padx=4)
+        ttk.Button(bf,text="Procesar seleccionadas",command=load).pack(side="right",padx=4)
+        ttk.Button(bf,text="Cancelar",command=win.destroy).pack(side="right")
+        fill(); win.wait_window(); return result["items"]
+
+    def _batch_progress_dialog(self, total: int):
+        win=tk.Toplevel(self); win.title("Procesando remesas"); win.transient(self.winfo_toplevel()); win.grab_set(); win.geometry("520x230"); win.resizable(False, False)
+        general=tk.StringVar(value=f"Procesando remesa 0 de {total}")
+        current=tk.StringVar(value="")
+        phase=tk.StringVar(value="Fase: Preparando")
+        members=tk.StringVar(value="Socios: -")
+        bar=ttk.Progressbar(win, maximum=max(total, 1), mode="determinate")
+        ttk.Label(win,textvariable=general,font=("TkDefaultFont",10,"bold")).pack(anchor="w",padx=12,pady=(12,4))
+        ttk.Label(win,textvariable=current,wraplength=480).pack(anchor="w",padx=12,pady=4)
+        ttk.Label(win,textvariable=phase).pack(anchor="w",padx=12,pady=4)
+        ttk.Label(win,textvariable=members).pack(anchor="w",padx=12,pady=4)
+        bar.pack(fill="x",padx=12,pady=8)
+        ttk.Button(win,text="Cancelar después de la remesa actual",command=lambda: setattr(self,"batch_cancel_requested",True)).pack(anchor="e",padx=12,pady=8)
+        def update(progress: BatchProgress):
+            general.set(f"Procesando remesa {progress.current_index} de {progress.total_remittances}")
+            current.set(progress.current_remittance_name or "")
+            phase.set(f"Fase: {progress.message or progress.phase}")
+            if progress.processed_members is not None and progress.total_members is not None:
+                members.set(f"Socios: {progress.processed_members} de {progress.total_members}")
+            bar["value"] = min(progress.current_index, progress.total_remittances)
+            win.update_idletasks()
+        return win, update
+
+    def _process_selected_remittances(self, remittances: list[SelectedRemittance]) -> None:
+        if self.batch_running:
+            messagebox.showwarning("Lote en curso", "Ya hay un lote de remesas en ejecución."); return
+        self.batch_running=True; self.batch_cancel_requested=False
+        progress_win, update_progress = self._batch_progress_dialog(len(remittances))
+        try:
+            service=BatchRemittanceService(single_processor=self.process_single_remittance, exporter=export_batch_liquidation_summary, should_cancel=lambda: self.batch_cancel_requested)
+            result=service.process(remittances, progress_callback=update_progress)
+            self._clear()
+            msg=(f"Proceso terminado\n\nRemesas seleccionadas: {result.remittances_requested}\nCorrectas: {result.remittances_completed}\nCon errores: {result.remittances_failed}\n\nExcel acumulado:\n{result.aggregate_excel_path or 'No generado'}")
+            messagebox.showinfo("Proceso terminado", msg)
+            self.status.set(f"Lote terminado: {result.remittances_completed} correctas, {result.remittances_failed} con errores. Excel: {result.aggregate_excel_path or 'no generado'}")
+        except PermissionError as exc:
+            messagebox.showwarning("Archivo Excel abierto", str(exc))
+        except Exception as exc:
+            logger.exception("Error estructural procesando lote")
+            messagebox.showerror("Procesando remesas", f"No se ha podido procesar el lote:\n{exc}")
+        finally:
+            self.batch_running=False
+            if progress_win.winfo_exists(): progress_win.destroy()
+
+    def process_single_remittance(self, remittance: SelectedRemittance, progress_callback=None, *, generate_individual_files: bool = True) -> SingleRemittanceBatchResult:
+        def emit(phase, message):
+            if progress_callback:
+                progress_callback(BatchProgress(1, 1, remittance.remittance_id, remittance.name, phase, message=message))
+        self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.summary=None; self.current_group_benchmarks={}; self.calculation_valid=False
+        emit("LOADING", "Cargando cabecera")
+        rem=self.remesas.get_remesa(remittance.remittance_id); self.current_remesa=rem; self.remesa_panel.load(rem.values)
+        for k,v in rem.prices.items(): self.price_vars[k].set(str(v if v is not None else ""))
+        self.apply_collection_var.set(parse_yes_no(rem.values.get("AplRec"))); self.apply_transport_var.set(parse_yes_no(rem.values.get("AplTte"))); self.apply_quality_var.set(parse_yes_no(rem.values.get("AplCal"))); self.apply_globalgap_var.set(parse_yes_no(rem.values.get("AplGlobal"))); self.apply_hectare_fee_var.set(parse_yes_no(rem.values.get("AplCHa"))); self.apply_precalibrated_var.set(parse_yes_no(rem.values.get("AplPrecalibrado")))
+        self._load_varieties(); self._restore_remesa_varieties(rem)
+        emit("SEARCHING_DELIVERIES", "Buscando entregas")
+        rows,summary,elapsed,total=self.deliveries.search(self._filters()); self.current_deliveries=list(rows); self.summary=summary
+        emit("CALCULATING", "Calculando liquidación")
+        calc_remesa=self._calculation_remesa(); calculation=self.calculations.calculate(list(rows), calc_remesa)
+        self.current_calculation=calculation; self.calculation_valid=True
+        if calculation and calculation.result:
+            self.current_group_benchmarks=GroupBenchmarkService(GroupBenchmarkRepository(self.conn)).build_benchmarks(calculation.result.header, calculation.result.member_results)
+            object.__setattr__(calculation.result, "variety_audit", tuple(calc_remesa.values.get("VARIEDAD_AUDIT", ())))
+        generated=[]
+        if generate_individual_files and calculation and calculation.result:
+            emit("EXPORTING_FILES", "Generando archivos individuales")
+            try:
+                generated.append(export_liquidation_summary(calculation.result, self._output_dir()/"resumen_liquidaciones.xlsx"))
+            except FileLockedError:
+                pass
+            generated.extend(export_hectare_fee_audit(calculation.result, self._output_dir()) or ())
+            emit("GENERATING_PDFS", "Generando PDFs")
+            members=self._premium_members()
+            if members:
+                generated.extend(self._generate_premium_pdfs(members))
+        return SingleRemittanceBatchResult(remittance, calculation, calculation.member_count, calculation.delivery_count, self._output_dir(), tuple(generated))
 
     def _restore_remesa_varieties(self, rem: Remesa) -> None:
         target=str(rem.values.get("VARIEDAD") or "").strip()
