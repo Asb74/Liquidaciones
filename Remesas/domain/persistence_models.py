@@ -72,6 +72,48 @@ class PersistencePreview:
     original_line_count: int
     warnings: tuple[str, ...] = ()
 
+    @property
+    def valid(self) -> bool:
+        return bool(self.lines)
+
+@dataclass(frozen=True)
+class PendingRemittancePersistence:
+    remittance: object
+    calculation_result: object
+    persistence_preview: PersistencePreview
+    valid: bool
+    warnings: tuple[str, ...] = ()
+    output_directory: object | None = None
+
+@dataclass(frozen=True)
+class PendingBatchPersistence:
+    batch_execution_id: str
+    campaign: str
+    company: str
+    crop: str
+    remittances: tuple[PendingRemittancePersistence, ...]
+    total_original_lines: int
+    total_final_lines: int
+    warnings: tuple[str, ...]
+    valid: bool
+    excluded_remittances: tuple[object, ...] = ()
+
+@dataclass(frozen=True)
+class RemittancePersistenceSaveResult:
+    remittance: object
+    saved: bool
+    batch: object | None = None
+    error: str | None = None
+    pdf_paths: tuple[object, ...] = ()
+
+@dataclass(frozen=True)
+class BatchPersistenceSaveResult:
+    requested: int
+    saved: int
+    failed: int
+    remittance_results: tuple[RemittancePersistenceSaveResult, ...]
+    warnings: tuple[str, ...] = ()
+
 @dataclass(frozen=True)
 class PersistedLiquidation:
     id_liq: str
