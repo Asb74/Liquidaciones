@@ -31,6 +31,8 @@ class AppConfig:
     sync_on_start: bool = True
     allow_local_fallback: bool = True
     keep_backup: bool = True
+    persistence_database_path: str = r"C:\Liquidaciones\datos\liquidaciones.sqlite"
+    persistence_enabled: bool = True
 
     @property
     def hectare_fee_applicable_crops(self) -> tuple[str, ...]:

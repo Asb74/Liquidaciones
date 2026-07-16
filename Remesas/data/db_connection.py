@@ -43,6 +43,8 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         sync_on_start=parser.getboolean("synchronization", "sync_on_start", fallback=True),
         allow_local_fallback=parser.getboolean("synchronization", "allow_local_fallback", fallback=True),
         keep_backup=parser.getboolean("synchronization", "keep_backup", fallback=True),
+        persistence_database_path=parser.get("persistence", "database_path", fallback=str(local_directory / "liquidaciones.sqlite")),
+        persistence_enabled=parser.getboolean("persistence", "enabled", fallback=True),
     )
 
 
