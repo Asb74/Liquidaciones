@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from pathlib import Path
 from data.group_benchmark_repository import GroupBenchmarkRepository, VarietalGroup
 from domain.calculation_models import CalculationStatus, LiquidationHeader, MemberLiquidation
@@ -8,7 +8,18 @@ from domain.calculation_models import CalculationStatus, LiquidationHeader, Memb
 @dataclass(frozen=True)
 class BenchmarkMetric:
     own_value: Decimal | None; maximum_value: Decimal | None; minimum_value: Decimal | None; average_value: Decimal | None
-    valid_member_count: int; excluded_member_count: int; status: str; warning: str = ""
+    valid_member_count: int; excluded_member_count: int; status: str; warning: str = ""; metric: str = ""; excluded_null: int = 0; excluded_zero: int = 0; excluded_negative: int = 0
+
+def validate_benchmark_metric(metric: BenchmarkMetric) -> tuple[str, ...]:
+    warnings=[]
+    vals=(metric.minimum_value, metric.average_value, metric.maximum_value)
+    if metric.valid_member_count < 1: warnings.append("comparable_count < 1")
+    if any(v is None for v in vals): warnings.append("valores estadísticos incompletos")
+    for v in vals + (metric.own_value,):
+        if v is not None and (not v.is_finite()): warnings.append("valor no finito")
+    if all(v is not None for v in vals) and not (metric.minimum_value <= metric.average_value <= metric.maximum_value): warnings.append("minimum <= average <= maximum incumplido")
+    if metric.metric in {"PRODUCTION_KG_HA", "FINAL_AMOUNT_EUR_HA"} and metric.minimum_value is not None and metric.minimum_value <= 0: warnings.append("minimum debe ser > 0")
+    return tuple(dict.fromkeys(warnings))
 
 @dataclass(frozen=True)
 class PremiumGroupBenchmark:
@@ -34,26 +45,43 @@ class GroupBenchmarkService:
         for label,(g, lines) in grouped.items():
             per={}
             for m in lines:
-                x=per.setdefault(m.member_id,{"member":m,"kg":Decimal("0"),"amount":Decimal("0")})
-                x["kg"]+=_d(m.net_kg); x["amount"]+=_d(m.total_amount)
+                x=per.setdefault(m.member_id,{"member":m,"kg":Decimal("0"),"amount":Decimal("0"),"statuses":[]})
+                x["kg"]+=_d(m.net_kg); x["amount"]+=_d(m.total_amount); x["statuses"].extend(m.statuses.values())
             surfaces={mid:self.repository.get_productive_hectares(mid, header.campana, header.empresa, header.cultivo, g.varieties) for mid in per}
             for mid,x in per.items():
-                ha=surfaces[mid].hectares; x["ha"]=ha; x["kg_ha"]=x["kg"]/ha if ha>0 else None; x["eur_ha"]=x["amount"]/ha if ha>0 else None
-            price_valid=[m for m in lines if m.total_amount is not None and _d(m.net_kg)>0 and m.final_average_price is not None and not any(getattr(s,"value",s) in {CalculationStatus.ERROR.value,CalculationStatus.PENDING.value} for s in m.statuses.values())]
-            kg_sum=sum((x["kg"] for x in per.values()), Decimal("0")); amt_sum=sum((x["amount"] for x in per.values()), Decimal("0"))
-            kg_valid=[x for x in per.values() if x["kg_ha"] is not None]; eur_valid=[x for x in per.values() if x["eur_ha"] is not None]
-            warnings=tuple(w for s in surfaces.values() for w in s.warnings)+tuple(missing)
+                ha=surfaces[mid].hectares; x["ha"]=ha; x["kg_ha"]=x["kg"]/ha if ha>0 else None; x["eur_ha"]=x["amount"]/ha if ha>0 else None; x["price"]=x["amount"]/x["kg"] if x["kg"]>0 else None
+            warnings=tuple(w for srf in surfaces.values() for w in srf.warnings)+tuple(missing)
+            price=self._metric("FINAL_PRICE", [dict(v, value=v["price"], weight=v["kg"], amount=v["amount"], member_id=mid) for mid,v in per.items()], allow_zero=True, weighted_price=True)
+            prod=self._metric("PRODUCTION_KG_HA", [dict(v, value=v["kg_ha"], member_id=mid) for mid,v in per.items()], allow_zero=False)
+            amount=self._metric("FINAL_AMOUNT_EUR_HA", [dict(v, value=v["eur_ha"], member_id=mid) for mid,v in per.items()], allow_zero=False)
             for mid,x in per.items():
-                b=PremiumGroupBenchmark(label,g.crop,g.group,g.subgroup,g.varieties,str(header.campana),header.empresa,header.tipo_liquidacion,header.categoria,
-                    self._metric(x["member"].final_average_price,[m.final_average_price for m in price_valid], amt_sum/kg_sum if kg_sum>0 else None, len(price_valid), len(lines)-len(price_valid)),
-                    self._metric(x["kg_ha"],[v["kg_ha"] for v in kg_valid], sum((v["kg"] for v in kg_valid),Decimal("0"))/sum((v["ha"] for v in kg_valid),Decimal("0")) if kg_valid else None, len(kg_valid), len(per)-len(kg_valid), "No se ha podido determinar una superficie productiva válida para este grupo varietal." if x["kg_ha"] is None else ""),
-                    self._metric(x["eur_ha"],[v["eur_ha"] for v in eur_valid], sum((v["amount"] for v in eur_valid),Decimal("0"))/sum((v["ha"] for v in eur_valid),Decimal("0")) if eur_valid else None, len(eur_valid), len(per)-len(eur_valid), "No se ha podido determinar una superficie productiva válida para este grupo varietal." if x["eur_ha"] is None else ""), warnings)
-                out[(mid,label,str(header.campana),header.empresa,header.cultivo,header.tipo_liquidacion,header.categoria)]=b; self._log(b)
+                p=price[0](x["price"]); k=prod[0](x["kg_ha"], "No se ha podido determinar una superficie productiva válida para este grupo varietal." if x["kg_ha"] is None else ""); e=amount[0](x["eur_ha"], "No se ha podido determinar una superficie productiva válida para este grupo varietal." if x["eur_ha"] is None else "")
+                b=PremiumGroupBenchmark(label,g.crop,g.group,g.subgroup,g.varieties,str(header.campana),header.empresa,header.tipo_liquidacion,header.categoria,p,k,e,warnings+validate_benchmark_metric(p)+validate_benchmark_metric(k)+validate_benchmark_metric(e))
+                out[(mid,label,str(header.campana),header.empresa,header.cultivo,header.tipo_liquidacion,header.categoria)]=b; self._log(b, member_id=mid)
         return out
-    def _metric(self, own, vals, avg, valid, excluded, warning=""):
-        vals=[v for v in vals if v is not None]
-        return BenchmarkMetric(_q(own), _q(max(vals)) if vals else None, _q(min(vals)) if vals else None, _q(avg), valid, excluded, "ok" if vals else "unavailable", warning)
-    def _log(self,b):
+    def _metric(self, name, candidates, *, allow_zero: bool, weighted_price: bool=False):
+        excluded={"null":0,"zero":0,"negative":0}; valid=[]
+        for c in candidates:
+            v=c.get("value")
+            if v is None: excluded["null"]+=1; self._log_excluded(name,c.get("member_id"),"NULL_VALUE"); continue
+            try: v = v if isinstance(v, Decimal) else Decimal(str(v))
+            except (InvalidOperation, ValueError): excluded["null"]+=1; self._log_excluded(name,c.get("member_id"),"NULL_VALUE"); continue
+            if not v.is_finite(): excluded["null"]+=1; self._log_excluded(name,c.get("member_id"),"NULL_VALUE"); continue
+            if v < 0: excluded["negative"]+=1; self._log_excluded(name,c.get("member_id"),"NEGATIVE_VALUE"); continue
+            if v == 0 and not allow_zero: excluded["zero"]+=1; self._log_excluded(name,c.get("member_id"),"ZERO_VALUE"); continue
+            valid.append(v)
+        avg=(sum((c.get("amount", Decimal("0")) for c in candidates if c.get("value") in valid), Decimal("0")) / sum((c.get("weight", Decimal("0")) for c in candidates if c.get("value") in valid), Decimal("0")) if weighted_price and valid and sum((c.get("weight", Decimal("0")) for c in candidates if c.get("value") in valid), Decimal("0")) > 0 else ((sum(valid,Decimal("0"))/len(valid)) if valid else None))
+        def build(own, warning=""):
+            m=BenchmarkMetric(_q(own), _q(max(valid)) if valid else None, _q(min(valid)) if valid else None, _q(avg), len(valid), len(candidates)-len(valid), "ok" if valid else "unavailable", warning, name, excluded["null"], excluded["zero"], excluded["negative"])
+            ws=validate_benchmark_metric(m)
+            return m if not ws else BenchmarkMetric(m.own_value,None,None,None,0,m.excluded_member_count,"unavailable", warning or "; ".join(ws), name, excluded["null"], excluded["zero"], excluded["negative"])
+        return build, excluded
+    def _log_excluded(self, metric, member_id, reason):
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.log_path.open("a",encoding="utf-8") as f: f.write(f"[GroupBenchmarkExcluded]\nmetric={metric}\nmember_id={member_id}\nreason={reason}\n\n")
+    def _log(self,b, member_id=None):
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a",encoding="utf-8") as f:
-            f.write(f"[Benchmark]\ncampaign={b.campaign}\ncompany={b.company}\ncrop={b.crop}\ngroup={b.group}\nsubgroup={b.subgroup}\nlabel={b.group_label}\nvarieties={','.join(b.varieties)}\nvalid_members={b.price_per_kg.valid_member_count}\nexcluded_members={b.price_per_kg.excluded_member_count}\nprice_own={b.price_per_kg.own_value}\nprice_max={b.price_per_kg.maximum_value}\nprice_avg={b.price_per_kg.average_value}\nprice_min={b.price_per_kg.minimum_value}\nkg_ha_own={b.kilograms_per_hectare.own_value}\nkg_ha_max={b.kilograms_per_hectare.maximum_value}\nkg_ha_avg={b.kilograms_per_hectare.average_value}\nkg_ha_min={b.kilograms_per_hectare.minimum_value}\neur_ha_own={b.euros_per_hectare.own_value}\neur_ha_max={b.euros_per_hectare.maximum_value}\neur_ha_avg={b.euros_per_hectare.average_value}\neur_ha_min={b.euros_per_hectare.minimum_value}\n\n")
+            f.write(f"[GroupBenchmarkContext]\ncampaign={b.campaign}\ncompany={b.company}\ncrop={b.crop}\nvarietal_group={b.group_label}\nmember_id={member_id}\n\n")
+            for metric in (b.price_per_kg,b.kilograms_per_hectare,b.euros_per_hectare):
+                f.write(f"[GroupBenchmarkMetric]\nmetric={metric.metric}\ncandidate_count={metric.valid_member_count+metric.excluded_member_count}\nvalid_count={metric.valid_member_count}\nexcluded_null={metric.excluded_null}\nexcluded_zero={metric.excluded_zero}\nexcluded_negative={metric.excluded_negative}\nminimum={metric.minimum_value}\naverage={metric.average_value}\nmaximum={metric.maximum_value}\nown_value={metric.own_value}\nvalid={metric.status=='ok'}\nwarning={metric.warning}\n\n")

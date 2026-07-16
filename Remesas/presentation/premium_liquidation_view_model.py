@@ -11,6 +11,7 @@ from typing import Any
 from domain.calculation_models import LiquidationHeader, MemberLiquidation
 from services.group_benchmark_service import PremiumGroupBenchmark
 from services.calibre_master_service import CalibreMasterService
+from services.production_destination_master_service import ProductionDestinationMasterService
 from domain.utils import format_decimal_es
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ DEFAULT_PREMIUM_PDF_CONFIG = {
     "show_qr": False,
     "show_commercial_breakdown": True,
     "total_label": "Total a percibir",
-    "footer_message": "Gracias por confiar su producción a la Cooperativa.",
+    "footer_message": "Gracias por confiar su producción a su Cooperativa.",
     "logo_path": "assets/logo_sansebas.png",
     "generate_combined_premium_pdf": False,
 }
@@ -65,6 +66,21 @@ class PremiumLiquidationViewModel:
     rotten_price: Decimal | None
     gross_average_price: Decimal | None
     commercial_breakdown_title: str
+    primary_label: str
+    secondary_label: str | None
+    waste_label: str
+    secondary_enabled: bool
+    secondary_counts_as_commercial: bool
+    primary_kg: Decimal
+    primary_price: Decimal | None
+    primary_amount: Decimal
+    secondary_kg: Decimal
+    secondary_price: Decimal | None
+    secondary_amount: Decimal
+    waste_kg: Decimal
+    waste_price: Decimal | None
+    waste_amount: Decimal
+    commercial_kg: Decimal
     collection_amount: Decimal | None
     hectare_fee_amount: Decimal | None
     quality_amount: Decimal | None
@@ -128,15 +144,31 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
         for g in member.grades
         if (g.kilograms or g.amount)
     )
+    dest = ProductionDestinationMasterService().get_for_crop(header.cultivo)
+    secondary_kg = member.destruction_kg + member.table_destruction_kg
+    secondary_amount = member.destruction_amount + member.table_destruction_amount
+    secondary_price = getattr(member, "destruction_price", None)
+    if secondary_price is None and secondary_kg and secondary_amount is not None:
+        secondary_price = (secondary_amount / secondary_kg) if secondary_kg > 0 else None
+        if secondary_price is not None: logger.info("[ProductionSummary] secondary_price derivado de importe/kilos")
+    waste_price = getattr(member, "rotten_price", None)
+    if waste_price is None and member.rotten_kg and member.rotten_amount is not None:
+        waste_price = (member.rotten_amount / member.rotten_kg) if member.rotten_kg > 0 else None
+        if waste_price is not None: logger.info("[ProductionSummary] waste_price derivado de importe/kilos")
+    commercial_kg = member.commercial_kg + (secondary_kg if dest.secondary_enabled and dest.secondary_counts_as_commercial else Decimal("0"))
+    logger.info("[ProductionDestination] crop=%s primary_label=%s secondary_enabled=%s secondary_label=%s secondary_counts_as_commercial=%s waste_label=%s", dest.crop, dest.primary_label, dest.secondary_enabled, dest.secondary_label, dest.secondary_counts_as_commercial, dest.waste_label)
+    logger.info("[ProductionSummary] primary_kg=%s primary_price=%s primary_amount=%s secondary_kg=%s secondary_price=%s secondary_amount=%s waste_kg=%s waste_price=%s waste_amount=%s commercial_kg=%s total_delivered_kg=%s", member.commercial_kg, member.commercial_average_price, member.commercial_amount, secondary_kg, secondary_price, secondary_amount, member.rotten_kg, waste_price, member.rotten_amount, commercial_kg, member.net_kg)
     return PremiumLiquidationViewModel(
         member_id=member.member_id, member_name=member.member_name, tax_id_masked=mask_tax_id(tax_id),
         remittance_name=header.remesa_name, campaign=str(header.campana), company=header.empresa, crop=header.cultivo,
         varieties=(member.variety,) if member.variety else tuple(header.variedades or ()),
         period_from=header.periodo_desde, period_to=header.periodo_hasta, payment_date=header.fecha_pago or None,
-        effective_net_kg=member.net_kg, commercial_net_kg=member.commercial_kg,
-        waste_net_kg=member.destruction_kg + member.table_destruction_kg, rotten_net_kg=member.rotten_kg,
+        effective_net_kg=member.net_kg, commercial_net_kg=commercial_kg,
+        waste_net_kg=secondary_kg, rotten_net_kg=member.rotten_kg,
         gross_amount=member.gross_amount, commercial_amount=member.commercial_amount, commercial_average_price=member.commercial_average_price,
-        destruction_amount=member.destruction_amount + member.table_destruction_amount, destruction_price=getattr(member, "destruction_price", None), rotten_amount=member.rotten_amount, rotten_price=getattr(member, "rotten_price", None), gross_average_price=(member.gross_amount / member.net_kg if member.net_kg else None), commercial_breakdown_title=CalibreMasterService().commercial_breakdown_title(header.cultivo),
+        destruction_amount=secondary_amount, destruction_price=secondary_price, rotten_amount=member.rotten_amount, rotten_price=waste_price, gross_average_price=(member.gross_amount / member.net_kg if member.net_kg else None), commercial_breakdown_title=CalibreMasterService().commercial_breakdown_title(header.cultivo),
+        primary_label=dest.primary_label, secondary_label=dest.secondary_label if dest.secondary_enabled else None, waste_label=dest.waste_label, secondary_enabled=dest.secondary_enabled, secondary_counts_as_commercial=dest.secondary_counts_as_commercial,
+        primary_kg=member.commercial_kg, primary_price=member.commercial_average_price, primary_amount=member.commercial_amount, secondary_kg=secondary_kg, secondary_price=secondary_price, secondary_amount=secondary_amount, waste_kg=member.rotten_kg, waste_price=waste_price, waste_amount=member.rotten_amount, commercial_kg=commercial_kg,
         collection_amount=member.collection_amount, hectare_fee_amount=member.hectare_fee_amount,
         quality_amount=member.quality_amount, transport_amount=member.transport_amount, globalgap_amount=member.globalgap_amount,
         taxable_base=member.taxable_base, vat_rate=member.vat_rate, vat_amount=member.vat_amount,
