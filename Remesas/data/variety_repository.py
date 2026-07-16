@@ -3,9 +3,22 @@ from __future__ import annotations
 import logging
 import sqlite3
 
+from dataclasses import dataclass
+
 from domain.varieties import VarietyGroup, normalize_variety_text
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class VarietalGroup:
+    crop: str
+    group: str
+    subgroup: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.group} {self.subgroup}".strip()
 
 
 class VarietyRepository:
@@ -57,3 +70,34 @@ class VarietyRepository:
             if normalize_variety_text(variety) == wanted:
                 return variety
         return None
+
+
+    def find_exact_variety(self, crop: str, normalized_variety: str) -> str | None:
+        sql = """
+        SELECT TRIM(Variedad) AS Variedad
+        FROM eepp.MVariedad
+        WHERE UPPER(TRIM(CULTIVO)) = ?
+          AND UPPER(TRIM(Variedad)) = ?
+          AND Variedad IS NOT NULL AND TRIM(Variedad) <> ''
+        ORDER BY TRIM(Variedad)
+        LIMIT 1
+        """
+        row = self.conn.execute(sql, (normalize_variety_text(crop), normalized_variety)).fetchone()
+        return str(row[0]) if row else None
+
+    def find_group_by_label(self, crop: str, normalized_label: str) -> VarietalGroup | None:
+        sql = """
+        SELECT TRIM(GRUPO) AS Grupo, TRIM(SUBGRUPO) AS Subgrupo
+        FROM eepp.MVariedad
+        WHERE UPPER(TRIM(CULTIVO)) = ?
+          AND GRUPO IS NOT NULL AND TRIM(GRUPO) <> ''
+          AND SUBGRUPO IS NOT NULL AND TRIM(SUBGRUPO) <> ''
+          AND UPPER(TRIM(GRUPO)) || ' ' || UPPER(TRIM(SUBGRUPO)) = ?
+        ORDER BY UPPER(TRIM(GRUPO)), UPPER(TRIM(SUBGRUPO))
+        LIMIT 1
+        """
+        row = self.conn.execute(sql, (normalize_variety_text(crop), normalized_label)).fetchone()
+        return VarietalGroup(crop, str(row[0]), str(row[1])) if row else None
+
+    def list_group_varieties(self, crop: str, group: str, subgroup: str) -> tuple[str, ...]:
+        return self.resolve_group(crop, group, subgroup)
