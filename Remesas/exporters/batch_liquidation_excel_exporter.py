@@ -6,8 +6,23 @@ from pathlib import Path
 from typing import Sequence
 
 from openpyxl import Workbook
+from openpyxl.worksheet.pagebreak import Break
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+
+from exporters.excel_exporter import (
+    MONEY_FORMAT as SUMMARY_MONEY_FORMAT,
+    INTEGER_FORMAT as SUMMARY_INTEGER_FORMAT,
+    PERCENT_FORMAT as SUMMARY_PERCENT_FORMAT,
+    PRICE_FORMAT,
+    PTS_KG_FORMAT,
+    SUMMARY_HEADERS,
+    SummaryBlockResult,
+    SummaryColumn,
+    apply_liquidation_summary_style,
+    build_liquidation_summary_rows,
+    get_liquidation_summary_columns,
+)
 
 MONEY_FORMAT = '#,##0.00;-#,##0.00;-'
 INTEGER_FORMAT = '#,##0;-#,##0;-'
@@ -68,6 +83,113 @@ def _mark_total_row(ws, row: int, color: str):
         cell.fill = PatternFill("solid", fgColor=color)
 
 
+def _decimal(value) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
+
+
+def _format_date(value):
+    if value is None:
+        return ""
+    return value.strftime("%d/%m/%Y") if hasattr(value, "strftime") else str(value)
+
+
+def _set_merged_value(ws, row: int, start_col: int, end_col: int, value: str, *, fill: str, bold: bool = True) -> None:
+    ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
+    cell = ws.cell(row, start_col, value)
+    cell.font = Font(bold=bold, color="FFFFFF" if fill == "1F4E78" else "000000")
+    cell.fill = PatternFill("solid", fgColor=fill)
+    cell.alignment = Alignment(wrap_text=True, vertical="center")
+
+
+def append_liquidation_summary_block(ws, start_row: int, *, remittance, calculation_result) -> SummaryBlockResult:
+    columns = get_liquidation_summary_columns()
+    max_col = len(columns)
+    title = f"REMESA {remittance.remittance_id} - {remittance.name}"
+    _set_merged_value(ws, start_row, 1, max_col, title, fill="1F4E78")
+    ws.row_dimensions[start_row].height = 24
+    meta1 = f"Campaña: {remittance.campaign} | Empresa: {remittance.company} | Cultivo: {remittance.crop}"
+    meta2 = f"Periodo: {_format_date(remittance.period_from)} - {_format_date(remittance.period_to)} | Pago: {_format_date(remittance.payment_date)}"
+    meta3 = f"Categoría: {remittance.category} | Tipo liquidación: {remittance.liquidation_type}"
+    for offset, value in enumerate((meta1, meta2, meta3), start=1):
+        _set_merged_value(ws, start_row + offset, 1, max_col, value, fill="D9EAF7", bold=True)
+    header_row = start_row + 4
+    for col, header in enumerate(SUMMARY_HEADERS, start=1):
+        ws.cell(header_row, col, header)
+
+    member_results = tuple(getattr(calculation_result, "member_results", ()) or ())
+    if not member_results:
+        info_row = header_row + 1
+        _set_merged_value(ws, info_row, 1, max_col, "Sin liquidaciones válidas.", fill="FFF2CC", bold=True)
+        return SummaryBlockResult(start_row, header_row, info_row, info_row, None, info_row + 3, 0, {})
+
+    data_start = header_row + 1
+    for row_values in build_liquidation_summary_rows(calculation_result, start_row=data_start):
+        ws.append(row_values)
+    data_end = data_start + len(member_results) - 1
+    subtotal_row = data_end + 1
+    ws.cell(subtotal_row, 2, f"SUBTOTAL REMESA {remittance.remittance_id}")
+    for col_idx, column in enumerate(columns, start=1):
+        if column.total_formula == "sum":
+            letter = get_column_letter(col_idx)
+            ws.cell(subtotal_row, col_idx, f"=SUM({letter}{data_start}:{letter}{data_end})")
+    ws.cell(subtotal_row, 13, f"=IFERROR(P{subtotal_row}/D{subtotal_row},0)")
+
+    totals: dict[str, Decimal] = {}
+    for column in columns:
+        if column.accumulable:
+            totals[column.key] = sum((_decimal(getattr(m, column.key, None)) for m in member_results), Decimal("0"))
+    return SummaryBlockResult(start_row, header_row, data_start, data_end, subtotal_row, subtotal_row + 3, len(member_results), totals)
+
+
+def write_batch_grand_total(ws, row: int, block_results: Sequence[SummaryBlockResult], columns: Sequence[SummaryColumn]) -> int:
+    if not block_results:
+        return row
+    row += 1
+    ws.cell(row, 2, "TOTAL GENERAL DEL LOTE")
+    totals: dict[str, Decimal] = {}
+    for block in block_results:
+        for key, value in block.numeric_totals.items():
+            totals[key] = totals.get(key, Decimal("0")) + value
+    for col_idx, column in enumerate(columns, start=1):
+        if column.key in totals:
+            ws.cell(row, col_idx, totals[column.key])
+    total_amount = totals.get("total_amount", Decimal("0"))
+    total_net = totals.get("net_kg", Decimal("0"))
+    ws.cell(row, 13, (total_amount / total_net) if total_net else Decimal("0"))
+    return row + 1
+
+
+def _style_batch_detail_blocks(ws, block_results: Sequence[SummaryBlockResult]) -> None:
+    thin = Side(style="thin", color="D9D9D9")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.border = border
+            cell.alignment = Alignment(wrap_text=True, vertical="center")
+    for block in block_results:
+        if block.subtotal_row:
+            _mark_total_row(ws, block.subtotal_row, "E2F0D9")
+    for cell in ws[ws.max_row - 1 if ws.max_row > 1 and ws.cell(ws.max_row, 2).value is None else ws.max_row]:
+        if ws.cell(cell.row, 2).value == "TOTAL GENERAL DEL LOTE":
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill("solid", fgColor="C6E0B4")
+    formats = {
+        1: SUMMARY_INTEGER_FORMAT, 4: SUMMARY_INTEGER_FORMAT,
+        5: SUMMARY_MONEY_FORMAT, 7: SUMMARY_MONEY_FORMAT, 8: SUMMARY_MONEY_FORMAT, 9: SUMMARY_MONEY_FORMAT,
+        10: SUMMARY_MONEY_FORMAT, 11: SUMMARY_MONEY_FORMAT, 12: SUMMARY_MONEY_FORMAT, 16: SUMMARY_MONEY_FORMAT,
+        6: PRICE_FORMAT, 13: PRICE_FORMAT,
+        14: SUMMARY_PERCENT_FORMAT, 15: SUMMARY_PERCENT_FORMAT,
+        19: PTS_KG_FORMAT, 20: PTS_KG_FORMAT, 21: PTS_KG_FORMAT,
+    }
+    for col_idx, fmt in formats.items():
+        for cell in ws[get_column_letter(col_idx)]:
+            cell.number_format = fmt
+
+
 def export_batch_liquidation_summary(results: Sequence, failed_results: Sequence, output_path: Path, *, campaign: str, company: str, crop: str, execution_started_at: datetime, execution_finished_at: datetime) -> Path:
     wb = Workbook()
     ws = wb.active
@@ -90,26 +212,35 @@ def export_batch_liquidation_summary(results: Sequence, failed_results: Sequence
     _style_sheet(ws, money_cols=range(12, 22), integer_cols=(8, 9, 10, 11), date_cols=(3, 4, 5))
 
     detail = wb.create_sheet("Detalle acumulado")
-    dheaders = ["Id Remesa", "Remesa", "Fecha de pago", "Periodo desde", "Periodo hasta", "Campaña", "Empresa", "Cultivo", "Categoría", "Tipo liquidación", "Nº Socio", "Socio", "Variedad o grupo varietal", "Neto", "Importe bruto", "Precio comercial", "Recolección", "Cuota Ha", "Bonificación/Penalización calidad", "Transporte", "GlobalGAP", "Base imponible", "Precio medio", "IVA %", "Importe IVA", "Retención %", "Importe retención", "Importe total", "Concepto liquidación"]
-    detail.append(dheaders)
-    general = {h: Decimal("0") for h in dheaders[13:28] if "%" not in h and "Precio" not in h}
-    for item in results:
+    block_results: list[SummaryBlockResult] = []
+    detail_row = 1
+    for index, item in enumerate(results):
+        if index:
+            detail.row_breaks.append(Break(id=detail_row))
         rem = item.remittance
         calc = item.calculation_result.result if hasattr(item.calculation_result, "result") else item.calculation_result
-        start_row = detail.max_row + 1
-        for m in calc.member_results:
-            detail.append([rem.remittance_id, rem.name, rem.payment_date, rem.period_from, rem.period_to, rem.campaign, rem.company, rem.crop, rem.category, rem.liquidation_type, m.member_id, m.member_name, m.variety, _n(m.net_kg), _n(m.gross_amount), _n(m.commercial_average_price), _n(m.collection_amount), _n(m.hectare_fee_amount), _n(m.quality_amount), _n(m.transport_amount), _n(m.globalgap_amount), _n(m.taxable_base), _n(m.final_average_price), _n(m.vat_rate), _n(m.vat_amount), _n(m.withholding_rate), _n(m.withholding_amount), _n(m.total_amount), calc.header.remesa_name])
-        subtotal = ["SUBTOTAL REMESA", rem.name, "", "", "", rem.campaign, rem.company, rem.crop, "", "", "", "", "", _sum_members(calc, "net_kg"), _sum_members(calc, "gross_amount"), "", _sum_members(calc, "collection_amount"), _sum_members(calc, "hectare_fee_amount"), _sum_members(calc, "quality_amount"), _sum_members(calc, "transport_amount"), _sum_members(calc, "globalgap_amount"), _sum_members(calc, "taxable_base"), "", "", _sum_members(calc, "vat_amount"), "", _sum_members(calc, "withholding_amount"), _sum_members(calc, "total_amount"), ""]
-        detail.append(subtotal)
-        _mark_total_row(detail, detail.max_row, "E2F0D9")
-        for row in detail.iter_rows(min_row=start_row, max_row=detail.max_row - 1, values_only=True):
-            for idx, h in enumerate(dheaders[13:28], start=14):
-                if h in general and row[idx - 1] is not None:
-                    general[h] += row[idx - 1]
-    if results:
-        detail.append(["TOTAL GENERAL", "", "", "", "", campaign, company, crop, "", "", "", "", ""] + [general.get(h, "") for h in dheaders[13:28]] + [""])
-        _mark_total_row(detail, detail.max_row, "C6E0B4")
-    _style_sheet(detail, money_cols=(15,17,18,19,20,21,22,25,27,28), integer_cols=(14,), percent_cols=(24,26), date_cols=(3,4,5))
+        block = append_liquidation_summary_block(detail, detail_row, remittance=rem, calculation_result=calc)
+        block_results.append(block)
+        detail_row = block.next_row
+    if block_results:
+        detail_row = write_batch_grand_total(detail, detail_row, block_results, get_liquidation_summary_columns())
+    apply_liquidation_summary_style(
+        detail,
+        max(detail.max_row, 1),
+        header_rows=[block.header_row for block in block_results],
+        data_start_row=1,
+        freeze=False,
+        autofilter=False,
+    )
+    _style_batch_detail_blocks(detail, block_results)
+    detail.page_setup.orientation = "landscape"
+    detail.page_setup.fitToWidth = 1
+    detail.page_setup.fitToHeight = 0
+    detail.sheet_properties.pageSetUpPr.fitToPage = True
+    detail.page_margins.left = 0.25
+    detail.page_margins.right = 0.25
+    detail.page_margins.top = 0.5
+    detail.page_margins.bottom = 0.5
 
     inc = wb.create_sheet("Incidencias")
     inc.append(["Id Remesa", "Remesa", "Fase", "Tipo de error", "Mensaje", "Fecha y hora", "Estado"])

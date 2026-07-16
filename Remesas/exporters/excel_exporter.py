@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from typing import Any, Mapping, Sequence
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -17,6 +19,28 @@ from domain.audit import audit_latest_excel_row, current_audit
 from exporters.file_lock import FileLockedError, ensure_target_is_writable
 
 logger = logging.getLogger(__name__)
+
+@dataclass(frozen=True)
+class SummaryColumn:
+    key: str
+    header: str
+    number_format: str | None = None
+    width: int | None = None
+    accumulable: bool = False
+    total_formula: str | None = None
+
+
+@dataclass(frozen=True)
+class SummaryBlockResult:
+    start_row: int
+    header_row: int
+    data_start_row: int
+    data_end_row: int
+    subtotal_row: int | None
+    next_row: int
+    member_count: int
+    numeric_totals: Mapping[str, Decimal]
+
 
 SUMMARY_HEADERS = [
     "Nº Socio",
@@ -53,6 +77,84 @@ COLUMN_WIDTHS = {
     "H": 14, "I": 14, "J": 14, "K": 14, "L": 17, "M": 12, "N": 10,
     "O": 10, "P": 17, "Q": 32, "R": 16, "S": 24, "T": 23, "U": 24,
 }
+
+SUMMARY_COLUMNS: tuple[SummaryColumn, ...] = (
+    SummaryColumn("member_id", "Nº Socio", INTEGER_FORMAT, 12),
+    SummaryColumn("member_name", "Socio", None, 35),
+    SummaryColumn("variety", "Variedad", None, 18),
+    SummaryColumn("net_kg", "Neto", INTEGER_FORMAT, 14, True, "sum"),
+    SummaryColumn("gross_amount", "I. Bruto", MONEY_FORMAT, 15, True, "sum"),
+    SummaryColumn("commercial_average_price", "P. Comer.", PRICE_FORMAT, 12),
+    SummaryColumn("collection_amount", "Recolec.", MONEY_FORMAT, 14, True, "sum"),
+    SummaryColumn("hectare_fee_amount", "C. Has.", MONEY_FORMAT, 14, True, "sum"),
+    SummaryColumn("quality_amount", "B/P Cal.", MONEY_FORMAT, 14, True, "sum"),
+    SummaryColumn("transport_amount", "B. Trans.", MONEY_FORMAT, 14, True, "sum"),
+    SummaryColumn("globalgap_amount", "B. Glob.", MONEY_FORMAT, 14, True, "sum"),
+    SummaryColumn("taxable_base", "Base Imponible", MONEY_FORMAT, 17, True, "sum"),
+    SummaryColumn("final_average_price", "P.Medio", PRICE_FORMAT, 12, False, "total_per_net"),
+    SummaryColumn("vat_rate", "I.V.A", PERCENT_FORMAT, 10),
+    SummaryColumn("withholding_rate", "Ret.", PERCENT_FORMAT, 10),
+    SummaryColumn("total_amount", "Importe Total.", MONEY_FORMAT, 17, True, "sum"),
+    SummaryColumn("concept", "Concepto Liquidación", None, 32),
+    SummaryColumn("crop", "Cultivo", None, 16),
+    SummaryColumn("collection_pts", "Com. Recol. (Pts/kg)(<11,65)", PTS_KG_FORMAT, 24),
+    SummaryColumn("globalgap_pts", "Com. Global (Pts/kg)(<2)", PTS_KG_FORMAT, 23),
+    SummaryColumn("transport_pts", "Com. Trans. (Pts/kg) (<1,7)", PTS_KG_FORMAT, 24),
+)
+
+
+def get_liquidation_summary_columns() -> tuple[SummaryColumn, ...]:
+    return SUMMARY_COLUMNS
+
+
+def build_liquidation_summary_row(member, result: LiquidationResult, row_number: int) -> list[Any]:
+    hectare_excel_value = _hectare_fee_excel_value(member)
+    audit = current_audit()
+    if audit:
+        audit.audit_excel_row(member, hectare_excel_value)
+    else:
+        audit_latest_excel_row(member, hectare_excel_value)
+    return [
+        member.member_id, member.member_name, member.variety,
+        _number(member.net_kg, "Neto", required=True),
+        _number(member.gross_amount, "I. Bruto"),
+        _number(member.commercial_average_price, "P. Comer."),
+        _number(member.collection_amount, "Recolec."), hectare_excel_value,
+        _number(member.quality_amount, "B/P Cal."),
+        _number(member.transport_amount, "B. Trans."),
+        _number(member.globalgap_amount, "B. Glob."),
+        _number(member.taxable_base, "Base Imponible"),
+        _number(member.final_average_price, "P.Medio"),
+        _number(member.vat_rate, "I.V.A"),
+        _number(member.withholding_rate, "Ret."),
+        _number(member.total_amount, "Importe Total."),
+        result.header.remesa_name, getattr(result.header, "cultivo", ""),
+        f'=IFERROR(166.386*G{row_number}/D{row_number},0)',
+        f'=IFERROR(166.386*K{row_number}/D{row_number},0)',
+        f'=IFERROR(166.386*J{row_number}/D{row_number},0)',
+    ]
+
+
+def build_liquidation_summary_rows(result: LiquidationResult, start_row: int = 2) -> list[list[Any]]:
+    return [build_liquidation_summary_row(member, result, row_number) for row_number, member in enumerate(result.member_results, start=start_row)]
+
+
+def _write_summary_header(ws, row: int) -> None:
+    for col, header in enumerate(SUMMARY_HEADERS, start=1):
+        ws.cell(row, col, header)
+
+
+def _write_summary_total_row(ws, total_row: int, data_start_row: int, data_end_row: int, label: str = "TOTAL") -> None:
+    ws.cell(total_row, 2, label)
+    if data_start_row <= data_end_row:
+        for column in (4, 5, 7, 8, 9, 10, 11, 12, 16):
+            letter = get_column_letter(column)
+            ws.cell(total_row, column, f"=SUM({letter}{data_start_row}:{letter}{data_end_row})")
+        ws.cell(total_row, 13, f"=IFERROR(P{total_row}/D{total_row},0)")
+
+
+def apply_liquidation_summary_style(ws, total_row: int, *, header_rows: Sequence[int] = (1,), data_start_row: int = 2, freeze: bool = True, autofilter: bool = True) -> None:
+    _style_summary(ws, total_row, header_rows=header_rows, data_start_row=data_start_row, freeze=freeze, autofilter=autofilter)
 
 
 def _number(value, field_name: str, *, required: bool = False):
@@ -207,45 +309,15 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
     wb = Workbook()
     ws = wb.active
     ws.title = "Resumen"
-    ws.append(SUMMARY_HEADERS)
+    _write_summary_header(ws, 1)
 
     summary_base_by_member: dict[int, Decimal | None] = {}
     summary_fiscal_by_member: dict[int, tuple[Decimal | None, Decimal | None]] = {}
     for row_number, member in enumerate(result.member_results, start=2):
-        hectare_excel_value = _hectare_fee_excel_value(member)
-        audit = current_audit()
-        if audit:
-            audit.audit_excel_row(member, hectare_excel_value)
-        else:
-            audit_latest_excel_row(member, hectare_excel_value)
-        exported_taxable_base = _number(member.taxable_base, "Base Imponible")
-        summary_base_by_member[member.member_id] = exported_taxable_base
-        exported_final_average_price = _number(member.final_average_price, "P.Medio")
-        exported_total_amount = _number(member.total_amount, "Importe Total.")
-        summary_fiscal_by_member[member.member_id] = (exported_final_average_price, exported_total_amount)
-        ws.append([
-            member.member_id,
-            member.member_name,
-            member.variety,
-            _number(member.net_kg, "Neto", required=True),
-            _number(member.gross_amount, "I. Bruto"),
-            _number(member.commercial_average_price, "P. Comer."),
-            _number(member.collection_amount, "Recolec."),
-            hectare_excel_value,
-            _number(member.quality_amount, "B/P Cal."),
-            _number(member.transport_amount, "B. Trans."),
-            _number(member.globalgap_amount, "B. Glob."),
-            exported_taxable_base,
-            exported_final_average_price,
-            _number(member.vat_rate, "I.V.A"),
-            _number(member.withholding_rate, "Ret."),
-            exported_total_amount,
-            result.header.remesa_name,
-            result.header.cultivo,
-            f'=IFERROR(166.386*G{row_number}/D{row_number},0)',
-            f'=IFERROR(166.386*K{row_number}/D{row_number},0)',
-            f'=IFERROR(166.386*J{row_number}/D{row_number},0)',
-        ])
+        row = build_liquidation_summary_row(member, result, row_number)
+        summary_base_by_member[member.member_id] = row[11]
+        summary_fiscal_by_member[member.member_id] = (row[12], row[15])
+        ws.append(row)
 
     detail = wb.create_sheet("Detalle ajustes")
     detail.append(["Nº Socio", "Socio", "Variedad", "Bon/Pen tarifa", "Fuente tarifa", "Hectáreas", "Precio/ha", "Cuota total socio", "Kilos efectivos totales", "Proporción €/kg", "Cuota parcial", "Ajuste redondeo"])
@@ -268,13 +340,9 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
             ])
 
     total_row = ws.max_row + 1
-    ws.cell(total_row, 2, "TOTAL")
-    for column in (4, 5, 7, 8, 9, 10, 11, 12, 16):
-        letter = get_column_letter(column)
-        ws.cell(total_row, column, f"=SUM({letter}2:{letter}{total_row - 1})")
-    ws.cell(total_row, 13, f"=IFERROR(P{total_row}/D{total_row},0)")
+    _write_summary_total_row(ws, total_row, 2, total_row - 1)
 
-    _style_summary(ws, total_row)
+    apply_liquidation_summary_style(ws, total_row)
     diagnostics = wb.create_sheet("04_CuotaHa")
     diagnostics.append(["Nº Socio", "Socio", "Variedad", "Estado", "Hectáreas", "Cuota anual", "Kilos efectivos totales", "Proporción €/kg", "Neto efectivo línea", "Cuota calculada", "Advertencias"])
     for member in result.member_results:
@@ -393,16 +461,17 @@ def export_liquidation_summary(result: LiquidationResult, path: Path) -> Path:
     return path
 
 
-def _style_summary(ws, total_row: int) -> None:
+def _style_summary(ws, total_row: int, *, header_rows: Sequence[int] = (1,), data_start_row: int = 2, freeze: bool = True, autofilter: bool = True) -> None:
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border = border
+    for header_row in header_rows:
+        for cell in ws[header_row]:
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
 
-    for row in ws.iter_rows(min_row=2, max_row=total_row):
+    for row in ws.iter_rows(min_row=data_start_row, max_row=total_row):
         for cell in row:
             cell.alignment = Alignment(vertical="center")
 
@@ -426,5 +495,7 @@ def _style_summary(ws, total_row: int) -> None:
     for column_letter, width in COLUMN_WIDTHS.items():
         ws.column_dimensions[column_letter].width = width
 
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
+    if freeze:
+        ws.freeze_panes = "A2"
+    if autofilter:
+        ws.auto_filter.ref = ws.dimensions
