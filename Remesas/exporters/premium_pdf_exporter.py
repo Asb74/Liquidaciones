@@ -147,7 +147,7 @@ def build_header_flowable(vm, config, width):
     from reportlab.lib import colors
     st = _premium_styles()
     left = [Paragraph("S.C.A. San Sebastián", st["small_b"]), Paragraph(str(config.get("title", "Liquidación de entrega")).upper(), st["title"])]
-    center = [Paragraph(f"<b>{vm.remittance_name[:58]}</b>", st["small"]), Paragraph(f"Campaña {vm.campaign} · {vm.crop} · {vm.variety_text[:42]}", st["small"]), Paragraph(f"Periodo: {vm.period_from} – {vm.period_to} · Pago: {vm.payment_date or '—'}", st["small"])]
+    center = [Paragraph(f"<b>{vm.remittance_name[:58]}</b>", st["small"]), Paragraph(f"Campaña {vm.campaign} · {vm.crop} · {vm.variety_text[:42]}", st["small"]), Paragraph(f"Periodo: {vm.period_from} – {vm.period_to}", st["small"])]
     right = [Paragraph(f"<b>Socio {vm.member_id:,}</b>".replace(',', '.'), st["right"]), Paragraph(vm.member_name[:42], st["right"]), Paragraph(f"NIF {vm.tax_id_masked}" if vm.tax_id_masked else vm.company[:38], st["right"])]
     t = Table([[left, center, right]], colWidths=[width*.32, width*.43, width*.25])
     t.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP"), ("BOTTOMPADDING", (0,0), (-1,-1), 0), ("TOPPADDING", (0,0), (-1,-1), 0), ("TEXTCOLOR", (0,0), (-1,-1), colors.HexColor(TEXT_COLOR))]))
