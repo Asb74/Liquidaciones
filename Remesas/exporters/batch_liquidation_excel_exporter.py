@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Sequence
 
 from openpyxl import Workbook
-from openpyxl.worksheet.pagebreak import Break
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -17,9 +16,6 @@ from exporters.excel_exporter import (
     PRICE_FORMAT,
     PTS_KG_FORMAT,
     SUMMARY_HEADERS,
-    SummaryBlockResult,
-    SummaryColumn,
-    apply_liquidation_summary_style,
     build_liquidation_summary_rows,
     get_liquidation_summary_columns,
 )
@@ -91,104 +87,87 @@ def _decimal(value) -> Decimal:
     return Decimal(str(value))
 
 
-def _format_date(value):
-    if value is None:
-        return ""
-    return value.strftime("%d/%m/%Y") if hasattr(value, "strftime") else str(value)
+def _shift_excel_formula(formula: str, row_number: int) -> str:
+    replacements = {
+        f"G{row_number}": f"I{row_number}",
+        f"D{row_number}": f"F{row_number}",
+        f"K{row_number}": f"M{row_number}",
+        f"J{row_number}": f"L{row_number}",
+    }
+    shifted = formula
+    for old, new in replacements.items():
+        shifted = shifted.replace(old, new)
+    return shifted
 
 
-def _set_merged_value(ws, row: int, start_col: int, end_col: int, value: str, *, fill: str, bold: bool = True) -> None:
-    ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
-    cell = ws.cell(row, start_col, value)
-    cell.font = Font(bold=bold, color="FFFFFF" if fill == "1F4E78" else "000000")
-    cell.fill = PatternFill("solid", fgColor=fill)
-    cell.alignment = Alignment(wrap_text=True, vertical="center")
-
-
-def append_liquidation_summary_block(ws, start_row: int, *, remittance, calculation_result) -> SummaryBlockResult:
+def _append_batch_detail_table(detail, results: Sequence) -> int | None:
+    headers = ["Id Remesa", "Remesa", *SUMMARY_HEADERS]
+    detail.append(headers)
     columns = get_liquidation_summary_columns()
-    max_col = len(columns)
-    title = f"REMESA {remittance.remittance_id} - {remittance.name}"
-    _set_merged_value(ws, start_row, 1, max_col, title, fill="1F4E78")
-    ws.row_dimensions[start_row].height = 24
-    meta1 = f"Campaña: {remittance.campaign} | Empresa: {remittance.company} | Cultivo: {remittance.crop}"
-    meta2 = f"Periodo: {_format_date(remittance.period_from)} - {_format_date(remittance.period_to)} | Pago: {_format_date(remittance.payment_date)}"
-    meta3 = f"Categoría: {remittance.category} | Tipo liquidación: {remittance.liquidation_type}"
-    for offset, value in enumerate((meta1, meta2, meta3), start=1):
-        _set_merged_value(ws, start_row + offset, 1, max_col, value, fill="D9EAF7", bold=True)
-    header_row = start_row + 4
-    for col, header in enumerate(SUMMARY_HEADERS, start=1):
-        ws.cell(header_row, col, header)
+    totals = {column.key: Decimal("0") for column in columns if column.accumulable}
+    has_rows = False
 
-    member_results = tuple(getattr(calculation_result, "member_results", ()) or ())
-    if not member_results:
-        info_row = header_row + 1
-        _set_merged_value(ws, info_row, 1, max_col, "Sin liquidaciones válidas.", fill="FFF2CC", bold=True)
-        return SummaryBlockResult(start_row, header_row, info_row, info_row, None, info_row + 3, 0, {})
+    for item in results:
+        rem = item.remittance
+        calc = item.calculation_result.result if hasattr(item.calculation_result, "result") else item.calculation_result
+        start_row = detail.max_row + 1
+        member_results = tuple(getattr(calc, "member_results", ()) or ())
+        for offset, row_values in enumerate(build_liquidation_summary_rows(calc, start_row=start_row), start=0):
+            excel_row = start_row + offset
+            shifted_values = [
+                _shift_excel_formula(value, excel_row) if isinstance(value, str) and value.startswith("=") else value
+                for value in row_values
+            ]
+            detail.append([rem.remittance_id, rem.name, *shifted_values])
+            has_rows = True
+        for column in columns:
+            if column.accumulable:
+                totals[column.key] += sum((_decimal(getattr(member, column.key, None)) for member in member_results), Decimal("0"))
 
-    data_start = header_row + 1
-    for row_values in build_liquidation_summary_rows(calculation_result, start_row=data_start):
-        ws.append(row_values)
-    data_end = data_start + len(member_results) - 1
-    subtotal_row = data_end + 1
-    ws.cell(subtotal_row, 2, f"SUBTOTAL REMESA {remittance.remittance_id}")
-    for col_idx, column in enumerate(columns, start=1):
-        if column.total_formula == "sum":
-            letter = get_column_letter(col_idx)
-            ws.cell(subtotal_row, col_idx, f"=SUM({letter}{data_start}:{letter}{data_end})")
-    ws.cell(subtotal_row, 13, f"=IFERROR(P{subtotal_row}/D{subtotal_row},0)")
+    if not has_rows:
+        return None
 
-    totals: dict[str, Decimal] = {}
-    for column in columns:
-        if column.accumulable:
-            totals[column.key] = sum((_decimal(getattr(m, column.key, None)) for m in member_results), Decimal("0"))
-    return SummaryBlockResult(start_row, header_row, data_start, data_end, subtotal_row, subtotal_row + 3, len(member_results), totals)
-
-
-def write_batch_grand_total(ws, row: int, block_results: Sequence[SummaryBlockResult], columns: Sequence[SummaryColumn]) -> int:
-    if not block_results:
-        return row
-    row += 1
-    ws.cell(row, 2, "TOTAL GENERAL DEL LOTE")
-    totals: dict[str, Decimal] = {}
-    for block in block_results:
-        for key, value in block.numeric_totals.items():
-            totals[key] = totals.get(key, Decimal("0")) + value
-    for col_idx, column in enumerate(columns, start=1):
+    total_row = detail.max_row + 1
+    detail.cell(total_row, 4, "TOTAL GENERAL")
+    for col_idx, column in enumerate(columns, start=3):
         if column.key in totals:
-            ws.cell(row, col_idx, totals[column.key])
+            detail.cell(total_row, col_idx, totals[column.key])
     total_amount = totals.get("total_amount", Decimal("0"))
     total_net = totals.get("net_kg", Decimal("0"))
-    ws.cell(row, 13, (total_amount / total_net) if total_net else Decimal("0"))
-    return row + 1
+    detail.cell(total_row, 15, (total_amount / total_net) if total_net else Decimal("0"))
+    _mark_total_row(detail, total_row, "C6E0B4")
+    return total_row
 
 
-def _style_batch_detail_blocks(ws, block_results: Sequence[SummaryBlockResult]) -> None:
-    thin = Side(style="thin", color="D9D9D9")
+def _style_batch_detail_table(ws, total_row: int | None) -> None:
+    thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    for row in ws.iter_rows():
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+    for row in ws.iter_rows(min_row=2, max_row=total_row or ws.max_row):
         for cell in row:
-            cell.border = border
-            cell.alignment = Alignment(wrap_text=True, vertical="center")
-    for block in block_results:
-        if block.subtotal_row:
-            _mark_total_row(ws, block.subtotal_row, "E2F0D9")
-    for cell in ws[ws.max_row - 1 if ws.max_row > 1 and ws.cell(ws.max_row, 2).value is None else ws.max_row]:
-        if ws.cell(cell.row, 2).value == "TOTAL GENERAL DEL LOTE":
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill("solid", fgColor="C6E0B4")
+            cell.alignment = Alignment(vertical="center")
+            if total_row and cell.row == total_row:
+                cell.font = Font(bold=True)
+                cell.border = border
     formats = {
-        1: SUMMARY_INTEGER_FORMAT, 4: SUMMARY_INTEGER_FORMAT,
-        5: SUMMARY_MONEY_FORMAT, 7: SUMMARY_MONEY_FORMAT, 8: SUMMARY_MONEY_FORMAT, 9: SUMMARY_MONEY_FORMAT,
-        10: SUMMARY_MONEY_FORMAT, 11: SUMMARY_MONEY_FORMAT, 12: SUMMARY_MONEY_FORMAT, 16: SUMMARY_MONEY_FORMAT,
-        6: PRICE_FORMAT, 13: PRICE_FORMAT,
-        14: SUMMARY_PERCENT_FORMAT, 15: SUMMARY_PERCENT_FORMAT,
-        19: PTS_KG_FORMAT, 20: PTS_KG_FORMAT, 21: PTS_KG_FORMAT,
+        "C": SUMMARY_INTEGER_FORMAT, "F": SUMMARY_INTEGER_FORMAT,
+        "G": SUMMARY_MONEY_FORMAT, "I": SUMMARY_MONEY_FORMAT, "J": SUMMARY_MONEY_FORMAT, "K": SUMMARY_MONEY_FORMAT,
+        "L": SUMMARY_MONEY_FORMAT, "M": SUMMARY_MONEY_FORMAT, "N": SUMMARY_MONEY_FORMAT, "R": SUMMARY_MONEY_FORMAT,
+        "H": PRICE_FORMAT, "O": PRICE_FORMAT,
+        "P": SUMMARY_PERCENT_FORMAT, "Q": SUMMARY_PERCENT_FORMAT,
+        "U": PTS_KG_FORMAT, "V": PTS_KG_FORMAT, "W": PTS_KG_FORMAT,
     }
-    for col_idx, fmt in formats.items():
-        for cell in ws[get_column_letter(col_idx)]:
-            cell.number_format = fmt
-
+    for column_letter, number_format in formats.items():
+        for cell in ws[column_letter][1:]:
+            cell.number_format = number_format
+    widths = {"A": 12, "B": 35, "C": 12, "D": 35, "E": 18, "F": 14, "G": 15, "H": 12, "I": 14, "J": 14, "K": 14, "L": 14, "M": 14, "N": 17, "O": 12, "P": 10, "Q": 10, "R": 17, "S": 32, "T": 16, "U": 24, "V": 23, "W": 24}
+    for column_letter, width in widths.items():
+        ws.column_dimensions[column_letter].width = width
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
 
 def export_batch_liquidation_summary(results: Sequence, failed_results: Sequence, output_path: Path, *, campaign: str, company: str, crop: str, execution_started_at: datetime, execution_finished_at: datetime) -> Path:
     wb = Workbook()
@@ -212,27 +191,8 @@ def export_batch_liquidation_summary(results: Sequence, failed_results: Sequence
     _style_sheet(ws, money_cols=range(12, 22), integer_cols=(8, 9, 10, 11), date_cols=(3, 4, 5))
 
     detail = wb.create_sheet("Detalle acumulado")
-    block_results: list[SummaryBlockResult] = []
-    detail_row = 1
-    for index, item in enumerate(results):
-        if index:
-            detail.row_breaks.append(Break(id=detail_row))
-        rem = item.remittance
-        calc = item.calculation_result.result if hasattr(item.calculation_result, "result") else item.calculation_result
-        block = append_liquidation_summary_block(detail, detail_row, remittance=rem, calculation_result=calc)
-        block_results.append(block)
-        detail_row = block.next_row
-    if block_results:
-        detail_row = write_batch_grand_total(detail, detail_row, block_results, get_liquidation_summary_columns())
-    apply_liquidation_summary_style(
-        detail,
-        max(detail.max_row, 1),
-        header_rows=[block.header_row for block in block_results],
-        data_start_row=1,
-        freeze=False,
-        autofilter=False,
-    )
-    _style_batch_detail_blocks(detail, block_results)
+    detail_total_row = _append_batch_detail_table(detail, results)
+    _style_batch_detail_table(detail, detail_total_row)
     detail.page_setup.orientation = "landscape"
     detail.page_setup.fitToWidth = 1
     detail.page_setup.fitToHeight = 0

@@ -51,7 +51,7 @@ def test_batch_cancellation_stops_before_next_and_exports_partial(tmp_path):
     assert result.aggregate_excel_path.parent == tmp_path / "2026" / "CITRICOS"
 
 
-def test_exporter_creates_required_sheets_subtotals_and_incidents(tmp_path):
+def test_exporter_creates_required_sheets_continuous_detail_and_incidents(tmp_path):
     r1 = remittance(2204)
     r2 = remittance(2205, "BLANCA TEMPRANA sem 2")
     failed = [FailedRemittanceResult(remittance(2206), "CALCULATING", "ValueError", "bad data")]
@@ -60,36 +60,36 @@ def test_exporter_creates_required_sheets_subtotals_and_incidents(tmp_path):
     wb = load_workbook(output, data_only=False)
     assert wb.sheetnames == ["Resumen por remesa", "Detalle acumulado", "Incidencias", "Parámetros"]
     detail = wb["Detalle acumulado"]
-    first_col = [row[0].value for row in detail.iter_rows()]
-    second_col = [row[1].value for row in detail.iter_rows()]
-    assert first_col.count("Nº Socio") == 2
-    assert "REMESA 2204 - BLANCA TEMPRANA sem 1" in first_col
-    assert "REMESA 2205 - BLANCA TEMPRANA sem 2" in first_col
-    assert "SUBTOTAL REMESA 2204" in second_col
-    assert "SUBTOTAL REMESA 2205" in second_col
-    assert "TOTAL GENERAL DEL LOTE" in second_col
-    assert len(detail.row_breaks.brk) == 1
+    from exporters.excel_exporter import SUMMARY_HEADERS
+    assert [detail.cell(1, col).value for col in range(1, 24)] == ["Id Remesa", "Remesa", *SUMMARY_HEADERS]
+    assert [detail.cell(row, 1).value for row in (2, 3)] == [2204, 2205]
+    assert [detail.cell(row, 2).value for row in (2, 3)] == ["BLANCA TEMPRANA sem 1", "BLANCA TEMPRANA sem 2"]
+    values = [cell.value for row in detail.iter_rows() for cell in row]
+    assert not any(isinstance(value, str) and value.startswith("REMESA ") for value in values)
+    assert not any(isinstance(value, str) and value.startswith("SUBTOTAL REMESA") for value in values)
+    assert "TOTAL GENERAL" in values
+    assert len(detail.row_breaks.brk) == 0
     assert wb["Incidencias"][2][0].value == 2206
 
 
-def test_detail_accumulated_reuses_individual_summary_headers_rows_and_subtotals(tmp_path):
+def test_detail_accumulated_reuses_individual_summary_headers_rows_and_general_total(tmp_path):
     r1 = remittance(2204)
     r2 = remittance(2205, "BLANCA TEMPRANA sem 2")
     output = tmp_path / "batch.xlsx"
     export_batch_liquidation_summary([batch_result(r1), batch_result(r2)], [], output, campaign="2026", company="1", crop="CITRICOS", execution_started_at=datetime(2026, 7, 16, 7, 45), execution_finished_at=datetime(2026, 7, 16, 7, 46))
 
     detail = load_workbook(output, data_only=False)["Detalle acumulado"]
-    header_rows = [idx for idx in range(1, detail.max_row + 1) if detail.cell(idx, 1).value == "Nº Socio"]
-    assert len(header_rows) == 2
     from exporters.excel_exporter import SUMMARY_HEADERS
-    for header_row in header_rows:
-        assert [detail.cell(header_row, col).value for col in range(1, 22)] == SUMMARY_HEADERS
-        assert [detail.cell(header_row + 1, col).value for col in range(1, 22)] == [
-            1, "Socio", "NAVEL", 100, 50, 0.5, 1, 2, 3, 4, 5, 35, 0.35, Decimal("12"), 2, 38.5, f"Remesa {detail.cell(header_row - 4, 1).value.split()[1]}", None, f"=IFERROR(166.386*G{header_row + 1}/D{header_row + 1},0)", f"=IFERROR(166.386*K{header_row + 1}/D{header_row + 1},0)", f"=IFERROR(166.386*J{header_row + 1}/D{header_row + 1},0)",
+    assert [detail.cell(1, col).value for col in range(1, 24)] == ["Id Remesa", "Remesa", *SUMMARY_HEADERS]
+    assert detail.max_row == 4
+    for row, remittance_id in ((2, 2204), (3, 2205)):
+        assert [detail.cell(row, col).value for col in range(1, 24)] == [
+            remittance_id, f"BLANCA TEMPRANA sem {1 if remittance_id == 2204 else 2}",
+            1, "Socio", "NAVEL", 100, 50, 0.5, 1, 2, 3, 4, 5, 35, 0.35, Decimal("12"), 2, 38.5, f"Remesa {remittance_id}", None, f"=IFERROR(166.386*I{row}/F{row},0)", f"=IFERROR(166.386*M{row}/F{row},0)", f"=IFERROR(166.386*L{row}/F{row},0)",
         ]
-        assert detail.cell(header_row + 2, 2).value.startswith("SUBTOTAL REMESA")
-        assert detail.cell(header_row + 2, 4).value == f"=SUM(D{header_row + 1}:D{header_row + 1})"
-        assert detail.cell(header_row + 2, 13).value == f"=IFERROR(P{header_row + 2}/D{header_row + 2},0)"
+    assert detail.cell(4, 4).value == "TOTAL GENERAL"
+    assert detail.cell(4, 6).value == 200
+    assert detail.cell(4, 15).value == 0.385
 
 
 def test_detail_accumulated_keeps_same_member_in_each_remittance_without_merging(tmp_path):
@@ -98,16 +98,12 @@ def test_detail_accumulated_keeps_same_member_in_each_remittance_without_merging
     export_batch_liquidation_summary([batch_result(r) for r in rems], [], output, campaign="2026", company="1", crop="CITRICOS", execution_started_at=datetime(2026, 7, 16, 7, 45), execution_finished_at=datetime(2026, 7, 16, 7, 46))
 
     detail = load_workbook(output, data_only=False)["Detalle acumulado"]
-    member_rows = [row for row in range(1, detail.max_row + 1) if detail.cell(row, 1).value == 1 and detail.cell(row, 2).value == "Socio"]
+    member_rows = [row for row in range(1, detail.max_row + 1) if detail.cell(row, 3).value == 1 and detail.cell(row, 4).value == "Socio"]
     assert len(member_rows) == 3
-    assert [detail.cell(row - 5, 1).value for row in member_rows] == [
-        "REMESA 2204 - BLANCA TEMPRANA sem 1",
-        "REMESA 2205 - BLANCA TEMPRANA sem 1",
-        "REMESA 2206 - BLANCA TEMPRANA sem 1",
-    ]
+    assert [detail.cell(row, 1).value for row in member_rows] == [2204, 2205, 2206]
 
 
-def test_detail_accumulated_empty_successful_remittance_has_informative_block_without_subtotal(tmp_path):
+def test_detail_accumulated_empty_successful_remittance_keeps_table_header_without_subtotal(tmp_path):
     r = remittance(2210)
     empty_totals = SimpleNamespace(net_kg=None, commercial_amount=None, collection_amount=None, quality_amount=None, transport_amount=None, globalgap_amount=None, hectare_fee_amount=None, taxable_base=None, vat_amount=None, withholding_amount=None, total_amount=None)
     empty_calc = SimpleNamespace(result=SimpleNamespace(member_results=(), totals=empty_totals, header=SimpleNamespace(remesa_name="empty", cultivo="CITRICOS"), warnings=("Sin liquidaciones válidas.",), variety_count=0, hectare_fee_master=None), member_count=0, delivery_count=0)
@@ -118,7 +114,8 @@ def test_detail_accumulated_empty_successful_remittance_has_informative_block_wi
     wb = load_workbook(output, data_only=False)
     detail = wb["Detalle acumulado"]
     values = [cell.value for row in detail.iter_rows() for cell in row]
-    assert "Sin liquidaciones válidas." in values
+    assert "Sin liquidaciones válidas." not in values
     assert "SUBTOTAL REMESA 2210" not in values
+    assert detail.max_row == 1
     assert wb["Incidencias"][2][0].value == 2210
     assert wb["Incidencias"][2][6].value == "WARNING"
