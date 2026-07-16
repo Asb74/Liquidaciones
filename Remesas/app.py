@@ -9,6 +9,7 @@ from ui.calibre_master_dialog import CalibreMasterDialog
 from ui.production_destination_master_dialog import ProductionDestinationMasterDialog
 from data.db_connection import load_config, setup_logging
 from services.local_database_sync_service import LocalDatabaseSyncService
+from data.persistence.database import PersistenceDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,12 @@ def _prepare_databases(root: tk.Tk, config) -> bool:
 
 def main() -> None:
     config=load_config(); setup_logging(config)
+    if config.persistence_enabled:
+        try:
+            PersistenceDatabase(config.persistence_database_path).initialize()
+        except Exception:
+            logger.exception("Persistencia local deshabilitada: falló su inicialización")
+            object.__setattr__(config, "persistence_enabled", False)
     root=tk.Tk(); root.withdraw(); root.title(config.app_name); root.geometry(f"{config.window_width}x{config.window_height}")
     apply_styles(root)
     if not _prepare_databases(root, config):

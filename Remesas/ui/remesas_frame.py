@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 from data.db_connection import ReadOnlyDatabase, load_config, setup_logging
 from data.deliveries_repository import DeliveriesRepository
@@ -38,6 +38,10 @@ from services.batch_remittance_service import BatchProgress, BatchRemittanceServ
 from exporters.file_lock import FileLockedError
 from exporters.hectare_fee_auditor import export_hectare_fee_audit
 from presentation.premium_liquidation_view_model import from_member_liquidation
+from data.persistence.database import PersistenceDatabase
+from services.liquidation_persistence_service import LiquidationPersistenceService
+from exporters.definitive_pdf_exporter import export_definitive_pdfs
+import json
 
 logger = logging.getLogger(__name__)
 from exporters.pdf_exporter import export_member_pdf
@@ -85,9 +89,9 @@ class RemesasFrame(ttk.Frame):
         self.action_buttons={}
         for i,(text,cmd) in enumerate(actions):
             b=ttk.Button(self.buttons,text=text,command=cmd); b.grid(row=0,column=i,padx=2); self.action_buttons[text]=b
-        for i,(text,cmd) in enumerate([("Calcular liquidación",self._calculate),("Exportar resumen de liquidación",self._export_liquidation_excel),("Generar PDF para socio",self._export_premium_pdf), ("Informe interno",self._export_liquidation_pdf),("Guardar liquidaciones",lambda:None),("Anular liquidación",lambda:None)]):
+        for i,(text,cmd) in enumerate([("Calcular liquidación",self._calculate),("Exportar resumen de liquidación",self._export_liquidation_excel),("Generar PDF para socio",self._export_premium_pdf), ("Informe interno",self._export_liquidation_pdf),("Guardar liquidaciones",self._save_liquidations),("Anular liquidación",self._void_liquidation)]):
             b=ttk.Button(self.buttons,text=text,command=cmd,state="disabled"); b.grid(row=1,column=i,padx=2,pady=2); self.action_buttons[text]=b
-        ttk.Label(self.buttons,text="Persistencia deshabilitada en esta fase.").grid(row=1,column=5,columnspan=3,sticky="w")
+        self.persistence_status_label=ttk.Label(self.buttons,text="Persistencia local SQLite habilitada." if self.config.persistence_enabled else "Persistencia local no disponible."); self.persistence_status_label.grid(row=1,column=6,columnspan=3,sticky="w")
 
     def _build_hectare_config_info(self):
         self.hectare_info=ttk.LabelFrame(self,text="Configuración cuota Ha")
@@ -123,10 +127,60 @@ class RemesasFrame(ttk.Frame):
     def _connect(self):
         try:
             self.conn=self.db.connect_fruta_with_eepp(); self.meta=ContextService(MetadataRepository(self.conn)); self.variety_service=VarietyGroupService(VarietyRepository(self.conn)); self.deliveries=DeliveriesService(DeliveriesRepository(self.conn)); self.remesas=RemesasService(RemesasRepository(self.conn))
+            self.persistence_enabled=False
+            if self.config.persistence_enabled:
+                aliases_path=Path(__file__).resolve().parents[1]/"config"/"crop_aliases.json"
+                aliases=json.loads(aliases_path.read_text(encoding="utf-8")) if aliases_path.exists() else {}
+                self.persistence_service=LiquidationPersistenceService(PersistenceDatabase(self.config.persistence_database_path),self.conn,crop_aliases=aliases)
+                self.persistence_service.import_legacy_split_rules(); self.persistence_enabled=True
             self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.hectare_master_service=HectareFeeMasterService(self.master_repository, HectareFeeCropRepository(self.conn)); self.calculations=CalculationService(self.conn, self.config); self._refresh_database_status(); self._refresh_action_states()
         except Exception as exc:
             logger.exception("No se ha podido abrir la copia local de las bases SQLite")
             messagebox.showerror("Error", "No se han podido preparar las bases de datos.\n\nDetalle:\nNo existe una copia local válida para abrir en modo lectura.\n\nRevise la conexión de red o utilice la última copia local disponible.")
+
+    def _save_liquidations(self):
+        try:
+            if not self.calculation_valid or not self.current_calculation or not self.current_calculation.result:
+                raise ValueError("Debe calcular y revisar una liquidación válida")
+            preview=self.persistence_service.prepare_preview(self.current_calculation.result)
+            win=tk.Toplevel(self); win.title("Vista previa de guardado de liquidaciones"); win.transient(self.winfo_toplevel()); win.grab_set(); win.geometry("1150x650")
+            nb=ttk.Notebook(win); nb.pack(fill="both",expand=True,padx=8,pady=8)
+            summary=ttk.Frame(nb); splits=ttk.Frame(nb); final=ttk.Frame(nb); warnings=ttk.Frame(nb)
+            for tab,title in ((summary,"Resumen"),(splits,"Repartos"),(final,"Líneas finales"),(warnings,"Advertencias")): nb.add(tab,text=title)
+            original=self.current_calculation.result
+            summary_text=(f"Remesa: {preview.header.remesa_name}\nCampaña: {preview.header.campana} | Empresa: {preview.header.empresa} | Cultivo: {preview.header.cultivo}\nFecha de pago: {preview.header.fecha_pago}\n"
+                          f"Líneas originales/finales: {preview.original_line_count}/{len(preview.lines)}\nSocios originales/destinatarios: {len(set(x.member_id for x in original.member_results))}/{len(set(x.recipient_member_id for x in preview.lines))}\n"
+                          f"Neto original/final: {original.totals.net_kg}/{sum((x.net_kg for x in preview.lines))}\nBase original/final: {original.totals.taxable_base}/{sum((x.taxable_base for x in preview.lines))}\nTotal fiscal original/final: {original.totals.total_amount}/{sum((x.total_amount for x in preview.lines))}\n\nEl total fiscal final puede variar si los destinatarios tienen regímenes distintos.")
+            ttk.Label(summary,text=summary_text,justify="left").pack(anchor="nw",padx=12,pady=12)
+            cols=("origen","destino","variedad","factor","neto","base","iva","ret","total")
+            tree=ttk.Treeview(final,columns=cols,show="headings"); [tree.heading(c,text=c.title()) for c in cols]; tree.pack(fill="both",expand=True)
+            for x in preview.lines: tree.insert("","end",values=(x.source_member_id,x.recipient_member_id,x.variety,x.split_factor,x.net_kg,x.taxable_base,x.vat_rate,x.withholding_rate,x.total_amount))
+            ttk.Label(splits,text="\n".join(f"{x.source_member_id} → {x.recipient_member_id}: {x.split_factor} ({x.split_type or 'SIN DIVISIÓN'})" for x in preview.lines),justify="left").pack(anchor="nw",padx=12,pady=12)
+            ttk.Label(warnings,text="\n".join(preview.warnings) or "Sin advertencias",justify="left").pack(anchor="nw",padx=12,pady=12)
+            result={"confirm":False}
+            def confirm(): result["confirm"]=True; win.destroy()
+            buttons=ttk.Frame(win); buttons.pack(fill="x",padx=8,pady=8); ttk.Button(buttons,text="Confirmar y guardar",command=confirm).pack(side="right"); ttk.Button(buttons,text="Cancelar",command=win.destroy).pack(side="right",padx=6)
+            ttk.Label(buttons,text="No se escribirá en Access. Los PDF definitivos se generan después del commit.").pack(side="left")
+            win.wait_window()
+            if not result["confirm"]: return
+            batch=self.persistence_service.save(preview)
+            paths=export_definitive_pdfs(preview,batch,self._output_dir())
+            self.persistence_service.record_pdf_generated(batch.batch_id,paths)
+            messagebox.showinfo("Liquidaciones guardadas",f"Batch {batch.batch_id}\n{len(batch.liquidations)} líneas guardadas.\n{len(paths)} PDF definitivos generados.")
+            self.status.set(f"Persistencia completada: batch {batch.batch_id}")
+        except Exception as exc:
+            logger.exception("No se pudieron guardar las liquidaciones"); messagebox.showerror("Guardar liquidaciones",str(exc))
+
+    def _void_liquidation(self):
+        try:
+            remesa_id=int(self.current_calculation.result.header.remesa_id)
+            with self.persistence_service.database.connect() as conn:
+                rows=conn.execute("SELECT batch_id,created_at FROM liquidation_batches WHERE remesa_id=? AND status='ACTIVE' ORDER BY created_at DESC",(remesa_id,)).fetchall()
+            if not rows: messagebox.showinfo("Anular liquidación","No hay batches activos para esta remesa."); return
+            batch_id=str(rows[0]["batch_id"]); reason=simpledialog.askstring("Anular liquidación",f"Motivo obligatorio para anular el batch {batch_id}:",parent=self)
+            if not reason: return
+            if messagebox.askyesno("Confirmar anulación",f"¿Anular el batch {batch_id}?",parent=self): self.persistence_service.void_batch(batch_id,reason); messagebox.showinfo("Anular liquidación","Liquidación anulada.")
+        except Exception as exc: logger.exception("No se pudo anular"); messagebox.showerror("Anular liquidación",str(exc))
 
     def synchronize_local_databases(self, manual: bool = False) -> bool:
         if manual and self.calculation_valid and not messagebox.askyesno("Actualizar bases locales", "Existe un cálculo activo. La actualización limpiará los resultados actuales. ¿Continuar?"):
