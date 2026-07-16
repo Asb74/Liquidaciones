@@ -39,8 +39,12 @@ from exporters.file_lock import FileLockedError
 from exporters.hectare_fee_auditor import export_hectare_fee_audit
 from presentation.premium_liquidation_view_model import from_member_liquidation
 from data.persistence.database import PersistenceDatabase
+from data.persistence.master_repository import LiquidationMasterRepository
 from services.liquidation_persistence_service import LiquidationPersistenceService
 from exporters.definitive_pdf_exporter import export_definitive_pdfs
+from ui.batch_persistence_preview_dialog import BatchPersistencePreviewDialog
+from ui.liquidation_prefix_master_dialog import LiquidationPrefixMasterDialog
+from ui.liquidation_split_master_dialog import LiquidationSplitMasterDialog
 import json
 
 logger = logging.getLogger(__name__)
@@ -51,7 +55,7 @@ class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
         super().__init__(master, padding=8)
         self.config=load_config(config_path); setup_logging(self.config)
-        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.batch_cancel_requested=False; self.batch_running=False; self.variety_service=None; self.selected_source_items=[]; self.variety_resolutions=[]; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.sync_results=[]; self.current_group_benchmarks={}; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
+        self.db=ReadOnlyDatabase(self.config); self.conn=None; self.batch_cancel_requested=False; self.batch_running=False; self.variety_service=None; self.selected_source_items=[]; self.variety_resolutions=[]; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.current_calculation_persisted=False; self.current_batch_result=None; self.current_batch_preview=None; self.current_batch_persisted=False; self.current_batch_save_result=None; self.sync_results=[]; self.current_group_benchmarks={}; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
         self._build(); self._connect()
 
     def _build(self):
@@ -85,13 +89,14 @@ class RemesasFrame(ttk.Frame):
 
     def _build_buttons(self):
         self.buttons=ttk.Frame(self)
-        actions=[("Nueva remesa",self._clear),("Cargar remesa existente",self._load_remesa),("Buscar entregas",self._search),("Exportar entregas a CSV",self._export_csv),("Exportar entregas a Excel",self._export_excel),("Vista previa",self._preview),("Cerrar",self.winfo_toplevel().destroy)]
+        actions=[("Nueva remesa",self._new_remittance),("Cargar remesa existente",self._load_remesa),("Buscar entregas",self._search),("Exportar entregas a CSV",self._export_csv),("Exportar entregas a Excel",self._export_excel),("Vista previa",self._preview),("Cerrar",self.close_application)]
         self.action_buttons={}
         for i,(text,cmd) in enumerate(actions):
             b=ttk.Button(self.buttons,text=text,command=cmd); b.grid(row=0,column=i,padx=2); self.action_buttons[text]=b
-        for i,(text,cmd) in enumerate([("Calcular liquidación",self._calculate),("Exportar resumen de liquidación",self._export_liquidation_excel),("Generar PDF para socio",self._export_premium_pdf), ("Informe interno",self._export_liquidation_pdf),("Guardar liquidaciones",self._save_liquidations),("Anular liquidación",self._void_liquidation)]):
+        for i,(text,cmd) in enumerate([("Calcular liquidación",self._calculate),("Exportar resumen de liquidación",self._export_liquidation_excel),("Generar PDF para socio",self._export_premium_pdf), ("Informe interno",self._export_liquidation_pdf),("Revisar lote",self._review_batch),("Guardar liquidaciones",self._save_liquidations),("Anular liquidación",self._void_liquidation)]):
             b=ttk.Button(self.buttons,text=text,command=cmd,state="disabled"); b.grid(row=1,column=i,padx=2,pady=2); self.action_buttons[text]=b
-        self.persistence_status_label=ttk.Label(self.buttons,text="Persistencia local SQLite habilitada." if self.config.persistence_enabled else "Persistencia local no disponible."); self.persistence_status_label.grid(row=1,column=6,columnspan=3,sticky="w")
+        self.persistence_status_text=tk.StringVar(value="Sin cálculo pendiente.")
+        self.persistence_status_label=ttk.Label(self.buttons,textvariable=self.persistence_status_text); self.persistence_status_label.grid(row=2,column=0,columnspan=9,sticky="w")
 
     def _build_hectare_config_info(self):
         self.hectare_info=ttk.LabelFrame(self,text="Configuración cuota Ha")
@@ -105,6 +110,28 @@ class RemesasFrame(ttk.Frame):
 
     def open_hectare_fee_master(self):
         self._open_hectare_fee_master()
+
+    def open_liquidation_prefix_master(self):
+        try:
+            LiquidationPrefixMasterDialog(self.winfo_toplevel(),self.liquidation_master_repository,on_saved=self._persistence_master_saved)
+            logger.info("[MasterDialog]\ntype=PREFIX\nopened=true")
+        except Exception:
+            logger.exception("No se ha podido abrir el maestro de prefijos")
+            messagebox.showerror("Maestro de prefijos","No se ha podido abrir el maestro de prefijos de liquidación.")
+
+    def open_liquidation_split_master(self):
+        try:
+            LiquidationSplitMasterDialog(self.winfo_toplevel(),self.liquidation_master_repository,on_saved=self._persistence_master_saved)
+            logger.info("[MasterDialog]\ntype=SPLIT\nopened=true")
+        except Exception:
+            logger.exception("No se ha podido abrir el maestro de divisiones")
+            messagebox.showerror("Maestro de divisiones","No se ha podido abrir el maestro de división de liquidaciones.")
+
+    def _persistence_master_saved(self):
+        if self.current_batch_result is not None:
+            self.current_batch_preview=None
+            self.persistence_status_text.set("Las reglas de persistencia han cambiado; la vista previa se regenerará al guardar.")
+        self._refresh_action_states()
 
     def show_about(self):
         self._show_about()
@@ -132,6 +159,7 @@ class RemesasFrame(ttk.Frame):
                 aliases_path=Path(__file__).resolve().parents[1]/"config"/"crop_aliases.json"
                 aliases=json.loads(aliases_path.read_text(encoding="utf-8")) if aliases_path.exists() else {}
                 self.persistence_service=LiquidationPersistenceService(PersistenceDatabase(self.config.persistence_database_path),self.conn,crop_aliases=aliases)
+                self.liquidation_master_repository=LiquidationMasterRepository(self.persistence_service.database)
                 self.persistence_service.import_legacy_split_rules(); self.persistence_enabled=True
             self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.hectare_master_service=HectareFeeMasterService(self.master_repository, HectareFeeCropRepository(self.conn)); self.calculations=CalculationService(self.conn, self.config); self._refresh_database_status(); self._refresh_action_states()
         except Exception as exc:
@@ -139,6 +167,11 @@ class RemesasFrame(ttk.Frame):
             messagebox.showerror("Error", "No se han podido preparar las bases de datos.\n\nDetalle:\nNo existe una copia local válida para abrir en modo lectura.\n\nRevise la conexión de red o utilice la última copia local disponible.")
 
     def _save_liquidations(self):
+        if self.current_batch_result is not None:
+            return self._save_batch_liquidations()
+        return self._save_individual_liquidation()
+
+    def _save_individual_liquidation(self):
         try:
             if not self.calculation_valid or not self.current_calculation or not self.current_calculation.result:
                 raise ValueError("Debe calcular y revisar una liquidación válida")
@@ -166,13 +199,51 @@ class RemesasFrame(ttk.Frame):
             batch=self.persistence_service.save(preview)
             paths=export_definitive_pdfs(preview,batch,self._output_dir())
             self.persistence_service.record_pdf_generated(batch.batch_id,paths)
+            self.current_calculation_persisted=True
             messagebox.showinfo("Liquidaciones guardadas",f"Batch {batch.batch_id}\n{len(batch.liquidations)} líneas guardadas.\n{len(paths)} PDF definitivos generados.")
             self.status.set(f"Persistencia completada: batch {batch.batch_id}")
+            self._refresh_action_states()
         except Exception as exc:
             logger.exception("No se pudieron guardar las liquidaciones"); messagebox.showerror("Guardar liquidaciones",str(exc))
 
+    def _ensure_batch_preview(self):
+        if self.current_batch_result is not None and self.current_batch_preview is None:
+            self.current_batch_preview=self.persistence_service.prepare_batch_preview(self.current_batch_result)
+            messagebox.showinfo("Vista previa actualizada","Las reglas de división o prefijos han cambiado. Se ha actualizado la vista previa de guardado.")
+        return self.current_batch_preview
+
+    def _review_batch(self):
+        preview=self._ensure_batch_preview()
+        if preview: BatchPersistencePreviewDialog(self.winfo_toplevel(),preview).show()
+
+    def _save_batch_liquidations(self):
+        try:
+            if self.current_batch_persisted: raise ValueError("El lote ya fue guardado correctamente")
+            preview=self._ensure_batch_preview()
+            if not preview or not preview.valid: raise ValueError("El lote no contiene remesas guardables")
+            valid=sum(x.valid for x in preview.remittances); total=valid+len(preview.excluded_remittances)
+            dialog=BatchPersistencePreviewDialog(self.winfo_toplevel(),preview,allow_confirm=True)
+            if not dialog.show(): return False
+            if not messagebox.askyesno("Confirmar guardado",f"Se van a guardar las liquidaciones definitivas de {valid} remesas.\n\nUna vez guardadas se generarán los PDFs definitivos por destinatario.\n\nEl Excel resumen seguirá mostrando las liquidaciones originales sin división.\n\nSe guardarán {valid} de {total} remesas.\n\n¿Desea continuar?"): return False
+            result=self.persistence_service.save_batch(preview,export_definitive_pdfs); self.current_batch_save_result=result; self.current_batch_persisted=result.failed==0
+            status="SUCCESS" if not result.failed else "PARTIAL"
+            logger.info("[BatchPersistence]\nrequested=%s\nsaved=%s\nfailed=%s\nstatus=%s",result.requested,result.saved,result.failed,status)
+            messagebox.showinfo("Guardado del lote",f"Solicitadas: {result.requested}\nGuardadas: {result.saved}\nFallidas: {result.failed}"+("\n\n"+"\n".join(result.warnings) if result.warnings else ""))
+            self._refresh_action_states(); return self.current_batch_persisted
+        except Exception as exc:
+            logger.exception("No se pudo guardar el lote"); messagebox.showerror("Guardar liquidaciones",str(exc)); return False
+
     def _void_liquidation(self):
         try:
+            if self.current_batch_save_result and self.current_batch_save_result.saved:
+                choices=[x for x in self.current_batch_save_result.remittance_results if x.saved]
+                listing="\n".join(f"{i+1}. Remesa {x.remittance.remittance_id} - batch {x.batch.batch_id}" for i,x in enumerate(choices))
+                selected=simpledialog.askinteger("Anular liquidación",f"Seleccione el batch que desea anular:\n\n{listing}",minvalue=1,maxvalue=len(choices),parent=self)
+                if selected is None:return
+                batch_id=choices[selected-1].batch.batch_id
+                reason=simpledialog.askstring("Anular liquidación",f"Motivo obligatorio para anular el batch {batch_id}:",parent=self)
+                if reason and messagebox.askyesno("Confirmar anulación",f"¿Anular el batch {batch_id}?",parent=self): self.persistence_service.void_batch(batch_id,reason); messagebox.showinfo("Anular liquidación","Liquidación anulada.")
+                return
             remesa_id=int(self.current_calculation.result.header.remesa_id)
             with self.persistence_service.database.connect() as conn:
                 rows=conn.execute("SELECT batch_id,created_at FROM liquidation_batches WHERE remesa_id=? AND status='ACTIVE' ORDER BY created_at DESC",(remesa_id,)).fetchall()
@@ -239,6 +310,8 @@ class RemesasFrame(ttk.Frame):
         self.db_status_text.set("   ".join(parts))
 
     def _context_changed(self):
+        if self._has_pending_batch() and not self._confirm_discard_pending_batch():
+            return
         self.current_remesa=None; self.remesa_panel.load({}); self._clear_selected_varieties(invalidate=False); self.deliveries_panel.clear(); self.summary_panel.clear(); self.current_calculation=None; self.calculation_valid=False; self.current_deliveries=[]; self.current_group_benchmarks={}
         ctx=self.context_panel.context()
         try:
@@ -316,6 +389,7 @@ class RemesasFrame(ttk.Frame):
             self._refresh_action_states()
         except Exception as exc: messagebox.showerror("Error",str(exc))
     def _load_remesa(self):
+        if self._has_pending_batch() and not self._confirm_discard_pending_batch(): return
         ctx=self.context_panel.context()
         if not (ctx.campana and ctx.empresa and ctx.cultivo):
             messagebox.showwarning("Contexto obligatorio", "Seleccione campaña, empresa y cultivo antes de cargar una remesa."); return
@@ -434,10 +508,14 @@ class RemesasFrame(ttk.Frame):
         try:
             service=BatchRemittanceService(single_processor=self.process_single_remittance, exporter=export_batch_liquidation_summary, should_cancel=lambda: self.batch_cancel_requested)
             result=service.process(remittances, progress_callback=update_progress)
-            self._clear()
-            msg=(f"Proceso terminado\n\nRemesas seleccionadas: {result.remittances_requested}\nCorrectas: {result.remittances_completed}\nCon errores: {result.remittances_failed}\n\nExcel acumulado:\n{result.aggregate_excel_path or 'No generado'}")
+            self.current_batch_result=result
+            self.current_batch_preview=self.persistence_service.prepare_batch_preview(result) if getattr(self,"persistence_enabled",False) else None
+            self.current_batch_persisted=False; self.current_batch_save_result=None
+            logger.info("[BatchPendingPersistence]\nexecution_id=%s\nremittances=%s\nvalid_remittances=%s\npending=true",getattr(self.current_batch_preview,"batch_execution_id",result.started_at.isoformat()),result.remittances_requested,result.remittances_completed)
+            msg=(f"Las remesas se han calculado correctamente y quedan pendientes de guardar.\n\nRemesas seleccionadas: {result.remittances_requested}\nCorrectas: {result.remittances_completed}\nCon errores: {result.remittances_failed}\n\nExcel acumulado:\n{result.aggregate_excel_path or 'No generado'}")
             messagebox.showinfo("Proceso terminado", msg)
             self.status.set(f"Lote terminado: {result.remittances_completed} correctas, {result.remittances_failed} con errores. Excel: {result.aggregate_excel_path or 'no generado'}")
+            self._refresh_action_states()
         except PermissionError as exc:
             messagebox.showwarning("Archivo Excel abierto", str(exc))
         except Exception as exc:
@@ -492,6 +570,27 @@ class RemesasFrame(ttk.Frame):
             messagebox.showwarning("Variedades", f"No se pudo resolver la variedad o grupo “{', '.join(unresolved)}”.")
     def _clear(self):
         self.current_remesa=None; self.remesa_panel.load({}); self.selected.delete(0,"end"); self.selected_source_items=[]; self.variety_resolutions=[]; self._refresh_resolved_selection_label(); self.deliveries_panel.clear(); self.summary_panel.clear(); self.summary=None; self.current_calculation=None; self.calculation_valid=False; self.current_deliveries=[]; self.status.set("Filtros/resultados limpiados"); self._refresh_action_states()
+
+    def _new_remittance(self):
+        if self._has_pending_batch() and not self._confirm_discard_pending_batch(): return
+        self._clear()
+
+    def _has_pending_batch(self):
+        return self.current_batch_result is not None and not self.current_batch_persisted
+
+    def _confirm_discard_pending_batch(self):
+        answer=messagebox.askyesnocancel("Lote pendiente","Existe un lote calculado pendiente de guardar.\n\nSi continúa se perderá la selección calculada, aunque los archivos exportados permanecerán en disco.\n\nSí: Guardar ahora\nNo: Descartar\nCancelar: conservar el lote")
+        if answer is None:return False
+        if answer:return bool(self._save_batch_liquidations())
+        self._discard_pending_batch(); return True
+
+    def _discard_pending_batch(self):
+        self.current_batch_result=None; self.current_batch_preview=None; self.current_batch_persisted=False; self.current_batch_save_result=None
+        self.status.set("Lote pendiente descartado; los archivos exportados se conservan."); self._refresh_action_states()
+
+    def close_application(self):
+        if self._has_pending_batch() and not self._confirm_discard_pending_batch(): return
+        self.winfo_toplevel().destroy()
     def _context_ready(self) -> bool:
         try:
             self._filters()
@@ -508,16 +607,27 @@ class RemesasFrame(ttk.Frame):
         persistence_enabled = bool(getattr(self, "persistence_enabled", False))
         can_search = has_valid_context
         can_calculate = has_valid_context and has_varieties and has_deliveries
-        can_persist = persistence_enabled and calculation_ready
+        can_persist_individual = persistence_enabled and calculation_ready and not self.current_calculation_persisted and self.current_batch_result is None
+        can_persist_batch = persistence_enabled and self.current_batch_result is not None and not self.current_batch_persisted and self.current_batch_preview is not None and self.current_batch_preview.valid
+        can_persist = can_persist_individual or can_persist_batch
         if hasattr(self, "action_buttons"):
             self.action_buttons["Buscar entregas"].configure(state="normal" if can_search else "disabled")
             self.action_buttons["Calcular liquidación"].configure(state="normal" if can_calculate else "disabled")
             self.action_buttons["Vista previa"].configure(state="normal" if calculation_ready else "disabled")
+            self.action_buttons["Revisar lote"].configure(state="normal" if self.current_batch_result is not None else "disabled")
             self.action_buttons["Guardar liquidaciones"].configure(state="normal" if can_persist else "disabled")
-            self.action_buttons["Anular liquidación"].configure(state="normal" if can_persist else "disabled")
+            can_void=bool(self.current_calculation_persisted or (self.current_batch_save_result and self.current_batch_save_result.saved))
+            self.action_buttons["Anular liquidación"].configure(state="normal" if can_void else "disabled")
             if "Exportar resumen de liquidación" in self.action_buttons: self.action_buttons["Exportar resumen de liquidación"].configure(state="normal" if calculation_ready else "disabled")
             if "Generar PDF para socio" in self.action_buttons: self.action_buttons["Generar PDF para socio"].configure(state="normal" if premium_members_ready else "disabled")
             if "Informe interno" in self.action_buttons: self.action_buttons["Informe interno"].configure(state="normal" if calculation_ready else "disabled")
+        if hasattr(self,"persistence_status_text"):
+            if self.current_batch_save_result and self.current_batch_save_result.failed: text=f"Lote guardado parcialmente: {self.current_batch_save_result.saved} de {self.current_batch_save_result.requested}."
+            elif self.current_batch_persisted: text="Lote guardado correctamente."
+            elif self.current_batch_preview: text=f"Lote pendiente de guardar: {sum(x.valid for x in self.current_batch_preview.remittances)} remesas."
+            elif calculation_ready and not self.current_calculation_persisted: text="Liquidación individual pendiente de guardar."
+            else: text="Sin cálculo pendiente."
+            self.persistence_status_text.set(text)
 
     def _deliveries(self):
         return list(self.current_deliveries)
@@ -539,6 +649,7 @@ class RemesasFrame(ttk.Frame):
                 if audit_paths:
                     logger.info("Auditoría Cuota Ha generada: log=%s excel=%s", audit_paths[0], audit_paths[1])
             self.calculation_valid=True
+            self.current_calculation_persisted=False
             self.summary_panel.set_calculation(self.current_calculation)
             self.status.set(f"Liquidación calculada: {self.current_calculation.member_count} socios, {format_decimal_es(self.current_calculation.net_kg, 3)} kg, importe comercial {format_currency_es(self.current_calculation.commercial_amount)}")
             self._refresh_action_states()

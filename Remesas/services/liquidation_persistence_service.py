@@ -9,7 +9,9 @@ from decimal import Decimal
 
 from data.legacy_persistence_repository import LegacyPersistenceRepository
 from data.persistence.database import PersistenceDatabase
-from domain.persistence_models import PersistedLiquidation, PersistenceBatch, PersistencePreview
+from domain.persistence_models import (BatchPersistenceSaveResult, PendingBatchPersistence,
+    PendingRemittancePersistence, PersistedLiquidation, PersistenceBatch,
+    PersistencePreview, RemittancePersistenceSaveResult)
 from services.liquidation_split_service import LiquidationSplitService
 
 
@@ -38,6 +40,44 @@ class LiquidationPersistenceService:
         payload={"header":[remesa_id,h.remesa_name,h.campana,h.empresa,h.cultivo,h.fecha_pago,h.tipo_liquidacion],"lines":[[x.source_member_id,x.recipient_member_id,x.variety,*(_d(getattr(x,n)) for n in ("split_factor","net_kg","gross_amount","taxable_base","total_amount"))] for x in lines]}
         fingerprint=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         return PersistencePreview(h,tuple(lines),fingerprint,len(result.member_results),tuple(w for x in lines for w in x.warnings))
+
+    def prepare_batch_preview(self, result) -> PendingBatchPersistence:
+        """Prepara divisiones para resultados ya calculados, sin recalcular ni guardar."""
+        pending=[]; warnings=[]
+        for item in result.successful_results:
+            try:
+                calculation=item.calculation_result
+                original=calculation.result if hasattr(calculation,"result") else calculation
+                preview=self.prepare_preview(original)
+                pending.append(PendingRemittancePersistence(item.remittance,original,preview,preview.valid,preview.warnings,item.output_directory))
+            except Exception as exc:
+                warnings.append(f"Remesa {item.remittance.remittance_id}: {exc}")
+        warnings.extend(f"Remesa {x.remittance.remittance_id} excluida: {x.error_message}" for x in result.failed_results)
+        first=(result.successful_results[0].remittance if result.successful_results else
+               (result.failed_results[0].remittance if result.failed_results else None))
+        return PendingBatchPersistence(
+            f"{result.started_at:%Y%m%d%H%M%S%f}",
+            first.campaign if first else "", first.company if first else "", first.crop if first else "",
+            tuple(pending), sum(x.persistence_preview.original_line_count for x in pending),
+            sum(len(x.persistence_preview.lines) for x in pending), tuple(warnings),
+            any(x.valid for x in pending), tuple(x.remittance for x in result.failed_results))
+
+    def save_batch(self, preview: PendingBatchPersistence, pdf_exporter) -> BatchPersistenceSaveResult:
+        """Guarda cada remesa en su propia transacción y continúa tras un fallo."""
+        results=[]; warnings=[]
+        for item in preview.remittances:
+            if not item.valid:
+                continue
+            try:
+                batch=self.save(item.persistence_preview)
+                paths=tuple(pdf_exporter(item.persistence_preview,batch,item.output_directory))
+                self.record_pdf_generated(batch.batch_id,paths)
+                results.append(RemittancePersistenceSaveResult(item.remittance,True,batch,None,paths))
+            except Exception as exc:
+                warnings.append(f"Remesa {item.remittance.remittance_id}: {exc}")
+                results.append(RemittancePersistenceSaveResult(item.remittance,False,None,str(exc)))
+        saved=sum(x.saved for x in results)
+        return BatchPersistenceSaveResult(len(results),saved,len(results)-saved,tuple(results),tuple(warnings))
 
     def _next_id(self, conn, crop: str, campaign: str, company: str, user: str | None, batch_id: str) -> str:
         crop=crop.strip().upper(); campaign=str(campaign).strip(); company_num=int(str(company).strip()); company_key=str(company_num); company_fmt=f"{company_num:02d}"

@@ -68,6 +68,7 @@ def main() -> None:
         root.destroy(); return
     root.deiconify()
     frame=RemesasFrame(root); frame.pack(fill="both", expand=True)
-    root.config(menu=build_main_menu(root, MainMenuHandlers(close=root.destroy, open_hectare_fee_master=frame.open_hectare_fee_master, open_calibre_master=lambda: CalibreMasterDialog(root), open_production_destination_master=lambda: ProductionDestinationMasterDialog(root), show_about=frame.show_about, refresh_local_databases=lambda: frame.synchronize_local_databases(manual=True), open_data_folder=frame.open_data_folder)))
+    root.protocol("WM_DELETE_WINDOW", frame.close_application)
+    root.config(menu=build_main_menu(root, MainMenuHandlers(close=frame.close_application, open_hectare_fee_master=frame.open_hectare_fee_master, open_calibre_master=lambda: CalibreMasterDialog(root), open_production_destination_master=lambda: ProductionDestinationMasterDialog(root), open_liquidation_prefix_master=frame.open_liquidation_prefix_master, open_liquidation_split_master=frame.open_liquidation_split_master, show_about=frame.show_about, refresh_local_databases=lambda: frame.synchronize_local_databases(manual=True), open_data_folder=frame.open_data_folder)))
     root.mainloop()
 if __name__ == "__main__": main()
