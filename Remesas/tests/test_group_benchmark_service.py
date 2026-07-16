@@ -10,7 +10,7 @@ def header():
 
 
 def member(mid, variety, kg, amount, price=None):
-    return MemberLiquidation(mid, f"Socio {mid}", variety, 1, Decimal(kg), Decimal(kg), Decimal("0"), Decimal("0"), (), Decimal("0"), effective_net_kg=Decimal(kg), total_amount=Decimal(amount), final_average_price=Decimal(price) if price else Decimal(amount)/Decimal(kg))
+    return MemberLiquidation(mid, f"Socio {mid}", variety, 1, Decimal(kg), Decimal(kg), Decimal("0"), Decimal("0"), (), Decimal("0"), effective_net_kg=Decimal(kg), total_amount=Decimal(amount) if amount is not None else None, final_average_price=Decimal(price) if price is not None else (Decimal(amount)/Decimal(kg) if Decimal(kg) != 0 and amount is not None else None))
 
 
 class FakeRepo:
@@ -36,7 +36,7 @@ def test_group_with_several_varieties_aggregates_member_kg_and_weighted_price():
     ))
     b = benchmarks[(1, "NAVEL TEMPRANA", "2026", "1", "CITRICOS", "Normal", "Primera")]
     assert b.varieties == ("FUKUMOTO", "NAVELINA", "NEWHALL")
-    assert b.price_per_kg.average_value == Decimal("0.36875")  # 59000 / 160000
+    assert b.price_per_kg.average_value == Decimal("0.37500")  # media simple de precio medio final por socio válido
     assert b.kilograms_per_hectare.own_value == Decimal("30000.00000")
     assert b.kilograms_per_hectare.average_value == Decimal("20000.00000")  # media de kg/ha por socio válido
     assert b.euros_per_hectare.own_value == Decimal("12000.00000")
@@ -81,3 +81,39 @@ def test_only_zero_metric_unavailable():
     b=svc.build_benchmarks(header(), (member(1,'NAVELINA','0','0', price='0'), member(2,'NAVELINA','0','0', price='0')))[(1,'NAVEL TEMPRANA','2026','1','CITRICOS','Normal','Primera')]
     assert b.kilograms_per_hectare.status == 'unavailable'
     assert b.euros_per_hectare.status == 'unavailable'
+
+
+def test_final_price_excludes_zero_null_negative_and_invalid_values():
+    repo=FakeRepo(); repo.hectares={1:Decimal('1'),2:Decimal('1'),3:Decimal('1'),4:Decimal('1'),5:Decimal('1'),6:Decimal('1')}
+    svc=GroupBenchmarkService(repo, log_path='/tmp/group_benchmark_test.log')
+    benchmarks=svc.build_benchmarks(header(), (
+        member(1,'NAVELINA','100','50'),
+        member(2,'NAVELINA','0','50', price='0'),
+        member(3,'NAVELINA','100','0', price='0'),
+        member(4,'NAVELINA','0','0', price='0'),
+        member(5,'NAVELINA','100',None, price='0'),
+        member(6,'NAVELINA','-100','50', price='0'),
+    ))
+    b=benchmarks[(1,'NAVEL TEMPRANA','2026','1','CITRICOS','Normal','Primera')]
+    assert b.price_per_kg.minimum_value == Decimal('0.50000')
+    assert b.price_per_kg.average_value == Decimal('0.50000')
+    assert b.price_per_kg.maximum_value == Decimal('0.50000')
+    assert b.price_per_kg.valid_member_count == 1
+    assert b.price_per_kg.excluded_member_count == 5
+
+
+def test_final_price_multiple_valid_records_min_average_max():
+    benchmarks = service().build_benchmarks(header(), (member(1,'NAVELINA','100','20'), member(2,'NAVELINA','100','30'), member(4,'NAVELINA','100','40')))
+    b=benchmarks[(1,'NAVEL TEMPRANA','2026','1','CITRICOS','Normal','Primera')]
+    assert b.price_per_kg.minimum_value == Decimal('0.20000')
+    assert b.price_per_kg.average_value == Decimal('0.30000')
+    assert b.price_per_kg.maximum_value == Decimal('0.40000')
+
+
+def test_final_price_without_valid_records_does_not_return_zero_minimum():
+    repo=FakeRepo(); repo.hectares={1:Decimal('1'),2:Decimal('1')}
+    svc=GroupBenchmarkService(repo, log_path='/tmp/group_benchmark_test.log')
+    b=svc.build_benchmarks(header(), (member(1,'NAVELINA','0','0', price='0'), member(2,'NAVELINA','100','0', price='0')))[(1,'NAVEL TEMPRANA','2026','1','CITRICOS','Normal','Primera')]
+    assert b.price_per_kg.status == 'unavailable'
+    assert b.price_per_kg.minimum_value is None
+    assert b.price_per_kg.warning == 'Sin datos comparables suficientes'

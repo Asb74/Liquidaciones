@@ -3,7 +3,7 @@ from pathlib import Path
 
 from domain.calculation_models import GradeBreakdown, LiquidationHeader, MemberLiquidation
 from exporters.premium_pdf_exporter import (
-    build_summary_card, export_premium_member_pdf, fit_card_value_font,
+    build_header_flowable, build_summary_card, export_premium_member_pdf, fit_card_value_font,
 )
 from services.group_benchmark_service import BenchmarkMetric, PremiumGroupBenchmark
 from presentation.premium_liquidation_view_model import (
@@ -133,3 +133,13 @@ def test_pdf_with_no_benchmark_shows_discreet_message_and_single_page(tmp_path: 
     assert path.read_bytes().count(b"/Type /Page\n") == 1
     assert "Comparativa con el grupo varietal no disponible" in text
     assert "DISTRIBUCI" in text
+
+
+def test_header_shows_period_without_payment_date():
+    vm = from_member_liquidation(_header(), _member())
+    header = build_header_flowable(vm, {}, 700)
+    center_cells = header._cellvalues[0][1]
+    period = center_cells[2].text
+    assert period == "Periodo: 10/12/2025 – 05/03/2026"
+    assert "Pago:" not in period
+    assert "·" not in period
