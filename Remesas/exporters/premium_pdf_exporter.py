@@ -178,7 +178,7 @@ def build_summary_card(label: str, value: str, width: float, height: float, *, h
 
 def build_summary_cards_flowable(vm, config, width):
     from reportlab.platypus import Table, TableStyle
-    vals = [("KILOS ENTREGADOS", format_kg(vm.effective_net_kg)), ("KILOS COMERCIALES", format_kg(vm.commercial_net_kg)), ("PRECIO MEDIO FINAL", format_unit_price(vm.final_average_price)), (str(config.get("total_label", "Total a percibir")).upper(), format_money(vm.total_amount))]
+    vals = [("KILOS ENTREGADOS", format_kg(vm.effective_net_kg)), ("KILOS COMERCIALES", format_kg(vm.commercial_kg)), ("PRECIO MEDIO FINAL", format_unit_price(vm.final_average_price)), (str(config.get("total_label", "Total a percibir")).upper(), format_money(vm.total_amount))]
     gap = 3.5 * MM
     card_w = (width - 3 * gap) / 4
     card_h = 19 * MM
@@ -206,7 +206,10 @@ def _rl_table(rows, widths, font=8, header=True, accent_row=None):
 
 
 def build_production_section(vm, width):
-    rows=[["Producción","Kilos","Precio","Importe"],["Comercial",format_kg(vm.commercial_net_kg),format_unit_price(vm.commercial_average_price),format_money(vm.commercial_amount)],["Destrío",format_kg(vm.waste_net_kg),format_unit_price(vm.destruction_price),format_money(vm.destruction_amount)],["Podrido/Hojas",format_kg(vm.rotten_net_kg),format_unit_price(vm.rotten_price),format_money(vm.rotten_amount)],["Total entregado",format_kg(vm.effective_net_kg),format_unit_price(vm.gross_average_price),format_money(vm.gross_amount)]]
+    rows=[["Producción","Kilos","Precio","Importe"],[vm.primary_label,format_kg(vm.primary_kg),format_unit_price(vm.primary_price),format_money(vm.primary_amount)]]
+    if vm.secondary_enabled:
+        rows.append([vm.secondary_label or "—",format_kg(vm.secondary_kg),format_unit_price(vm.secondary_price),format_money(vm.secondary_amount)])
+    rows += [[vm.waste_label,format_kg(vm.waste_kg),format_unit_price(vm.waste_price),format_money(vm.waste_amount)],["Total entregado",format_kg(vm.effective_net_kg),format_unit_price(vm.gross_average_price),format_money(vm.gross_amount)]]
     return _section("RESUMEN DE PRODUCCIÓN", [_rl_table(rows, [width*.34,width*.21,width*.22,width*.23])], width)
 
 def build_economic_section(vm, width):

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "items": [
+    {"crop":"CITRICOS","primary_label":"Exportación","secondary_enabled":true,"secondary_label":"Mercado nacional","secondary_counts_as_commercial":true,"waste_label":"Podrido/Hojas","active":true},
+    {"crop":"MANDARINA","primary_label":"Exportación","secondary_enabled":true,"secondary_label":"Mercado nacional","secondary_counts_as_commercial":true,"waste_label":"Podrido/Hojas","active":true},
+    {"crop":"KAKIS","primary_label":"Comercial","secondary_enabled":false,"secondary_label":"Destrío","secondary_counts_as_commercial":false,"waste_label":"Podrido/Hojas","active":true}
+  ]
+}
