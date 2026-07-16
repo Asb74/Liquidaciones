@@ -15,7 +15,7 @@ from data.hectare_fee_master_repository import HectareFeeCropRepository
 from data.group_benchmark_repository import GroupBenchmarkRepository
 from data.remesas_repository import RemesasRepository
 from domain.models import DeliveryFilter, Period, Remesa
-from domain.varieties import STATUS_AMBIGUOUS, STATUS_EMPTY_GROUP, STATUS_GROUP, STATUS_NOT_FOUND, normalize_variety_text
+from domain.varieties import STATUS_EMPTY_GROUP, STATUS_GROUP, STATUS_NOT_FOUND, STATUS_VARIETY, normalize_variety_text
 from domain.hectare_fee_master import HectareFeeMasterRepository
 from domain.validators import parse_user_date, validate_context, validate_period
 from domain.utils import format_currency_es, format_decimal_es, format_display_date, format_integer_es, format_percentage_es, format_price_es, parse_yes_no, safe_path_part
@@ -225,12 +225,12 @@ class RemesasFrame(ttk.Frame):
         for i in reversed(self.selected.curselection()): self.selected.delete(i)
         self.selected_source_items=list(self.selected.get(0,"end")); self.variety_resolutions=[]; self._refresh_resolved_selection_label(); self._invalidate_calculation()
 
-    def _add_source_variety(self, value: str):
+    def _add_source_variety(self, value: str, *, show_warning: bool = True):
         ctx=self.context_panel.context(); res=self.variety_service.resolve_selection(ctx.cultivo, value) if self.variety_service else None
-        if res and res.status == STATUS_AMBIGUOUS:
-            messagebox.showerror("Variedades", res.warnings[0]); return
         if res and res.status in {STATUS_NOT_FOUND, STATUS_EMPTY_GROUP}:
-            messagebox.showwarning("Variedades", res.warnings[0] if res.warnings else f"No se pudo resolver {value}"); return
+            if show_warning:
+                messagebox.showwarning("Variedades", res.warnings[0] if res.warnings else f"No se pudo resolver la variedad o grupo “{value}”.")
+            return
         values = res.varieties if res else (value,)
         if value not in self.selected_source_items: self.selected_source_items.append(value)
         if res: self.variety_resolutions.append(res)
@@ -243,8 +243,12 @@ class RemesasFrame(ttk.Frame):
     def _refresh_resolved_selection_label(self):
         lines=[]
         for res in getattr(self, "variety_resolutions", []):
-            if res.varieties: lines.append(f"{res.source_value} → {', '.join(res.varieties)}")
-            elif res.warnings: lines.append(f"{res.source_value} → {res.status}: {'; '.join(res.warnings)}")
+            if res.status == STATUS_VARIETY and res.varieties:
+                lines.append(f"variedad concreta → {res.varieties[0]}")
+            elif res.status == STATUS_GROUP and res.varieties:
+                lines.append(f"{res.source_value} → {', '.join(res.varieties)}")
+            elif res.warnings:
+                lines.append(f"{res.source_value} → {res.status}: {'; '.join(res.warnings)}")
         self.resolved_selection_text.set("Selección resuelta: " + ("\n".join(lines) if lines else ""))
     def _filters(self):
         ctx=self.context_panel.context(); validate_context(ctx); d=self.remesa_panel.data(); period=Period(parse_user_date(d["desde"]),parse_user_date(d["hasta"])); validate_period(period)
@@ -427,11 +431,11 @@ class RemesasFrame(ttk.Frame):
         values=[v.strip() for v in target.split(",") if v.strip()]
         unresolved=[]
         for value in values:
-            before=len(self.selected.get(0,"end")); self._add_source_variety(value)
+            before=len(self.selected.get(0,"end")); self._add_source_variety(value, show_warning=False)
             if len(self.selected.get(0,"end")) == before:
                 unresolved.append(value)
         if unresolved:
-            messagebox.showwarning("Variedades", f"No se pudo reconstruir exactamente la selección de variedades para '{', '.join(unresolved)}'. Revise la selección antes de calcular.")
+            messagebox.showwarning("Variedades", f"No se pudo resolver la variedad o grupo “{', '.join(unresolved)}”.")
     def _clear(self):
         self.current_remesa=None; self.remesa_panel.load({}); self.selected.delete(0,"end"); self.selected_source_items=[]; self.variety_resolutions=[]; self._refresh_resolved_selection_label(); self.deliveries_panel.clear(); self.summary_panel.clear(); self.summary=None; self.current_calculation=None; self.calculation_valid=False; self.current_deliveries=[]; self.status.set("Filtros/resultados limpiados"); self._refresh_action_states()
     def _context_ready(self) -> bool:
