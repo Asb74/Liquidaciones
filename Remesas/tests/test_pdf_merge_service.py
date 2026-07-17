@@ -9,7 +9,7 @@ from services.pdf_merge_service import (MergeablePdfDocument, PdfMergeCancelled,
 
 
 def document(path, *, identifier=1, member=1):
-    return MergeablePdfDocument(identifier,"PDF_MEMBER","batch",1,"Remesa","2026","DIRECTO",member,"Socio",("VE1",),"GENERATED","ACTIVE",Path(path),datetime.now())
+    return MergeablePdfDocument(identifier,"PDF_MEMBER","batch",1,"Remesa","2026","1","DIRECTO",member,"Socio",("VE1",),"GENERATED","ACTIVE",Path(path),datetime.now())
 
 
 def pdf(path, widths):

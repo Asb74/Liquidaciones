@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -552,7 +553,7 @@ class RemesasFrame(ttk.Frame):
             self.current_batch_preview=self.persistence_service.prepare_batch_preview(result) if getattr(self,"persistence_enabled",False) else None
             self.current_batch_persisted=False; self.current_batch_save_result=None
             logger.info("[BatchPendingPersistence]\nexecution_id=%s\nremittances=%s\nvalid_remittances=%s\npending=true",getattr(self.current_batch_preview,"batch_execution_id",result.started_at.isoformat()),result.remittances_requested,result.remittances_completed)
-            msg=(f"Las remesas se han calculado correctamente y quedan pendientes de guardar.\n\nRemesas seleccionadas: {result.remittances_requested}\nCorrectas: {result.remittances_completed}\nCon errores: {result.remittances_failed}\n\nExcel acumulado:\n{result.aggregate_excel_path or 'No generado'}")
+            msg=(f"Las remesas se han calculado y quedan pendientes de guardar.\n\nRemesas procesadas: {result.remittances_requested}\nRemesas calculadas correctamente: {result.remittances_completed}\nRemesas con error de cálculo: {result.remittances_failed}\nBorradores generados: {result.drafts_generated}\nBorradores con error: {result.draft_errors}\n\nExcel acumulado:\n{result.aggregate_excel_path or 'No generado'}")
             messagebox.showinfo("Proceso terminado", msg)
             self.status.set(f"Lote terminado: {result.remittances_completed} correctas, {result.remittances_failed} con errores. Excel: {result.aggregate_excel_path or 'no generado'}")
             self._refresh_action_states()
@@ -583,7 +584,7 @@ class RemesasFrame(ttk.Frame):
         if calculation and calculation.result:
             self.current_group_benchmarks=GroupBenchmarkService(GroupBenchmarkRepository(self.conn)).build_benchmarks(calculation.result.header, calculation.result.member_results)
             object.__setattr__(calculation.result, "variety_audit", tuple(calc_remesa.values.get("VARIEDAD_AUDIT", ())))
-        generated=[]
+        generated=[]; self._batch_draft_errors=[]
         if generate_individual_files and calculation and calculation.result:
             emit("EXPORTING_FILES", "Generando archivos individuales")
             try:
@@ -593,9 +594,11 @@ class RemesasFrame(ttk.Frame):
             generated.extend(export_hectare_fee_audit(calculation.result, self._output_dir()) or ())
             emit("GENERATING_PDFS", "Generando PDFs")
             members=self._premium_members()
+            draft_paths=()
             if members:
-                generated.extend(self._generate_premium_pdfs(members))
-        return SingleRemittanceBatchResult(remittance, calculation, calculation.member_count, calculation.delivery_count, self._output_dir(), tuple(generated))
+                logger.info("[BatchDraftGenerationStarted] remittance_id=%s members=%s",remittance.remittance_id,len(members))
+                draft_paths=self._export_premium_drafts(members,source="BATCH_DRAFT_EXPORT"); generated.extend(draft_paths)
+        return SingleRemittanceBatchResult(remittance, calculation, calculation.member_count, calculation.delivery_count, self._output_dir(), tuple(generated),len(draft_paths) if generate_individual_files and calculation and calculation.result else 0,tuple(self._batch_draft_errors))
 
     def _restore_remesa_varieties(self, rem: Remesa) -> None:
         target=str(rem.values.get("VARIEDAD") or "").strip()
@@ -864,7 +867,7 @@ class RemesasFrame(ttk.Frame):
     def _premium_member_path(self, member) -> Path:
         result = self.current_calculation.result
         vm = from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member))
-        return self._output_dir() / "socios" / premium_member_filename(vm)
+        return self._output_dir() / "borradores" / premium_member_filename(vm)
 
     def _write_premium_trace(self, *, mode: str, available, selected=None, paths=(), errors=0, error_text="") -> None:
         log_dir = Path.cwd() / "logs"
@@ -907,25 +910,32 @@ class RemesasFrame(ttk.Frame):
         self.preview_service.open_preview(path)
         return path
 
-    def _generate_premium_documents(self, members) -> tuple[Path, ...]:
+    def _export_premium_draft(self, member, *, source="MANUAL_DRAFT_EXPORT") -> Path:
         result = self.current_calculation.result
-        paths=tuple(
-            export_premium_member_pdf(
-                from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member)),
-                self._premium_member_path(member), is_draft=True,
-            )
-            for member in members
+        path=export_premium_member_pdf(
+            from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member)),
+            self._premium_member_path(member), is_draft=True,
         )
-        # Los borradores persistentes se registran aparte: generated_documents
-        # conserva su FK obligatoria a batch y las vistas previas TEMP nunca llegan aquí.
         if getattr(self,"persistence_enabled",False):
             from datetime import datetime, timezone
-            for member,path in zip(members,paths):
-                self.liquidation_repository.record_exported_draft(remittance_id=int(result.header.remesa_id),
-                    recipient_member_id=int(member.member_id),member_name=member.member_name,
-                    campaign=str(result.header.campana),crop=str(result.header.cultivo),
-                    remittance_name=str(result.header.remesa_name),file_path=str(path),generated_at=datetime.now(timezone.utc).isoformat())
-        return paths
+            self.liquidation_repository.record_exported_draft(remittance_id=int(result.header.remesa_id),
+                recipient_member_id=int(member.member_id),member_name=member.member_name,
+                campaign=str(result.header.campana),company=str(result.header.empresa),crop=str(result.header.cultivo),
+                remittance_name=str(result.header.remesa_name),file_path=str(path),generated_at=datetime.now(timezone.utc).isoformat(),
+                file_hash=hashlib.sha256(path.read_bytes()).hexdigest(),source=source)
+        return path
+
+    def _export_premium_drafts(self, members, *, source="MANUAL_DRAFT_EXPORT") -> tuple[Path, ...]:
+        paths=[]
+        for member in members:
+            try:
+                path=self._export_premium_draft(member,source=source); paths.append(path)
+                logger.info("[BatchDraftGenerated] remittance_id=%s member_id=%s path=%s",self.current_calculation.result.header.remesa_id,member.member_id,path)
+            except Exception as exc:
+                logger.exception("[BatchDraftGenerationFailed] remittance_id=%s member_id=%s error=%s",self.current_calculation.result.header.remesa_id,member.member_id,exc)
+                if source == "MANUAL_DRAFT_EXPORT": raise
+                self._batch_draft_errors.append(f"ERROR DE BORRADOR: Remesa {self.current_calculation.result.header.remesa_id}: No se pudo generar el PDF borrador del socio {member.member_id}.")
+        return tuple(paths)
 
     def _select_premium_members_dialog(self, members):
         selected = {"action": None, "member": members[0], "all": False}
@@ -964,7 +974,7 @@ class RemesasFrame(ttk.Frame):
             if selection["action"] == "preview":
                 paths = (self._generate_premium_preview(selection["member"]),)
             else:
-                paths = self._generate_premium_documents(selected_members)
+                paths = self._export_premium_drafts(selected_members)
         except FileLockedError as exc:
             logger.warning("PDF Premium bloqueado: %s", exc.path)
             self._write_premium_trace(mode=mode, available=members, selected=selection["member"], errors=1, error_text=str(exc.path))
@@ -979,7 +989,7 @@ class RemesasFrame(ttk.Frame):
         if selection["action"] == "preview":
             messagebox.showinfo("Vista previa PDF", "Se ha abierto una vista previa temporal. Este archivo no se ha guardado como documento definitivo.")
         else:
-            messagebox.showinfo("Liquidación Premium", f"Se han generado {len(paths)} borradores PDF en:\n{self._output_dir()/'socios'}")
+            messagebox.showinfo("Liquidación Premium", f"Se han generado {len(paths)} borradores PDF en:\n{self._output_dir()/'borradores'}")
 
     def _export_liquidation_pdf(self):
         if not (self.current_calculation and self.current_calculation.result and self.calculation_valid): return
