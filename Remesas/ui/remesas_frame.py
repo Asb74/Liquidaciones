@@ -44,6 +44,7 @@ from services.liquidation_persistence_service import LiquidationPersistenceServi
 from data.persistence.liquidation_repository import LiquidationRepository
 from services.document_generation_service import DocumentGenerationOptions, DocumentGenerationService
 from services.liquidation_history_service import LiquidationHistoryService
+from services.pdf_preview_service import PdfPreviewService
 from ui.persistence_result_dialog import PersistenceResultDialog
 from ui.liquidation_history_dialog import LiquidationHistoryDialog
 from ui.batch_persistence_preview_dialog import BatchPersistencePreviewDialog
@@ -59,6 +60,7 @@ class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
         super().__init__(master, padding=8)
         self.config=load_config(config_path); setup_logging(self.config)
+        self.preview_service=PdfPreviewService()
         self.db=ReadOnlyDatabase(self.config); self.conn=None; self.current_persisted_batch_ids=(); self.current_generated_documents=(); self.current_persistence_status=None; self.selected_history_batch_ids=(); self.batch_cancel_requested=False; self.batch_running=False; self.variety_service=None; self.selected_source_items=[]; self.variety_resolutions=[]; self.summary=None; self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.calculation_valid=False; self.current_calculation_persisted=False; self.current_batch_result=None; self.current_batch_preview=None; self.current_batch_persisted=False; self.current_batch_save_result=None; self.sync_results=[]; self.current_group_benchmarks={}; self.master_repository=HectareFeeMasterRepository(); self.hectare_master_service=HectareFeeMasterService(self.master_repository); self.active_master=self.hectare_master_service.load_master()
         self._build(); self._connect()
 
@@ -628,6 +630,7 @@ class RemesasFrame(ttk.Frame):
 
     def close_application(self):
         if self._has_pending_batch() and not self._confirm_discard_pending_batch(): return
+        self.preview_service.cleanup()
         self.winfo_toplevel().destroy()
     def _context_ready(self) -> bool:
         try:
@@ -654,7 +657,13 @@ class RemesasFrame(ttk.Frame):
             self.action_buttons["Vista previa"].configure(state="normal" if calculation_ready else "disabled")
             self.action_buttons["Revisar lote"].configure(state="normal" if self.current_batch_result is not None else "disabled")
             self.action_buttons["Guardar liquidaciones"].configure(state="normal" if can_persist else "disabled")
-            active_batch_ids=tuple(bid for bid in self.current_persisted_batch_ids if self.liquidation_repository.get_batch(bid)["status"]=="ACTIVE") if persistence_enabled else ()
+            active_batch_ids = ()
+            if persistence_enabled:
+                active_batch_ids = tuple(
+                    bid for bid in self.current_persisted_batch_ids
+                    if (self.liquidation_repository.get_batch(bid) is not None
+                        and self.liquidation_repository.get_batch(bid)["status"] == "ACTIVE")
+                )
             can_void=persistence_enabled and bool(active_batch_ids or self.selected_history_batch_ids)
             self.action_buttons["Anular liquidación"].configure(state="normal" if can_void else "disabled")
             if "Exportar resumen de liquidación" in self.action_buttons: self.action_buttons["Exportar resumen de liquidación"].configure(state="normal" if calculation_ready else "disabled")
@@ -886,18 +895,27 @@ class RemesasFrame(ttk.Frame):
         with (log_dir / "premium_pdf.log").open("a", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
 
-    def _generate_premium_pdfs(self, members, *, preview: bool = False) -> tuple[Path, ...]:
+    def _generate_premium_preview(self, member) -> Path:
         result = self.current_calculation.result
-        paths = []
-        for member in members:
-            vm = from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member))
-            paths.append(export_premium_member_pdf(vm, self._premium_member_path(member), is_draft=True))
-        if preview and paths:
-            if hasattr(os, "startfile"):
-                os.startfile(paths[0])
-            else:
-                messagebox.showinfo("Vista previa", f"PDF generado para vista previa:\n{paths[0]}")
-        return tuple(paths)
+        vm = from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member))
+        path = self.preview_service.create_preview_path(
+            member_id=member.member_id,
+            member_name=member.member_name,
+            remittance_name=result.header.remesa_name,
+        )
+        export_premium_member_pdf(vm, path, is_draft=True)
+        self.preview_service.open_preview(path)
+        return path
+
+    def _generate_premium_documents(self, members) -> tuple[Path, ...]:
+        result = self.current_calculation.result
+        return tuple(
+            export_premium_member_pdf(
+                from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member)),
+                self._premium_member_path(member), is_draft=True,
+            )
+            for member in members
+        )
 
     def _select_premium_members_dialog(self, members):
         selected = {"action": None, "member": members[0], "all": False}
@@ -927,13 +945,16 @@ class RemesasFrame(ttk.Frame):
         if not members:
             messagebox.showwarning("Liquidación Premium", "No hay socios disponibles en el cálculo actual.")
             return
-        selection = {"action": "generate", "member": members[0], "all": False} if len(members) == 1 else self._select_premium_members_dialog(members)
+        selection = {"action": "preview", "member": members[0], "all": False} if len(members) == 1 else self._select_premium_members_dialog(members)
         if selection["action"] == "cancel":
             return
         selected_members = members if selection["all"] and selection["action"] == "generate" else [selection["member"]]
         mode = "Todos" if selection["all"] and selection["action"] == "generate" else "Individual"
         try:
-            paths=self._generate_premium_pdfs(selected_members, preview=selection["action"] == "preview")
+            if selection["action"] == "preview":
+                paths = (self._generate_premium_preview(selection["member"]),)
+            else:
+                paths = self._generate_premium_documents(selected_members)
         except FileLockedError as exc:
             logger.warning("PDF Premium bloqueado: %s", exc.path)
             self._write_premium_trace(mode=mode, available=members, selected=selection["member"], errors=1, error_text=str(exc.path))
@@ -945,7 +966,10 @@ class RemesasFrame(ttk.Frame):
             messagebox.showerror("Liquidación Premium", f"No se ha podido generar el PDF Premium:\n{exc}")
             return
         self._write_premium_trace(mode=mode, available=members, selected=selection["member"], paths=paths)
-        messagebox.showinfo("Liquidación Premium", f"PDFs Premium generados: {len(paths)}\nCarpeta: {self._output_dir()/'socios'}")
+        if selection["action"] == "preview":
+            messagebox.showinfo("Vista previa PDF", "Se ha abierto una vista previa temporal. Este archivo no se ha guardado como documento definitivo.")
+        else:
+            messagebox.showinfo("Liquidación Premium", f"Se han generado {len(paths)} borradores PDF en:\n{self._output_dir()/'socios'}")
 
     def _export_liquidation_pdf(self):
         if not (self.current_calculation and self.current_calculation.result and self.calculation_valid): return

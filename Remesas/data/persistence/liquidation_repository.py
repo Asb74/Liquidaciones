@@ -53,6 +53,21 @@ class LiquidationRepository:
               FROM generated_documents d JOIN liquidation_batches b ON b.batch_id=d.batch_id
               WHERE d.batch_id=? ORDER BY d.id DESC""",(batch_id,)).fetchall()
 
+    def list_latest_batch_documents(self, batch_id: str):
+        """Return the newest attempt for each recipient and document type."""
+        with self.database.connect() as conn:
+            return conn.execute("""SELECT d.*,b.status batch_status,b.remesa_name,
+              (SELECT socio FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id LIMIT 1) recipient_name,
+              (SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id) line_count,
+              (SELECT group_concat(id_liq,' · ') FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id) id_liqs
+              FROM generated_documents d JOIN liquidation_batches b ON b.batch_id=d.batch_id
+              WHERE d.batch_id=? AND d.id=(
+                SELECT MAX(d2.id) FROM generated_documents d2
+                WHERE d2.batch_id=d.batch_id
+                  AND d2.recipient_member_id=d.recipient_member_id
+                  AND d2.document_type=d.document_type
+              ) ORDER BY d.recipient_member_id,d.document_type""", (batch_id,)).fetchall()
+
     def list_active_documents(self, batch_id: str):
         return [r for r in self.list_batch_documents(batch_id) if r["status"] == "GENERATED"]
 
