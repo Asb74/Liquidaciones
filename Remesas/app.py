@@ -10,6 +10,9 @@ from ui.production_destination_master_dialog import ProductionDestinationMasterD
 from data.db_connection import load_config, setup_logging
 from services.local_database_sync_service import LocalDatabaseSyncService
 from data.persistence.database import PersistenceDatabase
+from data.persistence.liquidation_repository import LiquidationRepository
+from services.pdf_merge_service import PdfMergeService
+from ui.pdf_merge_tool_dialog import PdfMergeToolDialog
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +72,7 @@ def main() -> None:
     root.deiconify()
     frame=RemesasFrame(root); frame.pack(fill="both", expand=True)
     root.protocol("WM_DELETE_WINDOW", frame.close_application)
-    root.config(menu=build_main_menu(root, MainMenuHandlers(close=frame.close_application, open_hectare_fee_master=frame.open_hectare_fee_master, open_calibre_master=lambda: CalibreMasterDialog(root), open_production_destination_master=lambda: ProductionDestinationMasterDialog(root), open_liquidation_prefix_master=frame.open_liquidation_prefix_master, open_liquidation_split_master=frame.open_liquidation_split_master, show_about=frame.show_about, refresh_local_databases=lambda: frame.synchronize_local_databases(manual=True), open_data_folder=frame.open_data_folder, open_liquidation_history=frame.open_liquidation_history)))
+    repository=LiquidationRepository(PersistenceDatabase(config.persistence_database_path))
+    root.config(menu=build_main_menu(root, MainMenuHandlers(close=frame.close_application, open_hectare_fee_master=frame.open_hectare_fee_master, open_calibre_master=lambda: CalibreMasterDialog(root), open_production_destination_master=lambda: ProductionDestinationMasterDialog(root), open_liquidation_prefix_master=frame.open_liquidation_prefix_master, open_liquidation_split_master=frame.open_liquidation_split_master, show_about=frame.show_about, refresh_local_databases=lambda: frame.synchronize_local_databases(manual=True), open_data_folder=frame.open_data_folder, open_liquidation_history=frame.open_liquidation_history, open_pdf_merge_tool=lambda: PdfMergeToolDialog(root,PdfMergeService(repository)))))
     root.mainloop()
 if __name__ == "__main__": main()

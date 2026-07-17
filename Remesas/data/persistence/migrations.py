@@ -26,6 +26,15 @@ CREATE TABLE generated_documents(
  generation_attempt INTEGER NOT NULL DEFAULT 1, file_hash TEXT, created_by TEXT
 );
 CREATE INDEX ix_generated_documents_batch ON generated_documents(batch_id,status);
+"""),(3, "exported_draft_documents", """
+CREATE TABLE exported_draft_documents(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, remittance_id INTEGER,
+ recipient_member_id INTEGER, member_name TEXT NOT NULL DEFAULT '',
+ campaign TEXT NOT NULL, crop TEXT NOT NULL, remittance_name TEXT NOT NULL DEFAULT '',
+ file_path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'GENERATED',
+ generated_at TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'MANUAL_DRAFT_EXPORT'
+);
+CREATE INDEX ix_exported_drafts_context ON exported_draft_documents(campaign,crop,remittance_id,recipient_member_id);
 """))
 
 def utcnow() -> str:

@@ -92,3 +92,37 @@ class LiquidationRepository:
     def supersede_batch_documents(self, batch_id: str) -> None:
         with self.database.connect() as conn:
             conn.execute("UPDATE generated_documents SET status='SUPERSEDED' WHERE batch_id=? AND status='GENERATED'", (batch_id,))
+
+    def record_exported_draft(self, **values) -> None:
+        with self.database.connect() as conn:
+            conn.execute("""INSERT INTO exported_draft_documents
+              (remittance_id,recipient_member_id,member_name,campaign,crop,remittance_name,file_path,status,generated_at,source)
+              VALUES(?,?,?,?,?,?,?,?,?,?)""", (values.get("remittance_id"), values.get("recipient_member_id"),
+              values.get("member_name", ""), values.get("campaign", ""), values.get("crop", ""),
+              values.get("remittance_name", ""), values["file_path"], "GENERATED", values["generated_at"],
+              "MANUAL_DRAFT_EXPORT"))
+
+    def list_mergeable_documents(self, *, document_kind: str, include_voided: bool = False, **filters):
+        clauses=[]; args=[]
+        mapping={"campaign":"b.campaign","crop":"b.crop","remittance_id":"b.remesa_id","member_id":"d.recipient_member_id"}
+        if document_kind == "PDF_DRAFT":
+            mapping={"campaign":"campaign","crop":"crop","remittance_id":"remittance_id","member_id":"recipient_member_id"}
+            for key,column in mapping.items():
+                if filters.get(key) not in (None, ""): clauses.append(f"{column}=?"); args.append(filters[key])
+            if filters.get("date_from"): clauses.append("substr(generated_at,1,10)>=?"); args.append(str(filters["date_from"]))
+            if filters.get("date_to"): clauses.append("substr(generated_at,1,10)<=?"); args.append(str(filters["date_to"]))
+            sql="SELECT *,NULL batch_id,'ACTIVE' batch_status,'' id_liqs FROM exported_draft_documents WHERE status='GENERATED'"
+            if clauses: sql += " AND " + " AND ".join(clauses)
+            with self.database.connect() as conn: return conn.execute(sql+" ORDER BY campaign,crop,remittance_id,recipient_member_id,generated_at",args).fetchall()
+        for key,column in mapping.items():
+            if filters.get(key) not in (None, ""): clauses.append(f"{column}=?"); args.append(filters[key])
+        clauses += ["d.document_type='PDF_MEMBER'", "d.status='GENERATED'", "b.status IN (" + ("'ACTIVE','VOIDED'" if include_voided else "'ACTIVE'") + ")"]
+        if filters.get("date_from"): clauses.append("substr(d.generated_at,1,10)>=?"); args.append(str(filters["date_from"]))
+        if filters.get("date_to"): clauses.append("substr(d.generated_at,1,10)<=?"); args.append(str(filters["date_to"]))
+        sql="""SELECT d.*,b.status batch_status,b.campaign,b.crop,b.remesa_name,
+          COALESCE((SELECT socio FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id LIMIT 1),'') member_name,
+          COALESCE((SELECT group_concat(id_liq,' · ') FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id),'') id_liqs
+          FROM generated_documents d JOIN liquidation_batches b ON b.batch_id=d.batch_id WHERE """+" AND ".join(clauses)+"""
+          AND d.id=(SELECT MAX(x.id) FROM generated_documents x WHERE x.batch_id=d.batch_id AND x.recipient_member_id=d.recipient_member_id AND x.document_type=d.document_type)
+          ORDER BY b.campaign,b.crop,b.remesa_id,d.recipient_member_id,d.generated_at"""
+        with self.database.connect() as conn: return conn.execute(sql,args).fetchall()

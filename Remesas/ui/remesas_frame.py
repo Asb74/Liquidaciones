@@ -909,13 +909,23 @@ class RemesasFrame(ttk.Frame):
 
     def _generate_premium_documents(self, members) -> tuple[Path, ...]:
         result = self.current_calculation.result
-        return tuple(
+        paths=tuple(
             export_premium_member_pdf(
                 from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member)),
                 self._premium_member_path(member), is_draft=True,
             )
             for member in members
         )
+        # Los borradores persistentes se registran aparte: generated_documents
+        # conserva su FK obligatoria a batch y las vistas previas TEMP nunca llegan aquí.
+        if getattr(self,"persistence_enabled",False):
+            from datetime import datetime, timezone
+            for member,path in zip(members,paths):
+                self.liquidation_repository.record_exported_draft(remittance_id=int(result.header.remesa_id),
+                    recipient_member_id=int(member.member_id),member_name=member.member_name,
+                    campaign=str(result.header.campana),crop=str(result.header.cultivo),
+                    remittance_name=str(result.header.remesa_name),file_path=str(path),generated_at=datetime.now(timezone.utc).isoformat())
+        return paths
 
     def _select_premium_members_dialog(self, members):
         selected = {"action": None, "member": members[0], "all": False}
