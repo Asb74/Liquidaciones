@@ -16,7 +16,17 @@ CREATE TABLE liquidaciones(id INTEGER PRIMARY KEY AUTOINCREMENT, id_liq TEXT NOT
 CREATE INDEX ix_liq_context ON liquidaciones(cultivo,campana,empresa); CREATE INDEX ix_liq_member ON liquidaciones(id_socio); CREATE INDEX ix_liq_remesa ON liquidaciones(remesa_id); CREATE INDEX ix_liq_source ON liquidaciones(source_member_id); CREATE INDEX ix_liq_recipient ON liquidaciones(recipient_member_id); CREATE INDEX ix_liq_status ON liquidaciones(status); CREATE INDEX ix_liq_source_key ON liquidaciones(source_liquidation_key);
 CREATE TABLE liquidation_audit(id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT, action TEXT NOT NULL, entity_type TEXT, entity_id TEXT, details_json TEXT, created_at TEXT NOT NULL, created_by TEXT);
 CREATE TABLE legacy_imports(name TEXT PRIMARY KEY, imported_at TEXT NOT NULL, details TEXT);
-"""),)
+"""),(2, "generated_documents", """
+CREATE TABLE generated_documents(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ batch_id TEXT NOT NULL REFERENCES liquidation_batches(batch_id),
+ remittance_id INTEGER NOT NULL, recipient_member_id INTEGER NOT NULL,
+ document_type TEXT NOT NULL, file_path TEXT NOT NULL, status TEXT NOT NULL,
+ generated_at TEXT, error_message TEXT,
+ generation_attempt INTEGER NOT NULL DEFAULT 1, file_hash TEXT, created_by TEXT
+);
+CREATE INDEX ix_generated_documents_batch ON generated_documents(batch_id,status);
+"""))
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()

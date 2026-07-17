@@ -41,7 +41,8 @@ from presentation.premium_liquidation_view_model import from_member_liquidation
 from data.persistence.database import PersistenceDatabase
 from data.persistence.master_repository import LiquidationMasterRepository
 from services.liquidation_persistence_service import LiquidationPersistenceService
-from exporters.definitive_pdf_exporter import export_definitive_pdfs
+from data.persistence.liquidation_repository import LiquidationRepository
+from services.document_generation_service import DocumentGenerationOptions, DocumentGenerationService
 from ui.batch_persistence_preview_dialog import BatchPersistencePreviewDialog
 from ui.liquidation_prefix_master_dialog import LiquidationPrefixMasterDialog
 from ui.liquidation_split_master_dialog import LiquidationSplitMasterDialog
@@ -93,7 +94,7 @@ class RemesasFrame(ttk.Frame):
         self.action_buttons={}
         for i,(text,cmd) in enumerate(actions):
             b=ttk.Button(self.buttons,text=text,command=cmd); b.grid(row=0,column=i,padx=2); self.action_buttons[text]=b
-        for i,(text,cmd) in enumerate([("Calcular liquidación",self._calculate),("Exportar resumen de liquidación",self._export_liquidation_excel),("Generar PDF para socio",self._export_premium_pdf), ("Informe interno",self._export_liquidation_pdf),("Revisar lote",self._review_batch),("Guardar liquidaciones",self._save_liquidations),("Anular liquidación",self._void_liquidation)]):
+        for i,(text,cmd) in enumerate([("Calcular liquidación",self._calculate),("Exportar resumen de liquidación",self._export_liquidation_excel),("Vista previa PDF",self._export_premium_pdf), ("Informe interno",self._export_liquidation_pdf),("Revisar lote",self._review_batch),("Guardar liquidaciones",self._save_liquidations),("Anular liquidación",self._void_liquidation)]):
             b=ttk.Button(self.buttons,text=text,command=cmd,state="disabled"); b.grid(row=1,column=i,padx=2,pady=2); self.action_buttons[text]=b
         self.persistence_status_text=tk.StringVar(value="Sin cálculo pendiente.")
         self.persistence_status_label=ttk.Label(self.buttons,textvariable=self.persistence_status_text); self.persistence_status_label.grid(row=2,column=0,columnspan=9,sticky="w")
@@ -163,6 +164,8 @@ class RemesasFrame(ttk.Frame):
                 aliases_path=Path(__file__).resolve().parents[1]/"config"/"crop_aliases.json"
                 aliases=json.loads(aliases_path.read_text(encoding="utf-8")) if aliases_path.exists() else {}
                 self.persistence_service=LiquidationPersistenceService(PersistenceDatabase(self.config.persistence_database_path),self.conn,crop_aliases=aliases)
+                output_root=Path("C:/Liquidaciones/salidas/remesas") if Path("C:/").exists() else Path.cwd().parent/"salidas"/"remesas"
+                self.document_service=DocumentGenerationService(LiquidationRepository(self.persistence_service.database), output_root)
                 self.liquidation_master_repository=LiquidationMasterRepository(self.persistence_service.database)
                 self.persistence_service.import_legacy_split_rules(); self.persistence_enabled=True
             self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.hectare_master_service=HectareFeeMasterService(self.master_repository, HectareFeeCropRepository(self.conn)); self.calculations=CalculationService(self.conn, self.config); self._refresh_database_status(); self._refresh_action_states()
@@ -201,10 +204,9 @@ class RemesasFrame(ttk.Frame):
             win.wait_window()
             if not result["confirm"]: return
             batch=self.persistence_service.save(preview)
-            paths=export_definitive_pdfs(preview,batch,self._output_dir())
-            self.persistence_service.record_pdf_generated(batch.batch_id,paths)
+            documents=self.document_service.generate_for_batch(batch.batch_id,options=DocumentGenerationOptions())
             self.current_calculation_persisted=True
-            messagebox.showinfo("Liquidaciones guardadas",f"Batch {batch.batch_id}\n{len(batch.liquidations)} líneas guardadas.\n{len(paths)} PDF definitivos generados.")
+            messagebox.showinfo("Liquidaciones guardadas",f"Batch {batch.batch_id}\n{len(batch.liquidations)} líneas guardadas.\n{len(documents.generated_documents)} PDF definitivos generados.\n{len(documents.failed_documents)} PDF no pudieron generarse.")
             self.status.set(f"Persistencia completada: batch {batch.batch_id}")
             self._refresh_action_states()
         except Exception as exc:
@@ -229,10 +231,13 @@ class RemesasFrame(ttk.Frame):
             dialog=BatchPersistencePreviewDialog(self.winfo_toplevel(),preview,allow_confirm=True)
             if not dialog.show(): return False
             if not messagebox.askyesno("Confirmar guardado",f"Se van a guardar las liquidaciones definitivas de {valid} remesas.\n\nUna vez guardadas se generarán los PDFs definitivos por destinatario.\n\nEl Excel resumen seguirá mostrando las liquidaciones originales sin división.\n\nSe guardarán {valid} de {total} remesas.\n\n¿Desea continuar?"): return False
-            result=self.persistence_service.save_batch(preview,export_definitive_pdfs); self.current_batch_save_result=result; self.current_batch_persisted=result.failed==0
+            result=self.persistence_service.save_batch(preview); self.current_batch_save_result=result; self.current_batch_persisted=result.failed==0
+            batch_ids=[x.batch.batch_id for x in result.remittance_results if x.saved]
+            documents=self.document_service.generate_for_batches(batch_ids,options=DocumentGenerationOptions(),progress_callback=self._document_progress,cancel_requested=lambda:self.batch_cancel_requested)
             status="SUCCESS" if not result.failed else "PARTIAL"
             logger.info("[BatchPersistence]\nrequested=%s\nsaved=%s\nfailed=%s\nstatus=%s",result.requested,result.saved,result.failed,status)
-            messagebox.showinfo("Guardado del lote",f"Solicitadas: {result.requested}\nGuardadas: {result.saved}\nFallidas: {result.failed}"+("\n\n"+"\n".join(result.warnings) if result.warnings else ""))
+            document_failures=sum(len(x.failed_documents) for x in documents.results)
+            messagebox.showinfo("Guardado del lote",f"Solicitadas: {result.requested}\nGuardadas: {result.saved}\nFallidas al guardar: {result.failed}\nPDF con error: {document_failures}"+("\nGeneración documental cancelada." if documents.cancelled else "")+("\n\n"+"\n".join(result.warnings) if result.warnings else ""))
             self._refresh_action_states(); return self.current_batch_persisted
         except Exception as exc:
             logger.exception("No se pudo guardar el lote"); messagebox.showerror("Guardar liquidaciones",str(exc)); return False
@@ -256,6 +261,10 @@ class RemesasFrame(ttk.Frame):
             if not reason: return
             if messagebox.askyesno("Confirmar anulación",f"¿Anular el batch {batch_id}?",parent=self): self.persistence_service.void_batch(batch_id,reason); messagebox.showinfo("Anular liquidación","Liquidación anulada.")
         except Exception as exc: logger.exception("No se pudo anular"); messagebox.showerror("Anular liquidación",str(exc))
+
+    def _document_progress(self, event):
+        self.status.set(f"Generando documentos · {event.get('phase','')} · {event.get('path','')}")
+        self.update_idletasks()
 
     def synchronize_local_databases(self, manual: bool = False) -> bool:
         if manual and self.calculation_valid and not messagebox.askyesno("Actualizar bases locales", "Existe un cálculo activo. La actualización limpiará los resultados actuales. ¿Continuar?"):
@@ -623,7 +632,7 @@ class RemesasFrame(ttk.Frame):
             can_void=bool(self.current_calculation_persisted or (self.current_batch_save_result and self.current_batch_save_result.saved))
             self.action_buttons["Anular liquidación"].configure(state="normal" if can_void else "disabled")
             if "Exportar resumen de liquidación" in self.action_buttons: self.action_buttons["Exportar resumen de liquidación"].configure(state="normal" if calculation_ready else "disabled")
-            if "Generar PDF para socio" in self.action_buttons: self.action_buttons["Generar PDF para socio"].configure(state="normal" if premium_members_ready else "disabled")
+            if "Vista previa PDF" in self.action_buttons: self.action_buttons["Vista previa PDF"].configure(state="normal" if premium_members_ready else "disabled")
             if "Informe interno" in self.action_buttons: self.action_buttons["Informe interno"].configure(state="normal" if calculation_ready else "disabled")
         if hasattr(self,"persistence_status_text"):
             if self.current_batch_save_result and self.current_batch_save_result.failed: text=f"Lote guardado parcialmente: {self.current_batch_save_result.saved} de {self.current_batch_save_result.requested}."
@@ -856,7 +865,7 @@ class RemesasFrame(ttk.Frame):
         paths = []
         for member in members:
             vm = from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member))
-            paths.append(export_premium_member_pdf(vm, self._premium_member_path(member)))
+            paths.append(export_premium_member_pdf(vm, self._premium_member_path(member), is_draft=True))
         if preview and paths:
             if hasattr(os, "startfile"):
                 os.startfile(paths[0])

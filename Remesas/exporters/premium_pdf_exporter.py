@@ -57,7 +57,7 @@ def export_premium_member_pdfs(result: LiquidationResult, output_dir: Path, conf
     return tuple(export_premium_member_pdf(from_member_liquidation(result.header, m), target_dir / premium_member_filename(from_member_liquidation(result.header, m)), config_path) for m in result.member_results)
 
 
-def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, config_path: str | Path = "config/premium_pdf_config.json") -> Path:
+def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, config_path: str | Path = "config/premium_pdf_config.json", *, is_draft: bool = False) -> Path:
     try:
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.platypus import SimpleDocTemplate
@@ -77,7 +77,12 @@ def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, confi
     try:
         doc = SimpleDocTemplate(tmp, pagesize=page_size, leftMargin=margin, rightMargin=margin, topMargin=margin, bottomMargin=margin, pageCompression=0)
         story = build_premium_story(vm, config, available_width)
-        doc.build(story)
+        def draft_banner(canvas, _doc):
+            if is_draft:
+                canvas.saveState(); canvas.setFillColorRGB(.70,.12,.12); canvas.setFont("Helvetica-Bold",11)
+                canvas.drawCentredString(page_size[0]/2, page_size[1]-5*MM, "BORRADOR · NO GUARDADO")
+                canvas.restoreState()
+        doc.build(story, onFirstPage=draft_banner, onLaterPages=draft_banner)
         data = Path(tmp).read_bytes()
         if data.count(b"/Type /Page\n") > 1:
             raise ValueError(OVERFLOW_MESSAGE)

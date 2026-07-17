@@ -62,7 +62,7 @@ class LiquidationPersistenceService:
             sum(len(x.persistence_preview.lines) for x in pending), tuple(warnings),
             any(x.valid for x in pending), tuple(x.remittance for x in result.failed_results))
 
-    def save_batch(self, preview: PendingBatchPersistence, pdf_exporter) -> BatchPersistenceSaveResult:
+    def save_batch(self, preview: PendingBatchPersistence) -> BatchPersistenceSaveResult:
         """Guarda cada remesa en su propia transacción y continúa tras un fallo."""
         results=[]; warnings=[]
         for item in preview.remittances:
@@ -70,9 +70,7 @@ class LiquidationPersistenceService:
                 continue
             try:
                 batch=self.save(item.persistence_preview)
-                paths=tuple(pdf_exporter(item.persistence_preview,batch,item.output_directory))
-                self.record_pdf_generated(batch.batch_id,paths)
-                results.append(RemittancePersistenceSaveResult(item.remittance,True,batch,None,paths))
+                results.append(RemittancePersistenceSaveResult(item.remittance,True,batch,None,()))
             except Exception as exc:
                 warnings.append(f"Remesa {item.remittance.remittance_id}: {exc}")
                 results.append(RemittancePersistenceSaveResult(item.remittance,False,None,str(exc)))
@@ -122,6 +120,7 @@ class LiquidationPersistenceService:
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("UPDATE liquidation_batches SET status='VOIDED',voided_at=?,voided_by=?,void_reason=? WHERE batch_id=? AND status='ACTIVE'",(now,user,reason.strip(),batch_id)).rowcount!=1: raise ValueError("El batch no existe o ya está anulado")
             conn.execute("UPDATE liquidaciones SET status='VOIDED',voided_at=?,voided_by=?,void_reason=? WHERE batch_id=? AND status='ACTIVE'",(now,user,reason.strip(),batch_id))
+            conn.execute("UPDATE generated_documents SET status='SUPERSEDED' WHERE batch_id=? AND status='GENERATED'",(batch_id,))
             conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)",(batch_id,"VOID","BATCH",batch_id,json.dumps({"reason":reason.strip()}),now,user)); conn.commit()
         except Exception: conn.rollback(); raise
         finally: conn.close()
