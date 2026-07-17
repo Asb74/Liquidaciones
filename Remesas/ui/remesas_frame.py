@@ -121,7 +121,11 @@ class RemesasFrame(ttk.Frame):
 
     def open_liquidation_split_master(self):
         try:
-            LiquidationSplitMasterDialog(self.winfo_toplevel(),self.liquidation_master_repository,on_saved=self._persistence_master_saved)
+            LiquidationSplitMasterDialog(
+                self.winfo_toplevel(), self.liquidation_master_repository,
+                member_name_lookup=self.persistence_service.legacy.member_name,
+                on_saved=self._persistence_master_saved,
+            )
             logger.info("[MasterDialog]\ntype=SPLIT\nopened=true")
         except Exception:
             logger.exception("No se ha podido abrir el maestro de divisiones")
