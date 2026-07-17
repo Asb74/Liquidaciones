@@ -7,12 +7,15 @@ from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Callable, Sequence
+import logging
 
 from data.persistence.liquidation_repository import LiquidationRepository
 from domain.document_models import DocumentType
 from domain.utils import safe_path_part
 from exporters.persisted_liquidation_pdf_exporter import export_persisted_liquidation_pdf
 from presentation.persisted_liquidation_pdf_view_model import PersistedLiquidationPdfLine, PersistedLiquidationPdfTotals, PersistedLiquidationPdfViewModel
+
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class DocumentGenerationOptions:
@@ -71,7 +74,9 @@ class DocumentGenerationService:
                 doc=GeneratedDocument(batch_id,int(batch["remesa_id"]),recipient,DocumentType.PDF_MEMBER.value,path,False,str(exc)); bad.append(doc)
                 self.repository.record_document(batch_id=batch_id,remittance_id=int(batch["remesa_id"]),recipient_member_id=recipient,document_type=DocumentType.PDF_MEMBER.value,file_path=str(path),status="FAILED",generated_at=None,error_message=str(exc),created_by=self.user)
                 self.repository.audit(batch_id,"DOCUMENT_GENERATION_FAILED",json.dumps({"recipient_member_id":recipient,"error":str(exc)})); self._emit(progress_callback,"ERROR",error=str(exc))
-        self._emit(progress_callback,"FINISHED",batch_id=batch_id); return DocumentGenerationResult(batch_id,len(groups),tuple(good),tuple(bad),out)
+        self._emit(progress_callback,"FINISHED",batch_id=batch_id)
+        logger.info("[DocumentGenerationFinished]\nbatch_id=%s\nrequested=%s\ngenerated=%s\nfailed=%s", batch_id, len(groups), len(good), len(bad))
+        return DocumentGenerationResult(batch_id,len(groups),tuple(good),tuple(bad),out)
     def generate_for_batches(self,batch_ids:Sequence[str],*,options:DocumentGenerationOptions=DocumentGenerationOptions(),progress_callback=None,cancel_requested:Callable[[],bool]|None=None):
         results=[]; cancelled=False
         for index,batch_id in enumerate(batch_ids,1):

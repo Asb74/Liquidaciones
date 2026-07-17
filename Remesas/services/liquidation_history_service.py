@@ -20,10 +20,7 @@ class LiquidationHistoryService:
         return self.repository.list_batch_documents(batch_id)
 
     def list_recipient_documents(self, batch_id):
-        latest = {}
-        for row in self.list_documents(batch_id):
-            latest.setdefault((row["recipient_member_id"], row["document_type"]), row)
-        return tuple(latest.values())
+        return tuple(self.repository.list_latest_batch_documents(batch_id))
 
     def void_batch(self, batch_id, reason, user=None):
         reason = str(reason or "").strip()

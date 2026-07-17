@@ -40,3 +40,16 @@ def test_void_is_logical_keeps_ids_and_supersedes_documents(history,tmp_path):
         assert conn.execute("SELECT status FROM generated_documents").fetchone()[0]=="SUPERSEDED"
     assert pdf.exists()
     with pytest.raises(ValueError): service.void_batch("b1","otra vez","tester")
+
+
+def test_latest_document_query_returns_newest_attempt(history, tmp_path):
+    service, db = history
+    for version, status in ((1, "GENERATED"), (2, "FAILED")):
+        service.repository.record_document(batch_id="b1", remittance_id=7, recipient_member_id=10,
+            document_type="PDF_MEMBER", file_path=str(tmp_path / f"member_v{version}.pdf"), status=status,
+            error_message="fallo" if status == "FAILED" else None)
+    latest = service.list_recipient_documents("b1")
+    assert len(latest) == 1
+    assert latest[0]["status"] == "FAILED"
+    assert latest[0]["file_path"].endswith("member_v2.pdf")
+    assert len(service.list_documents("b1")) == 2
