@@ -21,7 +21,7 @@ class PdfValidationStatus(str, Enum):
 @dataclass(frozen=True)
 class MergeablePdfDocument:
     document_id: int | None; document_kind: str; batch_id: str | None
-    remittance_id: int | None; remittance_name: str; campaign: str; crop: str
+    remittance_id: int | None; remittance_name: str; campaign: str; company: str; crop: str
     member_id: int | None; member_name: str; id_liqs: tuple[str, ...]
     document_status: str; batch_status: str; file_path: Path
     generated_at: datetime | None; page_count: int | None=None; file_size: int | None=None
@@ -59,19 +59,24 @@ class PdfMergeService:
         try: return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         except ValueError: return None
 
-    def list_available_documents(self, *, document_kind, campaign=None, crop=None, remittance_id=None,
-                                 member_id=None, date_from=None, date_to=None, include_voided=False):
+    def list_filter_options(self, *, document_kind, campaign=None, company=None, crop=None):
+        options=self.repository.list_document_filter_options(document_kind=document_kind,campaign=campaign,company=company,crop=crop)
+        logger.info("[PdfMergeFilterOptions] type=%s campaign=%s company=%s crop=%s campaigns=%s companies=%s crops=%s remittances=%s",document_kind,campaign,company,crop,len(options["campaigns"]),len(options["companies"]),len(options["crops"]),len(options["remittances"]))
+        return options
+
+    def list_available_documents(self, *, document_kind, campaign=None, company=None, crop=None, remittance_id=None,
+                                 member_id=None, date_from=None, date_to=None, status=None, include_voided=False):
         if document_kind not in ("PDF_MEMBER", "PDF_DRAFT"): raise ValueError("Tipo documental no admitido")
-        rows=self.repository.list_mergeable_documents(document_kind=document_kind,campaign=campaign,crop=crop,
-            remittance_id=remittance_id,member_id=member_id,date_from=date_from,date_to=date_to,include_voided=include_voided)
+        rows=self.repository.list_mergeable_documents(document_kind=document_kind,campaign=campaign,company=company,crop=crop,
+            remittance_id=remittance_id,member_id=member_id,date_from=date_from,date_to=date_to,status=status,include_voided=include_voided)
         docs=[]
         for r in rows:
             path=Path(r["file_path"]); size=path.stat().st_size if path.exists() else None
             docs.append(MergeablePdfDocument(r["id"],document_kind,r["batch_id"],r["remittance_id"],
-                r["remesa_name"] if document_kind=="PDF_MEMBER" else r["remittance_name"],r["campaign"],r["crop"],
+                r["remesa_name"] if document_kind=="PDF_MEMBER" else r["remittance_name"],r["campaign"],r["company"],r["crop"],
                 r["recipient_member_id"],r["member_name"],tuple(filter(None,str(r["id_liqs"]).split(" · "))),
                 r["status"],r["batch_status"],path,self._date(r["generated_at"]),None,size,False))
-        logger.info("[PdfMergeSearch] type=%s filters=%s results=%s",document_kind,{"campaign":campaign,"crop":crop,"remittance_id":remittance_id,"member_id":member_id},len(docs))
+        logger.info("[PdfMergeSearch] type=%s campaign=%s company=%s crop=%s remittance_id=%s member_id=%s date_from=%s date_to=%s results=%s",document_kind,campaign,company,crop,remittance_id,member_id,date_from,date_to,len(docs))
         return tuple(docs)
 
     def validate_documents(self, documents: Iterable[MergeablePdfDocument], progress_callback=None, should_cancel=None):

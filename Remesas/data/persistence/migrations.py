@@ -35,6 +35,9 @@ CREATE TABLE exported_draft_documents(
  generated_at TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'MANUAL_DRAFT_EXPORT'
 );
 CREATE INDEX ix_exported_drafts_context ON exported_draft_documents(campaign,crop,remittance_id,recipient_member_id);
+"""),(4, "exported_draft_metadata", """
+ALTER TABLE exported_draft_documents ADD COLUMN company TEXT NOT NULL DEFAULT '';
+ALTER TABLE exported_draft_documents ADD COLUMN file_hash TEXT;
 """))
 
 def utcnow() -> str:

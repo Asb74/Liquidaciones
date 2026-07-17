@@ -45,6 +45,8 @@ class SingleRemittanceBatchResult:
     delivery_count: int
     output_directory: Path
     generated_files: tuple[Path, ...]
+    draft_documents_generated: int = 0
+    draft_document_errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,11 @@ class BatchRemittanceResult:
     finished_at: datetime
     cancelled: bool = False
     log_path: Path | None = None
+
+    @property
+    def drafts_generated(self): return sum(x.draft_documents_generated for x in self.successful_results)
+    @property
+    def draft_errors(self): return sum(len(x.draft_document_errors) for x in self.successful_results)
 
 
 class BatchRemittanceService:
@@ -134,4 +141,3 @@ class BatchRemittanceService:
         def forward(progress: BatchProgress):
             callback(BatchProgress(total, index, remittance.remittance_id, remittance.name, progress.phase, progress.processed_members, progress.total_members, progress.message))
         return forward
-

@@ -96,33 +96,54 @@ class LiquidationRepository:
     def record_exported_draft(self, **values) -> None:
         with self.database.connect() as conn:
             conn.execute("""INSERT INTO exported_draft_documents
-              (remittance_id,recipient_member_id,member_name,campaign,crop,remittance_name,file_path,status,generated_at,source)
-              VALUES(?,?,?,?,?,?,?,?,?,?)""", (values.get("remittance_id"), values.get("recipient_member_id"),
-              values.get("member_name", ""), values.get("campaign", ""), values.get("crop", ""),
-              values.get("remittance_name", ""), values["file_path"], "GENERATED", values["generated_at"],
-              "MANUAL_DRAFT_EXPORT"))
+              (remittance_id,recipient_member_id,member_name,campaign,company,crop,remittance_name,file_path,status,generated_at,source,file_hash)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (values.get("remittance_id"), values.get("recipient_member_id"),
+              values.get("member_name", ""), values.get("campaign", ""), values.get("company", ""),
+              values.get("crop", ""), values.get("remittance_name", ""), values["file_path"], "GENERATED", values["generated_at"],
+              values.get("source", "MANUAL_DRAFT_EXPORT"), values.get("file_hash")))
 
     def list_mergeable_documents(self, *, document_kind: str, include_voided: bool = False, **filters):
         clauses=[]; args=[]
-        mapping={"campaign":"b.campaign","crop":"b.crop","remittance_id":"b.remesa_id","member_id":"d.recipient_member_id"}
+        mapping={"campaign":"b.campaign","company":"b.company","crop":"b.crop","remittance_id":"b.remesa_id","member_id":"d.recipient_member_id","status":"d.status"}
         if document_kind == "PDF_DRAFT":
-            mapping={"campaign":"campaign","crop":"crop","remittance_id":"remittance_id","member_id":"recipient_member_id"}
+            mapping={"campaign":"campaign","company":"company","crop":"crop","remittance_id":"remittance_id","member_id":"recipient_member_id","status":"status"}
             for key,column in mapping.items():
                 if filters.get(key) not in (None, ""): clauses.append(f"{column}=?"); args.append(filters[key])
             if filters.get("date_from"): clauses.append("substr(generated_at,1,10)>=?"); args.append(str(filters["date_from"]))
             if filters.get("date_to"): clauses.append("substr(generated_at,1,10)<=?"); args.append(str(filters["date_to"]))
-            sql="SELECT *,NULL batch_id,'ACTIVE' batch_status,'' id_liqs FROM exported_draft_documents WHERE status='GENERATED'"
+            sql="SELECT *,NULL batch_id,'ACTIVE' batch_status,'' id_liqs FROM exported_draft_documents WHERE 1=1"
             if clauses: sql += " AND " + " AND ".join(clauses)
             with self.database.connect() as conn: return conn.execute(sql+" ORDER BY campaign,crop,remittance_id,recipient_member_id,generated_at",args).fetchall()
         for key,column in mapping.items():
             if filters.get(key) not in (None, ""): clauses.append(f"{column}=?"); args.append(filters[key])
-        clauses += ["d.document_type='PDF_MEMBER'", "d.status='GENERATED'", "b.status IN (" + ("'ACTIVE','VOIDED'" if include_voided else "'ACTIVE'") + ")"]
+        clauses += ["d.document_type='PDF_MEMBER'", "b.status IN (" + ("'ACTIVE','VOIDED'" if include_voided else "'ACTIVE'") + ")"]
         if filters.get("date_from"): clauses.append("substr(d.generated_at,1,10)>=?"); args.append(str(filters["date_from"]))
         if filters.get("date_to"): clauses.append("substr(d.generated_at,1,10)<=?"); args.append(str(filters["date_to"]))
-        sql="""SELECT d.*,b.status batch_status,b.campaign,b.crop,b.remesa_name,
+        sql="""SELECT d.*,b.status batch_status,b.campaign,b.company,b.crop,b.remesa_name,
           COALESCE((SELECT socio FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id LIMIT 1),'') member_name,
           COALESCE((SELECT group_concat(id_liq,' · ') FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id),'') id_liqs
           FROM generated_documents d JOIN liquidation_batches b ON b.batch_id=d.batch_id WHERE """+" AND ".join(clauses)+"""
           AND d.id=(SELECT MAX(x.id) FROM generated_documents x WHERE x.batch_id=d.batch_id AND x.recipient_member_id=d.recipient_member_id AND x.document_type=d.document_type)
           ORDER BY b.campaign,b.crop,b.remesa_id,d.recipient_member_id,d.generated_at"""
         with self.database.connect() as conn: return conn.execute(sql,args).fetchall()
+
+    def list_document_filter_options(self, *, document_kind: str, campaign=None, company=None, crop=None):
+        """Return real, registered document masters; the UI never reads output folders."""
+        if document_kind == "PDF_DRAFT":
+            table="exported_draft_documents"; active="status='GENERATED'"
+            columns=("campaign","company","crop","remittance_id","remittance_name")
+        elif document_kind == "PDF_MEMBER":
+            table="generated_documents d JOIN liquidation_batches b ON b.batch_id=d.batch_id"
+            active="d.document_type='PDF_MEMBER' AND d.status='GENERATED' AND b.status='ACTIVE'"
+            columns=("b.campaign","b.company","b.crop","b.remesa_id","b.remesa_name")
+        else: raise ValueError("Tipo documental no admitido")
+        clauses=[active]; args=[]
+        for value,column in ((campaign,columns[0]),(company,columns[1]),(crop,columns[2])):
+            if value not in (None, ""): clauses.append(f"{column}=?"); args.append(value)
+        where=" AND ".join(clauses)
+        with self.database.connect() as conn:
+            campaigns=tuple(r[0] for r in conn.execute(f"SELECT DISTINCT {columns[0]} FROM {table} WHERE {active} ORDER BY 1") if r[0])
+            companies=tuple(r[0] for r in conn.execute(f"SELECT DISTINCT {columns[1]} FROM {table} WHERE {where} ORDER BY 1",args) if r[0])
+            crops=tuple(r[0] for r in conn.execute(f"SELECT DISTINCT {columns[2]} FROM {table} WHERE {where} ORDER BY 1",args) if r[0])
+            remittances=tuple((r[0],r[1]) for r in conn.execute(f"SELECT DISTINCT {columns[3]},{columns[4]} FROM {table} WHERE {where} ORDER BY 1",args))
+        return {"campaigns":campaigns,"companies":companies,"crops":crops,"remittances":remittances}
