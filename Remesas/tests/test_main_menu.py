@@ -17,7 +17,7 @@ class MainMenuTests(unittest.TestCase):
         try:
             menu = build_main_menu(root, MainMenuHandlers(root.destroy, lambda: None, lambda: None))
             labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1)]
-            self.assertEqual(labels, ["Archivo", "Maestros", "Ayuda"])
+            self.assertEqual(labels, ["Archivo", "Maestros", "Herramientas", "Ayuda"])
             masters = menu.nametowidget(menu.entrycget(1, "menu"))
             self.assertEqual(masters.entrycget(0, "label"), "Cuota por hectárea")
         finally:

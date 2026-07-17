@@ -17,6 +17,7 @@ class MainMenuHandlers:
     refresh_local_databases: Callable[[], None] = lambda: None
     open_data_folder: Callable[[], None] = lambda: None
     open_liquidation_history: Callable[[], None] = lambda: None
+    open_pdf_merge_tool: Callable[[], None] = lambda: None
 
 
 def build_main_menu(root: tk.Misc, handlers: MainMenuHandlers) -> tk.Menu:
@@ -37,6 +38,10 @@ def build_main_menu(root: tk.Misc, handlers: MainMenuHandlers) -> tk.Menu:
     masters_menu.add_command(label="Prefijos de liquidación", command=handlers.open_liquidation_prefix_master)
     masters_menu.add_command(label="División de liquidaciones", command=handlers.open_liquidation_split_master)
     menu_bar.add_cascade(label="Maestros", menu=masters_menu)
+
+    tools_menu = tk.Menu(menu_bar, tearoff=False)
+    tools_menu.add_command(label="Unificar PDFs para impresión", command=handlers.open_pdf_merge_tool)
+    menu_bar.add_cascade(label="Herramientas", menu=tools_menu)
 
     help_menu = tk.Menu(menu_bar, tearoff=False)
     help_menu.add_command(label="Acerca de", command=handlers.show_about)
