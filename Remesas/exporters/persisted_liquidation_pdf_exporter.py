@@ -1,23 +1,44 @@
-from pathlib import Path
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen.canvas import Canvas
-from presentation.persisted_liquidation_pdf_view_model import PersistedLiquidationPdfViewModel
+from __future__ import annotations
 
-def export_persisted_liquidation_pdf(vm: PersistedLiquidationPdfViewModel, path: Path) -> Path:
-    """Renderiza exclusivamente valores del ViewModel construido desde SQLite."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pdf=Canvas(str(path), pagesize=A4); y=805
-    pdf.setTitle(f"Liquidación definitiva {vm.recipient_member_id}")
-    pdf.setFont("Helvetica-Bold",16); pdf.drawString(38,y,"Liquidación definitiva"); y-=24
-    pdf.setFont("Helvetica",9)
-    for text in (f"IdLiq: {' · '.join(vm.id_liqs)}",f"Fecha: {vm.payment_date or '—'}  Campaña: {vm.campaign}  Empresa: {vm.company}",f"Cultivo: {vm.crop}  Remesa: {vm.remittance_id} - {vm.remittance_name}",f"Socio destinatario: {vm.recipient_member_id} - {vm.recipient_name}",f"Concepto: {vm.liquidation_concept}  Tipo: {vm.liquidation_type}"):
-        pdf.drawString(38,y,text); y-=15
-    y-=10; pdf.setFont("Helvetica-Bold",8)
-    pdf.drawString(38,y,"Variedad / Artículo / kg / Bruto / Rec. / Cuota Ha / Calidad / Transporte / GlobalGAP / Base / IVA / Ret. / Total"); y-=15
-    pdf.setFont("Helvetica",7)
-    for line in vm.lines:
-        text=f"{line.variedad} / {line.cod_art or '—'} / {line.neto} / {line.imp_bruto} / {line.recoleccion} / {line.cuota_ha} / {line.bp_calidad} / {line.b_transporte} / {line.b_global} / {line.base_i} / {line.iva} / {line.retencion} / {line.importe_total}"
-        pdf.drawString(38,y,text[:155]); y-=14
-        if y<55: pdf.showPage(); y=805; pdf.setFont("Helvetica",7)
-    pdf.setFont("Helvetica-Bold",10); pdf.drawString(38,y-8,f"Total destinatario: {vm.totals.importe_total} EUR  | Base: {vm.totals.base_i} EUR  | Kilos: {vm.totals.neto}")
-    pdf.save(); return path
+from decimal import Decimal
+from pathlib import Path
+
+from exporters.premium_pdf_exporter import PremiumLiquidationPdfRenderer
+from presentation.premium_liquidation_view_model import CommercialBreakdownRow, PremiumLiquidationViewModel, PESETA_RATE
+
+
+def _premium_view_model(vm):
+    """Adapta exclusivamente filas ya persistidas, sin consultar entregas ni Perceco."""
+    z = Decimal("0")
+    total = lambda name: sum((getattr(line, name) for line in vm.lines), z)
+    net = total("neto"); gross = total("imp_bruto")
+    collection=total("recoleccion"); hectare=total("cuota_ha"); quality=total("bp_calidad")
+    transport=total("b_transporte"); globalgap=total("b_global"); base=total("base_i"); final=total("importe_total")
+    vat_rate = vm.lines[0].iva if vm.lines else z
+    withholding_rate = vm.lines[0].retencion if vm.lines else z
+    # Los importes fiscales se presentan como la diferencia persistida, distribuida
+    # por sus tasas; nunca se reconstruye la liquidación ni se modifican sus datos.
+    fiscal_delta = final-base
+    denom = vat_rate-withholding_rate
+    vat_amount = fiscal_delta * vat_rate / denom if denom else z
+    withholding_amount = vat_amount-fiscal_delta
+    rows=tuple(CommercialBreakdownRow(line.variedad,line.neto,line.precio_comer,line.imp_bruto) for line in vm.lines)
+    average = (final/net) if net else None
+    return PremiumLiquidationViewModel(
+        member_id=vm.recipient_member_id,member_name=vm.recipient_name,tax_id_masked=None,
+        remittance_name=vm.remittance_name,campaign=vm.campaign,company=vm.company,crop=vm.crop,
+        varieties=tuple(dict.fromkeys(line.variedad for line in vm.lines)),period_from="—",period_to="—",payment_date=str(vm.payment_date or ""),
+        effective_net_kg=net,commercial_net_kg=net,waste_net_kg=z,rotten_net_kg=z,gross_amount=gross,
+        commercial_amount=gross,commercial_average_price=(gross/net if net else None),destruction_amount=z,destruction_price=None,
+        rotten_amount=z,rotten_price=None,gross_average_price=(gross/net if net else None),commercial_breakdown_title="DESGLOSE COMERCIAL",
+        primary_label="Producción liquidada",secondary_label=None,waste_label="Mermas",secondary_enabled=False,secondary_counts_as_commercial=False,
+        primary_kg=net,primary_price=(gross/net if net else None),primary_amount=gross,secondary_kg=z,secondary_price=None,secondary_amount=z,
+        waste_kg=z,waste_price=None,waste_amount=z,commercial_kg=net,collection_amount=collection,hectare_fee_amount=hectare,
+        quality_amount=quality,transport_amount=transport,globalgap_amount=globalgap,taxable_base=base,vat_rate=vat_rate,
+        vat_amount=vat_amount,withholding_rate=withholding_rate,withholding_amount=withholding_amount,total_amount=final,
+        final_average_price=average,final_average_price_pts=(average*PESETA_RATE if average is not None else None),commercial_breakdown=rows,
+        id_liqs=vm.id_liqs)
+
+
+def export_persisted_liquidation_pdf(vm, path: Path) -> Path:
+    return PremiumLiquidationPdfRenderer().render(_premium_view_model(vm), path, is_draft=False)

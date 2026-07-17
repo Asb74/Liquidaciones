@@ -25,11 +25,44 @@ class LiquidationRepository:
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? AND recipient_member_id=? ORDER BY id", (batch_id, recipient_member_id)).fetchall()
 
-    def list_batches(self, *, status: str | None = None):
-        sql = "SELECT * FROM liquidation_batches"; args = ()
-        if status: sql += " WHERE status=?"; args = (status,)
+    def list_batches(self, **filters):
+        clauses=[]; args=[]
+        mapping={"status":"b.status","campaign":"b.campaign","company":"b.company","crop":"b.crop","remittance_id":"b.remesa_id"}
+        for key,column in mapping.items():
+            if filters.get(key) not in (None, ""):
+                clauses.append(f"{column}=?"); args.append(filters[key])
+        if filters.get("member_id") not in (None, ""):
+            clauses.append("EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id=b.batch_id AND l.recipient_member_id=?)"); args.append(filters["member_id"])
+        if filters.get("date_from"): clauses.append("substr(b.payment_date,1,10)>=?"); args.append(filters["date_from"])
+        if filters.get("date_to"): clauses.append("substr(b.payment_date,1,10)<=?"); args.append(filters["date_to"])
+        sql = """SELECT b.*,
+          (SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=b.batch_id) line_count,
+          (SELECT COUNT(DISTINCT recipient_member_id) FROM liquidaciones l WHERE l.batch_id=b.batch_id) recipient_count,
+          (SELECT COUNT(*) FROM generated_documents d WHERE d.batch_id=b.batch_id AND d.status='GENERATED') document_count
+          FROM liquidation_batches b"""
+        if clauses: sql += " WHERE " + " AND ".join(clauses)
         with self.database.connect() as conn:
-            return conn.execute(sql + " ORDER BY created_at DESC", args).fetchall()
+            return conn.execute(sql + " ORDER BY b.created_at DESC", tuple(args)).fetchall()
+
+    def list_batch_documents(self, batch_id: str):
+        with self.database.connect() as conn:
+            return conn.execute("""SELECT d.*,b.status batch_status,b.remesa_name,
+              (SELECT socio FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id LIMIT 1) recipient_name,
+              (SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id) line_count,
+              (SELECT group_concat(id_liq,' · ') FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id) id_liqs
+              FROM generated_documents d JOIN liquidation_batches b ON b.batch_id=d.batch_id
+              WHERE d.batch_id=? ORDER BY d.id DESC""",(batch_id,)).fetchall()
+
+    def list_active_documents(self, batch_id: str):
+        return [r for r in self.list_batch_documents(batch_id) if r["status"] == "GENERATED"]
+
+    def mark_batch_voided(self, batch_id: str, *, reason: str, user: str | None, voided_at: str) -> bool:
+        with self.database.connect() as conn:
+            return conn.execute("UPDATE liquidation_batches SET status='VOIDED',voided_at=?,voided_by=?,void_reason=? WHERE batch_id=? AND status='ACTIVE'",(voided_at,user,reason,batch_id)).rowcount == 1
+
+    def mark_lines_voided(self, batch_id: str, *, reason: str, user: str | None, voided_at: str) -> int:
+        with self.database.connect() as conn:
+            return conn.execute("UPDATE liquidaciones SET status='VOIDED',voided_at=?,voided_by=?,void_reason=? WHERE batch_id=? AND status='ACTIVE'",(voided_at,user,reason,batch_id)).rowcount
 
     def record_document(self, **values) -> None:
         with self.database.connect() as conn:

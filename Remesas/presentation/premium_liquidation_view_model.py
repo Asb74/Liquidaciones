@@ -99,6 +99,7 @@ class PremiumLiquidationViewModel:
     price_max_reference: Decimal | None = None
     price_min_reference: Decimal | None = None
     group_benchmark: PremiumGroupBenchmark | None = None
+    id_liqs: tuple[str, ...] = ()
 
     @property
     def variety_text(self) -> str:

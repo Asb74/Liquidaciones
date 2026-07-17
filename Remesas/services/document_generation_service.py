@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from data.persistence.liquidation_repository import LiquidationRepository
+from domain.document_models import DocumentType
 from domain.utils import safe_path_part
 from exporters.persisted_liquidation_pdf_exporter import export_persisted_liquidation_pdf
 from presentation.persisted_liquidation_pdf_view_model import PersistedLiquidationPdfLine, PersistedLiquidationPdfTotals, PersistedLiquidationPdfViewModel
@@ -63,12 +64,12 @@ class DocumentGenerationService:
             try:
                 if options.generate_pdfs: self._emit(progress_callback,"GENERATING_PDF",path=str(path)); self.exporter(vm,path)
                 digest=sha256(path.read_bytes()).hexdigest() if path.exists() else None; now=datetime.now(timezone.utc).isoformat()
-                doc=GeneratedDocument(batch_id,int(batch["remesa_id"]),recipient,"PDF",path,True); good.append(doc)
-                self.repository.record_document(batch_id=batch_id,remittance_id=int(batch["remesa_id"]),recipient_member_id=recipient,document_type="PDF",file_path=str(path),status="GENERATED",generated_at=now,file_hash=digest,created_by=self.user)
+                doc=GeneratedDocument(batch_id,int(batch["remesa_id"]),recipient,DocumentType.PDF_MEMBER.value,path,True); good.append(doc)
+                self.repository.record_document(batch_id=batch_id,remittance_id=int(batch["remesa_id"]),recipient_member_id=recipient,document_type=DocumentType.PDF_MEMBER.value,file_path=str(path),status="GENERATED",generated_at=now,file_hash=digest,created_by=self.user)
                 self.repository.audit(batch_id,"DOCUMENT_GENERATED",json.dumps({"recipient_member_id":recipient,"path":str(path)}))
             except Exception as exc:
-                doc=GeneratedDocument(batch_id,int(batch["remesa_id"]),recipient,"PDF",path,False,str(exc)); bad.append(doc)
-                self.repository.record_document(batch_id=batch_id,remittance_id=int(batch["remesa_id"]),recipient_member_id=recipient,document_type="PDF",file_path=str(path),status="FAILED",generated_at=None,error_message=str(exc),created_by=self.user)
+                doc=GeneratedDocument(batch_id,int(batch["remesa_id"]),recipient,DocumentType.PDF_MEMBER.value,path,False,str(exc)); bad.append(doc)
+                self.repository.record_document(batch_id=batch_id,remittance_id=int(batch["remesa_id"]),recipient_member_id=recipient,document_type=DocumentType.PDF_MEMBER.value,file_path=str(path),status="FAILED",generated_at=None,error_message=str(exc),created_by=self.user)
                 self.repository.audit(batch_id,"DOCUMENT_GENERATION_FAILED",json.dumps({"recipient_member_id":recipient,"error":str(exc)})); self._emit(progress_callback,"ERROR",error=str(exc))
         self._emit(progress_callback,"FINISHED",batch_id=batch_id); return DocumentGenerationResult(batch_id,len(groups),tuple(good),tuple(bad),out)
     def generate_for_batches(self,batch_ids:Sequence[str],*,options:DocumentGenerationOptions=DocumentGenerationOptions(),progress_callback=None,cancel_requested:Callable[[],bool]|None=None):
@@ -76,7 +77,7 @@ class DocumentGenerationService:
         for index,batch_id in enumerate(batch_ids,1):
             if cancel_requested and cancel_requested(): cancelled=True; break
             try: results.append(self.generate_for_batch(batch_id,options=options,progress_callback=progress_callback))
-            except Exception: results.append(DocumentGenerationResult(batch_id,0,(),(GeneratedDocument(batch_id,0,0,"PDF",Path(),False,"Error de batch"),),self.output_root))
+            except Exception: results.append(DocumentGenerationResult(batch_id,0,(),(GeneratedDocument(batch_id,0,0,DocumentType.PDF_MEMBER.value,Path(),False,"Error de batch"),),self.output_root))
         failed=sum(bool(x.failed_documents) for x in results)
         return BatchDocumentGenerationResult(len(batch_ids),len(results)-failed,failed,tuple(results),cancelled)
     def regenerate_documents(self,batch_id:str,*,recipient_member_id:int|None=None,options:DocumentGenerationOptions=DocumentGenerationOptions()):
