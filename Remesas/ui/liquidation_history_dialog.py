@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
@@ -8,6 +9,78 @@ from tkinter import messagebox, simpledialog, ttk
 from services.path_opener import open_path
 
 logger = logging.getLogger(__name__)
+
+
+FILTER_LABELS = {
+    "campaign": "Campaña",
+    "company": "Empresa",
+    "crop": "Cultivo",
+    "remittance_id": "N.º remesa",
+    "member_id": "N.º socio",
+    "date_from": "Fecha desde",
+    "date_to": "Fecha hasta",
+    "status": "Estado",
+}
+
+COLUMN_LABELS = {
+    "batch_id": "Id. de lote",
+    "remesa": "Remesa",
+    "fecha": "Fecha",
+    "cultivo": "Cultivo",
+    "campaña": "Campaña",
+    "empresa": "Empresa",
+    "líneas": "Líneas",
+    "destinatarios": "Destinatarios",
+    "pdfs": "PDF",
+    "estado": "Estado",
+    "creado": "Creado",
+}
+
+DOCUMENT_COLUMN_LABELS = {
+    "batch": "Id. de lote",
+    "remesa": "Remesa",
+    "socio": "N.º socio",
+    "nombre": "Socio",
+    "lineas": "Líneas",
+    "idliq": "IdLiq",
+    "ruta": "Ruta",
+    "estado": "Estado",
+}
+
+STATUS_FILTER_VALUES = {
+    "Todos": "",
+    "Activa": "ACTIVE",
+    "Anulada": "VOIDED",
+    "Parcial": "PARTIAL",
+}
+
+
+def _status_label(value: str) -> str:
+    labels = {
+        "ACTIVE": "Activa",
+        "VOIDED": "Anulada",
+        "PARTIAL": "Parcial",
+        "FAILED": "Error",
+        "GENERATED": "Generado",
+        "SUPERSEDED": "Sustituido",
+    }
+    return labels.get(str(value or "").upper(), str(value or ""))
+
+
+def _date_label(value, *, include_time=False) -> str:
+    """Format common persisted ISO dates without changing their stored value."""
+    if value in (None, ""):
+        return ""
+    original = str(value)
+    try:
+        parsed = value if isinstance(value, (date, datetime)) else datetime.fromisoformat(original.replace("Z", "+00:00"))
+        if include_time:
+            if isinstance(parsed, datetime):
+                return parsed.strftime("%d/%m/%Y %H:%M")
+            return parsed.strftime("%d/%m/%Y 00:00")
+        return parsed.strftime("%d/%m/%Y")
+    except (TypeError, ValueError):
+        return original
 
 
 class DocumentSelectorDialog(tk.Toplevel):
@@ -21,28 +94,32 @@ class DocumentSelectorDialog(tk.Toplevel):
         columns = ("batch", "remesa", "socio", "nombre", "lineas", "idliq", "ruta", "estado")
         self.tree = ttk.Treeview(self, columns=columns, show="headings")
         for column in columns:
-            self.tree.heading(column, text=column.title())
+            self.tree.heading(column, text=DOCUMENT_COLUMN_LABELS[column])
             self.tree.column(column, width=125)
         self.tree.column("ruta", width=310)
         self.tree.pack(fill="both", expand=True, padx=8, pady=8)
         self.tree.bind("<Double-1>", lambda _event: self.open_pdf())
+        self._documents = {}
         bar = ttk.Frame(self); bar.pack(fill="x", padx=8, pady=8)
-        for text, command in (("Abrir PDF", self.open_pdf), ("Abrir carpeta", self.open_folder), ("Regenerar", self.regenerate), ("Cerrar", self.destroy)):
+        for text, command in (("Abrir PDF", self.open_pdf), ("Abrir carpeta", self.open_folder), ("Regenerar PDF", self.regenerate), ("Cerrar", self.destroy)):
             ttk.Button(bar, text=text, command=command).pack(side="left", padx=3)
         self.refresh()
 
     def refresh(self):
         self.tree.delete(*self.tree.get_children())
+        self._documents.clear()
         for batch_id in self.batch_ids:
             for document in self.history.list_recipient_documents(batch_id):
-                self.tree.insert("", "end", values=(batch_id, document["remittance_id"], document["recipient_member_id"], document["recipient_name"], document["line_count"], document["id_liqs"], document["file_path"], document["status"]))
+                values = (batch_id, document["remittance_id"], document["recipient_member_id"], document["recipient_name"], document["line_count"], document["id_liqs"], document["file_path"], document["status"])
+                item = self.tree.insert("", "end", values=(*values[:-1], _status_label(values[-1])))
+                self._documents[item] = values
         children = self.tree.get_children()
         if children:
             self.tree.selection_set(children[0]); self.tree.focus(children[0])
 
     def selected(self):
         selected = self.tree.selection()
-        return self.tree.item(selected[0], "values") if selected else None
+        return self._documents.get(selected[0]) if selected else None
 
     def _open(self, path, *, batch_id, recipient_member_id):
         try:
@@ -81,23 +158,31 @@ class LiquidationHistoryDialog(tk.Toplevel):
         super().__init__(parent); self.history=history; self.title("Liquidaciones guardadas — Historial"); self.geometry("1300x650"); self.transient(parent)
         filters=ttk.LabelFrame(self,text="Filtros"); filters.pack(fill="x",padx=8,pady=8); self.vars={}
         for i,name in enumerate(("campaign","company","crop","remittance_id","member_id","date_from","date_to","status")):
-            ttk.Label(filters,text=name.replace("_"," ").title()).grid(row=0,column=i,sticky="w"); self.vars[name]=tk.StringVar(); ttk.Entry(filters,textvariable=self.vars[name],width=14).grid(row=1,column=i,padx=2)
+            ttk.Label(filters,text=FILTER_LABELS[name]).grid(row=0,column=i,sticky="w")
+            self.vars[name]=tk.StringVar(value="Todos" if name == "status" else "")
+            if name == "status":
+                ttk.Combobox(filters, textvariable=self.vars[name], values=tuple(STATUS_FILTER_VALUES), state="readonly", width=12).grid(row=1,column=i,padx=2)
+            else:
+                ttk.Entry(filters,textvariable=self.vars[name],width=14).grid(row=1,column=i,padx=2)
         ttk.Button(filters,text="Buscar",command=self.refresh).grid(row=1,column=8,padx=6)
         cols=("batch_id","remesa","fecha","cultivo","campaña","empresa","líneas","destinatarios","pdfs","estado","creado")
         self.tree=ttk.Treeview(self,columns=cols,show="headings")
-        for c in cols:self.tree.heading(c,text=c.title()); self.tree.column(c,width=105)
-        self.tree.column("batch_id",width=240); self.tree.pack(fill="both",expand=True,padx=8,pady=4)
+        column_widths = {"batch_id": 240, "remesa": 100, "fecha": 95, "cultivo": 110, "campaña": 80, "empresa": 70, "líneas": 70, "destinatarios": 95, "pdfs": 60, "estado": 80, "creado": 135}
+        for c in cols:self.tree.heading(c,text=COLUMN_LABELS[c]); self.tree.column(c,width=column_widths[c])
+        self.tree.pack(fill="both",expand=True,padx=8,pady=4)
         bar=ttk.Frame(self); bar.pack(fill="x",padx=8,pady=8)
         self.void_button = None
-        for text,cmd in (("Ver detalle",self.detail),("Visualizar PDFs",self.documents),("Regenerar PDFs",self.regenerate),("Anular",self.void),("Abrir carpeta",self.folder),("Cerrar",self.destroy)):
+        for text,cmd in (("Ver detalle",self.detail),("Visualizar PDF",self.documents),("Regenerar PDF",self.regenerate),("Anular liquidación",self.void),("Abrir carpeta",self.folder),("Cerrar",self.destroy)):
             button=ttk.Button(bar,text=text,command=cmd); button.pack(side="left",padx=3)
-            if text == "Anular": self.void_button = button
+            if text == "Anular liquidación": self.void_button = button
         self.tree.bind("<<TreeviewSelect>>", lambda _event: self._update_actions()); self.refresh()
     def batch_id(self):
         s=self.tree.selection(); return self.tree.item(s[0],"values")[0] if s else None
     def refresh(self):
-        self.tree.delete(*self.tree.get_children()); filters={k:v.get().strip() for k,v in self.vars.items() if v.get().strip()}
-        for b in self.history.list_batches(filters): self.tree.insert("","end",values=(b["batch_id"],b["remesa_id"],b["payment_date"],b["crop"],b["campaign"],b["company"],b["line_count"],b["recipient_count"],b["document_count"],b["status"],b["created_at"]))
+        self.tree.delete(*self.tree.get_children()); filters={k:v.get().strip() for k,v in self.vars.items() if k != "status" and v.get().strip()}
+        status = STATUS_FILTER_VALUES.get(self.vars["status"].get(), "")
+        if status: filters["status"] = status
+        for b in self.history.list_batches(filters): self.tree.insert("","end",values=(b["batch_id"],b["remesa_id"],_date_label(b["payment_date"]),b["crop"],b["campaign"],b["company"],b["line_count"],b["recipient_count"],b["document_count"],_status_label(b["status"]),_date_label(b["created_at"], include_time=True)))
         self._update_actions()
     def _update_actions(self):
         bid=self.batch_id(); batch=self.history.get_batch_detail(bid)["batch"] if bid else None
@@ -105,7 +190,7 @@ class LiquidationHistoryDialog(tk.Toplevel):
     def detail(self):
         bid=self.batch_id()
         if bid:
-            d=self.history.get_batch_detail(bid); messagebox.showinfo("Detalle",f"Batch: {bid}\nRemesa: {d['batch']['remesa_name']}\nEstado: {d['batch']['status']}\nLíneas: {len(d['lines'])}",parent=self)
+            d=self.history.get_batch_detail(bid); messagebox.showinfo("Detalle",f"Id. de lote: {bid}\nRemesa: {d['batch']['remesa_name']}\nEstado: {_status_label(d['batch']['status'])}\nLíneas: {len(d['lines'])}",parent=self)
     def documents(self):
         if self.batch_id(): DocumentSelectorDialog(self,self.history,(self.batch_id(),))
     def regenerate(self):
