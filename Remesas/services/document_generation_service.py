@@ -11,6 +11,7 @@ import logging
 
 from data.persistence.liquidation_repository import LiquidationRepository
 from domain.document_models import DocumentType
+from domain.member_rules import is_excluded_member, log_system_member_excluded
 from domain.utils import safe_path_part
 from exporters.persisted_liquidation_pdf_exporter import export_persisted_liquidation_pdf
 from presentation.persisted_liquidation_pdf_view_model import PersistedLiquidationPdfLine, PersistedLiquidationPdfTotals, PersistedLiquidationPdfViewModel
@@ -56,7 +57,13 @@ class DocumentGenerationService:
         rows=self.repository.list_batch_liquidations(batch_id)
         groups=defaultdict(list)
         for row in rows:
-            if recipient_member_id is None or int(row["recipient_member_id"])==recipient_member_id: groups[int(row["recipient_member_id"])].append(row)
+            recipient = int(row["recipient_member_id"])
+            if is_excluded_member(recipient):
+                continue
+            if recipient_member_id is None or recipient == recipient_member_id:
+                groups[recipient].append(row)
+        if is_excluded_member(recipient_member_id):
+            log_system_member_excluded(logger, origin="DocumentGenerationService.generate_for_batch", count=1, batch_id=batch_id)
         self._emit(progress_callback,"GROUPING_RECIPIENTS",batch_id=batch_id,recipients=len(groups))
         out=self.output_root/safe_path_part(batch["campaign"])/safe_path_part(batch["crop"])/safe_path_part(batch["remesa_name"])/"definitivos"
         good=[]; bad=[]; self.repository.audit(batch_id,"DOCUMENT_GENERATION_STARTED",json.dumps({"recipients":len(groups)}))

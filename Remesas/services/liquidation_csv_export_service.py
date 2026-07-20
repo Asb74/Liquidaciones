@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any
+from domain.member_rules import is_excluded_member
 
 logger = logging.getLogger(__name__)
 
@@ -143,13 +144,17 @@ class LiquidationCsvExportService:
     def _export(self, rows, batch, export_type, *, batch_id=None, batch_ids=(), modification_group_id=None, member_id=None, output_directory=None, user=None, force=False):
         if not rows: return self._failure(export_type, "El lote no contiene liquidaciones exportables.", batch_id=batch_id, modification_group_id=modification_group_id, user=user)
         if self.legacy_repository is None: return self._failure(export_type, "No se puede consultar FacSoc en la base legacy.", batch_id=batch_id, modification_group_id=modification_group_id, user=user)
-        included=[]; excluded=0
+        system_rows=[row for row in rows if is_excluded_member(row["id_socio"]) or ("recipient_member_id" in row.keys() and is_excluded_member(row["recipient_member_id"]))]
+        rows=[row for row in rows if row not in system_rows]
+        included=[]; excluded=len(system_rows)
         try:
             for row in rows:
                 if self.legacy_repository.member_is_self_billed(int(row["id_socio"])): excluded += 1
                 else: included.append(row)
         except Exception as exc: return self._failure(export_type, f"No se puede consultar FacSoc: {exc}", batch_id=batch_id, modification_group_id=modification_group_id, user=user)
-        if not included: return self._failure(export_type, "No existen liquidaciones exportables. Todos los socios seleccionados están excluidos por FacSoc = SI.", batch_id=batch_id, modification_group_id=modification_group_id, user=user, excluded=excluded)
+        if not included:
+            message = "No existen liquidaciones exportables. El socio 0 es un registro técnico excluido." if system_rows else "No existen liquidaciones exportables. Todos los socios seleccionados están excluidos por FacSoc = SI."
+            return self._failure(export_type, message, batch_id=batch_id, modification_group_id=modification_group_id, user=user, excluded=excluded)
         errors=self.validate_rows(included)
         if errors: return self._failure(export_type, "\n".join(errors), batch_id=batch_id, modification_group_id=modification_group_id, user=user, excluded=excluded)
         fingerprint=hashlib.sha256(json.dumps([[self._value(r, f) for f in CSV_FIELDS] for r in included], default=str, ensure_ascii=False, separators=(",",":" )).encode()).hexdigest()

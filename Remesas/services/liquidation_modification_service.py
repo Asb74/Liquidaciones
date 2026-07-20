@@ -5,6 +5,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from domain.member_rules import SYSTEM_MEMBER_ID
 
 
 MONEY_COLUMNS = ("neto", "imp_bruto", "recoleccion", "cuota_ha", "bp_calidad",
@@ -41,7 +42,7 @@ class LiquidationModificationService:
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (reversal_id, original["remesa_id"], original["remesa_name"], original["campaign"], original["company"], original["crop"], original["payment_date"],
                  f"REVERSAL:{group_id}", original["original_line_count"], original["final_line_count"], "ACTIVE", now, user, "REVERSAL", original_batch_id, replacement_batch_id, group_id))
-            rows = conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? ORDER BY id", (original_batch_id,)).fetchall()
+            rows = conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? AND recipient_member_id<>? AND id_socio<>? ORDER BY id", (original_batch_id, SYSTEM_MEMBER_ID, SYSTEM_MEMBER_ID)).fetchall()
             for row in rows:
                 data = dict(row)
                 new_id = self.persistence._next_id(conn, data["cultivo"], data["campana"], data["empresa"], user, reversal_id)

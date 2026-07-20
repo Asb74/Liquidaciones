@@ -9,6 +9,7 @@ from domain.calculation_models import CalculationStatus, FiscalCalculation, Grad
 from domain.financial_rules import applied_amount_or_zero, calculate_quality_adjustment
 from domain.hectare_fee import calculate_line_hectare_fee
 from domain.models import Delivery, Remesa
+from domain.member_rules import is_excluded_member, log_system_member_excluded
 from domain.utils import is_liquidated, parse_yes_no, round_money, round_price, to_decimal
 from services.calibre_master_service import CalibreMasterService
 from domain.audit import current_audit
@@ -122,6 +123,14 @@ class LiquidacionCalculator:
         header = LiquidationHeader(values.get("IdREMESA", ""), str(values.get("REMESA") or "Simulación"), str(values.get("CAMPAÑA") or ""), str(values.get("EMPRESA") or ""), str(values.get("CULTIVO") or ""), str(values.get("FECHARE") or ""), str(values.get("PERIODO1") or ""), str(values.get("PERIODO2") or ""), str(values.get("TipoLiq") or ""), str(values.get("CATEGORIA") or ""), str(values.get("IdSocio") or "0"), [str(values.get("VARIEDAD") or "")], options, prices)
         grouped: dict[tuple[int, str, str], dict[str, Any]] = defaultdict(lambda: {"count": 0, "net": Decimal("0"), "deliveries": [], "grades": [Decimal("0") for _ in range(12)], "des": Decimal("0"), "mesa": Decimal("0"), "pod": Decimal("0")})
         warnings: list[str] = []
+        excluded_deliveries = [d for d in deliveries if is_excluded_member(d.socio)]
+        deliveries = [d for d in deliveries if not is_excluded_member(d.socio)]
+        if excluded_deliveries:
+            excluded_kg = sum((d.effective_net_kg for d in excluded_deliveries), Decimal("0"))
+            log_system_member_excluded(self.logger, origin="LiquidacionCalculator.calculate",
+                                       count=len(excluded_deliveries), net_kg=excluded_kg,
+                                       remesa_id=header.remesa_id)
+            warnings.append(f"[ExcludedSystemMember] member_id=0 deliveries_excluded={len(excluded_deliveries)} net_kg_excluded={excluded_kg}")
         liquidated = sum(1 for d in deliveries if is_liquidated(d.liquidado))
         if liquidated:
             warnings.append(f"{liquidated} entregas ya figuran como liquidadas.")

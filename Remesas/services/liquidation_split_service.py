@@ -5,6 +5,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from data.fiscal_regime_repository import FiscalRegimeRepository
 from domain.liquidacion_calculator import calculate_fiscal_result
 from domain.persistence_models import SplitPreviewLine, SplitRecipient, SplitRule
+from domain.member_rules import is_excluded_member, log_system_member_excluded
+import logging
 
 MONEY=Decimal("0.01"); KILOS=Decimal("0.001")
 
@@ -13,13 +15,20 @@ class LiquidationSplitService:
     def __init__(self, persistence_conn, legacy_conn) -> None:
         self.persistence_conn=persistence_conn
         self.fiscal=FiscalRegimeRepository(legacy_conn)
+        self.logger=logging.getLogger(__name__)
 
     def rules_for(self, member_id: int) -> tuple[SplitRule,...]:
+        if is_excluded_member(member_id):
+            return ()
         rows=self.persistence_conn.execute("SELECT * FROM split_rules WHERE source_member_id=? AND active=1",(member_id,)).fetchall()
         result=[]
         for row in rows:
             recipients=self.persistence_conn.execute("SELECT * FROM split_rule_recipients WHERE rule_id=? AND active=1 ORDER BY sort_order,id",(row["id"],)).fetchall()
-            result.append(SplitRule(row["id"],member_id,row["split_type"],tuple(SplitRecipient(r["recipient_member_id"],r["recipient_member_name"] or "",Decimal(str(r["value"])),bool(r["is_residual"]),r["sort_order"]) for r in recipients),row["source_member_name"] or "",row["campaign"],row["crop"],row["variety"],row["remittance_id"],row["priority"]))
+            valid = [r for r in recipients if not is_excluded_member(r["recipient_member_id"])]
+            if len(valid) != len(recipients):
+                log_system_member_excluded(self.logger, origin="LiquidationSplitService.rules_for", count=len(recipients)-len(valid))
+                continue
+            result.append(SplitRule(row["id"],member_id,row["split_type"],tuple(SplitRecipient(r["recipient_member_id"],r["recipient_member_name"] or "",Decimal(str(r["value"])),bool(r["is_residual"]),r["sort_order"]) for r in valid),row["source_member_name"] or "",row["campaign"],row["crop"],row["variety"],row["remittance_id"],row["priority"]))
         return tuple(result)
 
     def resolve_rule(self, member, header) -> SplitRule | None:
@@ -61,6 +70,10 @@ class LiquidationSplitService:
         return parts
 
     def split(self, member, header, *, cod_art: int | None=None) -> tuple[SplitPreviewLine,...]:
+        if is_excluded_member(member.member_id):
+            log_system_member_excluded(self.logger, origin="LiquidationSplitService.split", count=1,
+                                       net_kg=getattr(member, "net_kg", 0), remesa_id=header.remesa_id)
+            return ()
         rule=self.resolve_rule(member,header); pairs=self.factors(rule,member.member_id,member.member_name)
         residual=next((i for i,(r,_) in enumerate(pairs) if r.is_residual),len(pairs)-1); factors=[f for _,f in pairs]
         fields={"net": (Decimal(member.net_kg),KILOS), "gross":(Decimal(member.gross_amount),MONEY), "collection":(Decimal(member.collection_amount or 0),MONEY), "hectare":(Decimal(member.hectare_fee_amount or 0),MONEY), "quality":(Decimal(member.quality_amount or 0),MONEY), "transport":(Decimal(member.transport_amount or 0),MONEY), "globalgap":(Decimal(member.globalgap_amount or 0),MONEY), "base":(Decimal(member.taxable_base or 0),MONEY)}
