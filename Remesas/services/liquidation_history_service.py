@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 
 class LiquidationHistoryService:
@@ -52,8 +53,23 @@ class LiquidationHistoryService:
             return self.csv_export_service.export_modification(batch["modification_group_id"], user=user, force=force)
         return self.csv_export_service.export_batch(batch_id, member_id=member_id, user=user, force=force)
 
+    def export_csv_batches(self, batch_ids, *, user=None, force=False):
+        if not self.csv_export_service: raise RuntimeError("La exportación CSV no está configurada")
+        return self.csv_export_service.export_batches(batch_ids, user=user, force=force)
+
     def list_csv_exports(self, batch_id):
         return self.repository.list_csv_exports(batch_id=batch_id)
+
+    def last_csv_export(self, batch_ids):
+        selected = set(batch_ids)
+        exports = self.repository.list_csv_exports()
+        for export in exports:
+            if export["status"] != "GENERATED":
+                continue
+            ids = set(json.loads(export["batch_ids_json"] or "[]")) if export["export_type"] == "MASS" else {export["batch_id"]}
+            if ids == selected:
+                return export
+        return None
 
     def regenerate_csv_export(self, export_id, *, user=None):
         if not self.csv_export_service: raise RuntimeError("La exportación CSV no está configurada")

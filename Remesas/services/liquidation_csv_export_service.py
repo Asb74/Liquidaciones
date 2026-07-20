@@ -10,6 +10,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,8 @@ class CsvExportResult:
 class LiquidationCsvExportService:
     def __init__(self, repository, legacy_repository=None, output_directory: Path | str | None = None) -> None:
         self.repository, self.legacy_repository = repository, legacy_repository
-        self.output_directory = Path(output_directory) if output_directory else Path(r"X:\Exportaciones")
+        # CSVs live with their liquidation documents; never on a shared drive.
+        self.output_root = Path(output_directory) if output_directory else Path.cwd() / "salidas" / "remesas"
 
     @staticmethod
     def format_decimal(value: Any) -> str:
@@ -108,6 +110,20 @@ class LiquidationCsvExportService:
         rows=self.repository.list_csv_rows_for_batch(batch_id, member_id)
         return self._export(rows, batch, "MEMBER" if member_id is not None else "FULL_BATCH", batch_id=batch_id, member_id=member_id, output_directory=output_directory, user=user, force=force)
 
+    def export_batches(self, batch_ids, output_directory: Path | None = None, user: str | None = None, force: bool = False) -> CsvExportResult:
+        """Build one CSV directly from SQLite rows for all selected batches."""
+        batch_ids = tuple(dict.fromkeys(str(batch_id) for batch_id in batch_ids))
+        if len(batch_ids) == 1:
+            return self.export_batch(batch_ids[0], output_directory=output_directory, user=user, force=force)
+        batches = tuple(self.repository.get_batch(batch_id) for batch_id in batch_ids)
+        if not batches or any(batch is None for batch in batches):
+            return self._failure("MASS", "Uno de los lotes seleccionados no existe.", user=user)
+        if any(batch["status"] not in ("ACTIVE", "PARTIAL") for batch in batches):
+            return self._failure("MASS", "El estado de uno de los lotes no permite exportarlo.", user=user)
+        rows = self.repository.export_batches(batch_ids)
+        return self._export(rows, batches[0], "MASS", batch_ids=batch_ids,
+                            output_directory=output_directory, user=user, force=force)
+
     def export_modification(self, modification_group_id: str, output_directory: Path | None = None, user: str | None = None, force: bool = False) -> CsvExportResult:
         rows=self.repository.list_csv_rows_for_modification(modification_group_id)
         reversal=[r for r in rows if r["operation_type"] == "REVERSAL"]; replacement=[r for r in rows if r["operation_type"] == "REPLACEMENT"]
@@ -119,10 +135,12 @@ class LiquidationCsvExportService:
         old=self.repository.get_csv_export(export_id)
         if not old: return self._failure("", "No existe la exportación solicitada.", user=user)
         self.repository.mark_csv_export_superseded(export_id)
+        if old["export_type"] == "MASS":
+            return self.export_batches(json.loads(old["batch_ids_json"] or "[]"), Path(old["file_path"]).parent, user, force=True)
         if old["modification_group_id"]: return self.export_modification(old["modification_group_id"], Path(old["file_path"]).parent, user, force=True)
         return self.export_batch(old["batch_id"], Path(old["file_path"]).parent, old["member_id"], user, force=True)
 
-    def _export(self, rows, batch, export_type, *, batch_id=None, modification_group_id=None, member_id=None, output_directory=None, user=None, force=False):
+    def _export(self, rows, batch, export_type, *, batch_id=None, batch_ids=(), modification_group_id=None, member_id=None, output_directory=None, user=None, force=False):
         if not rows: return self._failure(export_type, "El lote no contiene liquidaciones exportables.", batch_id=batch_id, modification_group_id=modification_group_id, user=user)
         if self.legacy_repository is None: return self._failure(export_type, "No se puede consultar FacSoc en la base legacy.", batch_id=batch_id, modification_group_id=modification_group_id, user=user)
         included=[]; excluded=0
@@ -138,26 +156,43 @@ class LiquidationCsvExportService:
         duplicate=self.repository.find_generated_csv_export(batch_id=batch_id, modification_group_id=modification_group_id, member_id=member_id, export_type=export_type, source_fingerprint=fingerprint)
         if duplicate and not force:
             return CsvExportResult(False, duplicate["id"], Path(duplicate["file_path"]), Path(duplicate["info_file_path"]) if duplicate["info_file_path"] else None, export_type, already_existed=True, error_message="Esta liquidación ya fue exportada a contabilidad.")
-        directory=Path(output_directory or self.output_directory)
+        directory = Path(output_directory) if output_directory else self._output_directory(batch, export_type)
         try:
             directory.mkdir(parents=True, exist_ok=True)
             if not os.access(directory, os.W_OK): raise OSError("La carpeta no permite escritura")
-            # Microseconds prevent a confirmed regeneration from colliding with
-            # the original export made during the same second.
-            stamp=datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-            csv_path=directory / self.build_csv_filename(batch, member_id=member_id, modification=export_type == "MODIFICATION", attempt=stamp)
-            info_path=directory / self.build_info_filename(batch, member_id=member_id, modification=export_type == "MODIFICATION", attempt=stamp)
+            # Massive filenames use the required second precision.
+            stamp=datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+            if export_type == "MASS":
+                csv_path = directory / f"Exportación masiva {stamp}.csv"
+                info_path = directory / f"Información Exportación masiva {stamp}.txt"
+                # Names intentionally have second precision; regenerate in the next second.
+                while csv_path.exists() or info_path.exists():
+                    time.sleep(0.05)
+                    stamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+                    csv_path = directory / f"Exportación masiva {stamp}.csv"
+                    info_path = directory / f"Información Exportación masiva {stamp}.txt"
+            else:
+                attempt=datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                csv_path=directory / self.build_csv_filename(batch, member_id=member_id, modification=export_type == "MODIFICATION", attempt=attempt)
+                info_path=directory / self.build_info_filename(batch, member_id=member_id, modification=export_type == "MODIFICATION", attempt=attempt)
             if csv_path.exists() or info_path.exists(): raise FileExistsError("Ya existe un archivo con el nombre previsto")
             content=self._csv_content(included); self._atomic_write(csv_path, content)
             file_hash=hashlib.sha256(csv_path.read_bytes()).hexdigest()
             net=sum((Decimal(str(r["neto"])) for r in included), Decimal("0")); amount=sum((Decimal(str(r["importe_total"])) for r in included), Decimal("0"))
-            self._atomic_write(info_path, self._info_content(batch, included, export_type, batch_id, modification_group_id, excluded, csv_path, file_hash, net, amount, user))
-            export_id=self.repository.record_csv_export(batch_id=batch_id, modification_group_id=modification_group_id, remittance_id=batch["remesa_id"], member_id=member_id, export_type=export_type, file_path=str(csv_path), info_file_path=str(info_path), status="GENERATED", line_count=len(included), excluded_line_count=excluded, net_total=str(net), amount_total=str(amount), file_hash=file_hash, source_fingerprint=fingerprint, generated_at=datetime.now().isoformat(), created_by=user)
-            self.repository.audit(batch_id or "", "CSV_EXPORT_COMPLETED", json.dumps({"modification_group_id":modification_group_id,"export_type":export_type,"rows_exported":len(included),"rows_excluded":excluded,"file_path":str(csv_path),"hash":file_hash}), user)
+            self._atomic_write(info_path, self._info_content(batch, included, export_type, batch_id, batch_ids, modification_group_id, excluded, csv_path, file_hash, net, amount, user))
+            export_id=self.repository.record_csv_export(batch_id=batch_id, modification_group_id=modification_group_id, remittance_id=batch["remesa_id"], member_id=member_id, export_type=export_type, batch_ids_json=json.dumps(batch_ids) if export_type == "MASS" else None, file_path=str(csv_path), info_file_path=str(info_path), status="GENERATED", line_count=len(included), excluded_line_count=excluded, net_total=str(net), amount_total=str(amount), file_hash=file_hash, source_fingerprint=fingerprint, generated_at=datetime.now().isoformat(), created_by=user)
+            self.repository.audit(batch_id or "", "CSV_MASS_EXPORT" if export_type == "MASS" else "CSV_BATCH_EXPORT", json.dumps({"batch_ids":batch_ids,"modification_group_id":modification_group_id,"export_type":export_type,"batch_count":len(batch_ids) or 1,"rows_exported":len(included),"rows_excluded":excluded,"file_path":str(csv_path),"hash":file_hash}), user)
             logger.info("[AccountingCsvExport] batch_id=%s modification_group_id=%s export_type=%s selected_rows=%d exported_rows=%d excluded_rows=%d net_total=%s amount_total=%s path=%s hash=%s status=GENERATED", batch_id, modification_group_id, export_type, len(rows), len(included), excluded, net, amount, csv_path, file_hash)
             return CsvExportResult(True, export_id, csv_path, info_path, export_type, len(included), excluded, net, amount, file_hash)
         except Exception as exc:
             return self._failure(export_type, str(exc), batch_id=batch_id, modification_group_id=modification_group_id, user=user, excluded=excluded)
+
+    def _output_directory(self, batch, export_type):
+        if export_type == "MASS":
+            return self.output_root / "Impresiones masivas" / "Exportaciones"
+        return (self.output_root / self._safe_filename(batch["campaign"]) /
+                self._safe_filename(batch["crop"]) / self._safe_filename(batch["remesa_name"]) /
+                "Exportaciones")
 
     def _csv_content(self, rows):
         lines=[";".join(CSV_HEADERS)]
@@ -178,9 +213,17 @@ class LiquidationCsvExportService:
         except Exception:
             tmp.unlink(missing_ok=True); raise
 
-    def _info_content(self,batch,rows,export_type,batch_id,group,excluded,csv_path,file_hash,net,amount,user):
-        now=datetime.now(); labels={"FULL_BATCH":"COMPLETA","MEMBER":"SOCIO","MODIFICATION":"MODIFICACIÓN","REVERSAL_ONLY":"ANULACIÓN"}
-        lines=(f"Nº Liquidación: {rows[0]['id_concepto_liq']}",f"Concepto Liquidación: {rows[0]['concepto_liq']}",f"Total Liquidaciones: {len(rows)}",f"Neto Liquidado: {self.format_decimal(net)}",f"Importe Total Liquidado: {self.format_decimal(amount)}",f"Campaña: {batch['campaign']}",f"Cultivo: {batch['crop']}",f"Empresa: {batch['company']}",f"Usuario: {user or ''}",f"Día: {now:%d/%m/%Y}",f"Hora: {now:%H:%M:%S}",f"Tipo de exportación: {labels[export_type]}",f"Id. de lote: {batch_id or ''}",f"Grupo de modificación: {group or ''}",f"Líneas excluidas por FacSoc: {excluded}",f"Archivo CSV: {csv_path}",f"Hash SHA-256: {file_hash}")
+    def _info_content(self,batch,rows,export_type,batch_id,batch_ids,group,excluded,csv_path,file_hash,net,amount,user):
+        now=datetime.now(); labels={"FULL_BATCH":"COMPLETA","MEMBER":"SOCIO","MODIFICATION":"MODIFICACIÓN","REVERSAL_ONLY":"ANULACIÓN","MASS":"MASIVA"}
+        if export_type == "MASS":
+            remittances = tuple(dict.fromkeys(str(row["remittance_id"]) for row in rows))
+            lines=(f"Número de remesas: {len(batch_ids)}", "Listado de remesas:", *remittances,
+                   f"Número de líneas: {len(rows)}", f"Neto total: {self.format_decimal(net)}",
+                   f"Importe total: {self.format_decimal(amount)}", f"Usuario: {user or ''}",
+                   f"Fecha: {now:%d/%m/%Y}", f"Hora: {now:%H:%M:%S}", f"Ruta: {csv_path}",
+                   f"Líneas excluidas por FacSoc: {excluded}", f"Hash SHA-256: {file_hash}")
+        else:
+            lines=(f"Nº Liquidación: {rows[0]['id_concepto_liq']}",f"Concepto Liquidación: {rows[0]['concepto_liq']}",f"Total Liquidaciones: {len(rows)}",f"Neto Liquidado: {self.format_decimal(net)}",f"Importe Total Liquidado: {self.format_decimal(amount)}",f"Campaña: {batch['campaign']}",f"Cultivo: {batch['crop']}",f"Empresa: {batch['company']}",f"Usuario: {user or ''}",f"Día: {now:%d/%m/%Y}",f"Hora: {now:%H:%M:%S}",f"Tipo de exportación: {labels[export_type]}",f"Id. de lote: {batch_id or ''}",f"Grupo de modificación: {group or ''}",f"Líneas excluidas por FacSoc: {excluded}",f"Archivo CSV: {csv_path}",f"Hash SHA-256: {file_hash}")
         return ("\r\n".join(lines)+"\r\n").encode("cp1252")
 
     def _failure(self, export_type, error, *, batch_id=None, modification_group_id=None, user=None, excluded=0):

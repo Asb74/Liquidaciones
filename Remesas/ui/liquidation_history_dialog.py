@@ -167,7 +167,7 @@ class LiquidationHistoryDialog(tk.Toplevel):
                 ttk.Entry(filters,textvariable=self.vars[name],width=14).grid(row=1,column=i,padx=2)
         ttk.Button(filters,text="Buscar",command=self.refresh).grid(row=1,column=8,padx=6)
         cols=("batch_id","remesa","fecha","cultivo","campaña","empresa","líneas","destinatarios","pdfs","estado","creado")
-        self.tree=ttk.Treeview(self,columns=cols,show="headings")
+        self.tree=ttk.Treeview(self,columns=cols,show="headings", selectmode="extended")
         column_widths = {"batch_id": 240, "remesa": 100, "fecha": 95, "cultivo": 110, "campaña": 80, "empresa": 70, "líneas": 70, "destinatarios": 95, "pdfs": 60, "estado": 80, "creado": 135}
         for c in cols:self.tree.heading(c,text=COLUMN_LABELS[c]); self.tree.column(c,width=column_widths[c])
         self.tree.pack(fill="both",expand=True,padx=8,pady=4)
@@ -177,8 +177,10 @@ class LiquidationHistoryDialog(tk.Toplevel):
             button=ttk.Button(bar,text=text,command=cmd); button.pack(side="left",padx=3)
             if text == "Anular liquidación": self.void_button = button
         self.tree.bind("<<TreeviewSelect>>", lambda _event: self._update_actions()); self.refresh()
+    def selected_batch_ids(self):
+        return tuple(self.tree.item(item, "values")[0] for item in self.tree.selection())
     def batch_id(self):
-        s=self.tree.selection(); return self.tree.item(s[0],"values")[0] if s else None
+        selected = self.selected_batch_ids(); return selected[0] if selected else None
     def refresh(self):
         self.tree.delete(*self.tree.get_children()); filters={k:v.get().strip() for k,v in self.vars.items() if k != "status" and v.get().strip()}
         status = STATUS_FILTER_VALUES.get(self.vars["status"].get(), "")
@@ -199,24 +201,27 @@ class LiquidationHistoryDialog(tk.Toplevel):
     def regenerate(self):
         if self.batch_id(): self.history.regenerate_documents(self.batch_id()); self.refresh()
     def export_csv(self):
-        bid=self.batch_id()
-        if not bid: return
+        batch_ids=self.selected_batch_ids()
+        if not batch_ids: return
         try:
-            result=self.history.export_csv(bid)
+            result=self.history.export_csv(batch_ids[0]) if len(batch_ids) == 1 else self.history.export_csv_batches(batch_ids)
             if result.already_existed:
                 messagebox.showinfo("Exportar CSV", "Esta liquidación ya fue exportada a contabilidad.", parent=self); return
             if not result.success: raise ValueError(result.error_message)
-            messagebox.showinfo("Exportar CSV", f"CSV generado correctamente.\n\nLíneas exportadas: {result.line_count}\nLíneas excluidas: {result.excluded_line_count}\nNeto: {result.net_total}\nImporte total: {result.amount_total}\nRuta: {result.csv_path}", parent=self)
+            if len(batch_ids) == 1:
+                message = f"CSV generado correctamente.\n\nRemesa: {self.history.get_batch_detail(batch_ids[0])['batch']['remesa_name']}\nLíneas exportadas: {result.line_count}\nLíneas excluidas: {result.excluded_line_count}\nNeto: {result.net_total}\nImporte total: {result.amount_total}\nRuta: {result.csv_path}"
+            else:
+                remittances = "\n".join(str(self.history.get_batch_detail(batch_id)['batch']['remesa_id']) for batch_id in batch_ids)
+                message = f"Exportación masiva generada correctamente.\n\nRemesas:\n{remittances}\n\nLíneas: {result.line_count}\nNeto: {result.net_total}\nImporte: {result.amount_total}\nRuta: {result.csv_path}"
+            messagebox.showinfo("Exportar CSV", message, parent=self)
         except Exception as exc: messagebox.showerror("Exportar CSV", str(exc), parent=self)
     def open_last_csv(self):
-        bid=self.batch_id(); exports=self.history.list_csv_exports(bid) if bid else ()
-        generated=next((item for item in exports if item["status"] == "GENERATED"), None)
+        batch_ids=self.selected_batch_ids(); generated=self.history.last_csv_export(batch_ids) if batch_ids else None
         if generated:
             try: open_path(generated["file_path"])
             except Exception as exc: messagebox.showerror("Abrir CSV", str(exc), parent=self)
     def regenerate_csv(self):
-        bid=self.batch_id(); exports=self.history.list_csv_exports(bid) if bid else ()
-        generated=next((item for item in exports if item["status"] == "GENERATED"), None)
+        batch_ids=self.selected_batch_ids(); generated=self.history.last_csv_export(batch_ids) if batch_ids else None
         if not generated: messagebox.showinfo("Regenerar CSV", "No existe una exportación CSV generada para este lote.", parent=self); return
         try:
             result=self.history.regenerate_csv_export(generated["id"])
