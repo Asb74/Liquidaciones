@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from data.persistence.database import PersistenceDatabase
 from data.persistence.search_text import normalize_search_text
+
+
+logger = logging.getLogger(__name__)
 
 
 class LiquidationRepository:
@@ -189,35 +194,59 @@ class LiquidationRepository:
           FROM liquidation_batches b""" + (" WHERE " + " AND ".join(clauses) if clauses else "")
         with self.database.connect() as conn: return conn.execute(sql,args).fetchone()
 
-    def search_liquidation_members(self, text, campaign=None, company=None, crop=None,
-                                   remittance_id=None, status=None, limit=30):
+    def search_liquidation_members(
+        self,
+        text,
+        *,
+        campaign=None,
+        company=None,
+        crop=None,
+        remittance_id=None,
+        status=None,
+        date_from=None,
+        date_to=None,
+        limit=30,
+    ):
         """Find recipient members in saved lines, not in batch headers."""
         query = normalize_search_text(text)
         if not query:
             return ()
-        clauses, args = self._history_clauses({"campaign": campaign, "company": company,
-                                                "crop": crop, "remittance_id": remittance_id,
-                                                "status": status})
+        scope = {
+            "campaign": campaign,
+            "company": company,
+            "crop": crop,
+            "remittance_id": remittance_id,
+            "status": status,
+            "date_from": date_from,
+            "date_to": date_to,
+        }
+        clauses, args = self._history_clauses(scope)
         where = " AND ".join(clauses) if clauses else "1=1"
-        # Candidate retrieval is intentionally bounded; accent-insensitive matching happens in
-        # Python because SQLite's built-in UPPER/LIKE does not normalize Spanish diacritics.
-        candidate_limit = max(int(limit) * 20, 200)
+        contains = f"%{query}%"
+        starts = f"{query}%"
         with self.database.connect() as conn:
-            candidates = conn.execute(f"""SELECT DISTINCT l.recipient_member_id AS member_id,
+            matches = conn.execute(f"""SELECT DISTINCT l.recipient_member_id AS member_id,
                 l.socio AS name
                 FROM liquidaciones l
                 JOIN liquidation_batches b ON b.batch_id = l.batch_id
-                WHERE {where} AND l.recipient_member_id IS NOT NULL
-                ORDER BY l.recipient_member_id
-                LIMIT ?""", (*args, candidate_limit)).fetchall()
-        matches = [row for row in candidates
-                   if query in str(row["member_id"]) or query in normalize_search_text(row["name"])]
-        matches.sort(key=lambda row: (
-            0 if str(row["member_id"]) == query else
-            1 if str(row["member_id"]).startswith(query) else
-            2 if normalize_search_text(row["name"]).startswith(query) else 3,
-            row["member_id"], normalize_search_text(row["name"])))
-        return tuple(matches[:int(limit)])
+                WHERE {where}
+                  AND l.recipient_member_id IS NOT NULL
+                  AND (CAST(l.recipient_member_id AS TEXT) LIKE ?
+                       OR NORMALIZE_SEARCH_TEXT(l.socio) LIKE ?)
+                ORDER BY CASE
+                    WHEN CAST(l.recipient_member_id AS TEXT) = ? THEN 0
+                    WHEN CAST(l.recipient_member_id AS TEXT) LIKE ? THEN 1
+                    WHEN NORMALIZE_SEARCH_TEXT(l.socio) LIKE ? THEN 2
+                    ELSE 3
+                END, l.recipient_member_id, NORMALIZE_SEARCH_TEXT(l.socio)
+                LIMIT ?""", (*args, contains, contains, query, starts, starts, int(limit))).fetchall()
+        logger.info(
+            "[MemberSearch] text=%r normalized=%r campaign=%r company=%r crop=%r "
+            "remittance_id=%r status=%r date_from=%r date_to=%r results=%d",
+            text, query, campaign, company, crop, remittance_id, status,
+            date_from, date_to, len(matches),
+        )
+        return tuple(matches)
 
     def list_batch_documents(self, batch_id: str):
         with self.database.connect() as conn:

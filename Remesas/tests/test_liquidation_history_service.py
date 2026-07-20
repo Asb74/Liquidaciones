@@ -117,3 +117,48 @@ def test_member_filter_uses_recipient_lines_and_not_batch_headers(history):
 def test_search_normalization_removes_accents_and_normalizes_spaces():
     from data.persistence.search_text import normalize_search_text
     assert normalize_search_text(' García   Pérez ') == 'GARCIA PEREZ'
+
+
+def test_member_search_uses_context_filters_dates_and_recipient_members(history):
+    service, db = history
+    with db.connect() as conn:
+        conn.execute("INSERT INTO liquidation_batches(batch_id,remesa_id,remesa_name,campaign,company,crop,payment_date,calculation_fingerprint,original_line_count,final_line_count,status,created_at) VALUES('b2',8,'R8','2027','2','KAKIS','2027-03-15','fp2',1,1,'VOIDED','now')")
+        conn.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,variedad,neto,imp_bruto,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,source_member_id,recipient_member_id,source_liquidation_key,batch_id,created_at) VALUES('KA2027030001','2027-03-15','KAKIS','2027','2',999,'SOLEDAD GARCÍA','KAKI','10','20','1','1','0','0','0','18','12','2','19.8',8,'R8','NORMAL',999,5899,'key2','b2','now')")
+
+    assert [row['member_id'] for row in service.search_liquidation_members('sole')] == [5899]
+    assert [row['member_id'] for row in service.search_liquidation_members('garcia')] == [5899]
+    assert [row['member_id'] for row in service.search_liquidation_members('5899')] == [5899]
+    assert [row['member_id'] for row in service.search_liquidation_members('589')] == [5899]
+    assert service.search_liquidation_members('sole', campaign='2026') == ()
+    assert service.search_liquidation_members('sole', company='1') == ()
+    assert service.search_liquidation_members('sole', crop='CITRICOS') == ()
+    assert service.search_liquidation_members('sole', remittance_id=7) == ()
+    assert service.search_liquidation_members('sole', status='ACTIVE') == ()
+    assert service.search_liquidation_members('sole', date_to='2027-03-14') == ()
+    assert [row['member_id'] for row in service.search_liquidation_members('sole', date_from='2027-03-15', date_to='2027-03-15')] == [5899]
+
+
+def test_member_search_filters_in_sql_before_the_result_limit(history):
+    service, db = history
+    with db.connect() as conn:
+        for member_id in range(100, 750):
+            conn.execute(
+                "INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,variedad,neto,imp_bruto,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,source_member_id,recipient_member_id,source_liquidation_key,batch_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (f'CI{member_id:010d}', '2026-02-01', 'CITRICOS', '2026', '1', member_id,
+                 f'SOCIO {member_id}', 'NAVEL', '10', '20', '1', '1', '0', '0', '0', '18',
+                 '12', '2', '19.8', 7, 'R7', 'NORMAL', member_id, member_id,
+                 f'key-{member_id}', 'b1', 'now'),
+            )
+        conn.execute(
+            "UPDATE liquidaciones SET socio='SOLEDAD FUERA DEL LIMITE' WHERE recipient_member_id=749"
+        )
+
+    assert [row['member_id'] for row in service.search_liquidation_members('sole')] == [749]
+
+
+def test_member_search_signatures_reject_member_id(history):
+    service, _ = history
+    with pytest.raises(TypeError):
+        service.search_liquidation_members('10', member_id=10)
+    with pytest.raises(TypeError):
+        service.repository.search_liquidation_members('10', member_id=10)

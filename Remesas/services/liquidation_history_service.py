@@ -39,8 +39,30 @@ class LiquidationHistoryService:
             date_to=date_to,
         )
 
-    def search_liquidation_members(self, text, **filters):
-        return self.repository.search_liquidation_members(text, **filters)
+    def search_liquidation_members(
+        self,
+        text,
+        *,
+        campaign=None,
+        company=None,
+        crop=None,
+        remittance_id=None,
+        status=None,
+        date_from=None,
+        date_to=None,
+        limit=30,
+    ):
+        return self.repository.search_liquidation_members(
+            text,
+            campaign=campaign,
+            company=company,
+            crop=crop,
+            remittance_id=remittance_id,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
 
     def history_summary(self, filters=None):
         return self.repository.history_summary(**(filters or {}))

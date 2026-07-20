@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import tkinter as tk
+import logging
 from tkinter import ttk
 
+
+logger = logging.getLogger(__name__)
 
 class MemberSearchEntry(ttk.Frame):
     """Debounced member autocomplete whose selected id is separate from its text."""
@@ -43,7 +46,13 @@ class MemberSearchEntry(ttk.Frame):
     def _search(self):
         self._after_id = None
         text = self.member_search_text.get().strip()
-        self._results = tuple(self.search(text))
+        try:
+            self._results = tuple(self.search(text))
+        except Exception:
+            logger.exception("[MemberSearchFailed]")
+            self._results = ()
+            self._close()
+            return
         if not self._results:
             self._close()
             return
