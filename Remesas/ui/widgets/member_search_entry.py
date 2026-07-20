@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import tkinter as tk
 import logging
+from tkinter import font as tkfont
 from tkinter import ttk
 
 
@@ -10,6 +11,10 @@ logger = logging.getLogger(__name__)
 
 class MemberSearchEntry(ttk.Frame):
     """Debounced member autocomplete whose selected id is separate from its text."""
+
+    _MAX_POPUP_WIDTH = 800
+    _VISIBLE_RESULTS = 10
+    _LISTBOX_PADDING = 4
 
     def __init__(self, parent, search, *, width=46):
         super().__init__(parent)
@@ -60,18 +65,58 @@ class MemberSearchEntry(ttk.Frame):
             self.popup = tk.Toplevel(self)
             self.popup.wm_overrideredirect(True)
             self.popup.transient(self.winfo_toplevel())
-            self.listbox = tk.Listbox(self.popup, exportselection=False)
-            self.listbox.pack(fill="both", expand=True)
+            self.listbox = tk.Listbox(
+                self.popup,
+                exportselection=False,
+            )
+            self.scrollbar = ttk.Scrollbar(
+                self.popup,
+                orient="vertical",
+                command=self.listbox.yview,
+            )
+            self.listbox.configure(yscrollcommand=self.scrollbar.set)
+            self.listbox.pack(side="left", fill="both", expand=True)
             self.listbox.bind("<ButtonRelease-1>", self._accept)
             self.listbox.bind("<Return>", self._accept)
             self.listbox.bind("<Escape>", lambda _event: self._close())
         self.listbox.delete(0, "end")
-        for row in self._results:
-            self.listbox.insert("end", f"{row['member_id']} — {row['name']}")
-        self.listbox.configure(height=min(8, len(self._results)))
+        labels = tuple(
+            f"{row['member_id']} — {row['name']}" for row in self._results
+        )
+        for label in labels:
+            self.listbox.insert("end", label)
+        has_scrollbar = len(self._results) > self._VISIBLE_RESULTS
+        if has_scrollbar:
+            self.scrollbar.pack(side="right", fill="y")
+        else:
+            self.scrollbar.pack_forget()
+        self.listbox.configure(height=min(self._VISIBLE_RESULTS, len(self._results)))
         self.listbox.selection_set(0)
-        self.popup.geometry(f"+{self.winfo_rootx()}+{self.winfo_rooty() + self.winfo_height()}")
+        self._position_popup(labels, has_scrollbar)
         self.popup.deiconify()
+
+    def _position_popup(self, labels, has_scrollbar):
+        """Size the popup from the rendered labels and align it with the entry."""
+        self.update_idletasks()
+        self.popup.update_idletasks()
+
+        font = tkfont.Font(font=self.listbox.cget("font"))
+        longest_label_width = max((font.measure(label) for label in labels), default=0)
+        listbox_width = longest_label_width + (2 * self._LISTBOX_PADDING)
+        listbox_width += 2 * (
+            int(self.listbox.cget("borderwidth"))
+            + int(self.listbox.cget("highlightthickness"))
+        )
+        popup_width = max(self.entry.winfo_width(), listbox_width)
+        if has_scrollbar:
+            popup_width += self.scrollbar.winfo_reqwidth()
+        popup_width = min(popup_width, self._MAX_POPUP_WIDTH)
+
+        self.popup.geometry(
+            f"{popup_width}x{self.popup.winfo_reqheight()}"
+            f"+{self.entry.winfo_rootx()}"
+            f"+{self.entry.winfo_rooty() + self.entry.winfo_height()}"
+        )
 
     def _accept(self, _event=None):
         if self.popup:
