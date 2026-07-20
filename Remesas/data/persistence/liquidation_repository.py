@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from data.persistence.database import PersistenceDatabase
+import unicodedata
 
 
 class LiquidationRepository:
@@ -40,7 +41,8 @@ class LiquidationRepository:
                 WHERE l.batch_id IN ({placeholders})
                   AND l.status NOT IN ('VOIDED','SUPERSEDED')
                   AND b.status IN ('ACTIVE','PARTIAL')
-                ORDER BY b.campaign, b.company, b.crop, b.remesa_id, l.id""",
+                ORDER BY b.campaign, b.company, b.crop, b.remesa_id,
+                  CASE l.operation_type WHEN 'REVERSAL' THEN 0 WHEN 'REPLACEMENT' THEN 1 ELSE 2 END, l.id""",
                 batch_ids,
             ).fetchall()
 
@@ -109,6 +111,61 @@ class LiquidationRepository:
         if clauses: sql += " WHERE " + " AND ".join(clauses)
         with self.database.connect() as conn:
             return conn.execute(sql + " ORDER BY b.created_at DESC", tuple(args)).fetchall()
+
+    @staticmethod
+    def _history_clauses(filters, *, batch_alias="b"):
+        """Build the one canonical history scope used by the UI and exports."""
+        clauses, args = [], []
+        mapping={"status":f"{batch_alias}.status","campaign":f"{batch_alias}.campaign","company":f"{batch_alias}.company","crop":f"{batch_alias}.crop","remittance_id":f"{batch_alias}.remesa_id"}
+        for key, column in mapping.items():
+            if filters.get(key) not in (None, ""):
+                clauses.append(f"{column}=?"); args.append(filters[key])
+        if filters.get("member_id") not in (None, ""):
+            clauses.append(f"EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id={batch_alias}.batch_id AND l.recipient_member_id=?)"); args.append(filters["member_id"])
+        if filters.get("date_from"): clauses.append(f"substr({batch_alias}.payment_date,1,10)>=?"); args.append(str(filters["date_from"]))
+        if filters.get("date_to"): clauses.append(f"substr({batch_alias}.payment_date,1,10)<=?"); args.append(str(filters["date_to"]))
+        return clauses, args
+
+    def list_history_filter_options(self, campaign=None, company=None, crop=None, status=None, date_from=None, date_to=None):
+        """Return only values represented by stored batches, respecting parent filters."""
+        base = {"status": status, "date_from": date_from, "date_to": date_to}
+        def values(column, extra):
+            clauses, args = self._history_clauses({**base, **extra})
+            sql = f"SELECT DISTINCT b.{column} FROM liquidation_batches b" + (" WHERE " + " AND ".join(clauses) if clauses else "") + f" AND b.{column} IS NOT NULL AND b.{column}<>''" if clauses else f"SELECT DISTINCT b.{column} FROM liquidation_batches b WHERE b.{column} IS NOT NULL AND b.{column}<>''"
+            return sql + " ORDER BY 1", args
+        with self.database.connect() as conn:
+            sql, args = values("campaign", {}); campaigns=tuple(r[0] for r in conn.execute(sql,args))
+            sql, args = values("company", {"campaign": campaign}); companies=tuple(r[0] for r in conn.execute(sql,args))
+            sql, args = values("crop", {"campaign": campaign, "company": company}); crops=tuple(r[0] for r in conn.execute(sql,args))
+            clauses, args = self._history_clauses({**base, "campaign": campaign, "company": company, "crop": crop})
+            sql="SELECT DISTINCT b.remesa_id,b.remesa_name FROM liquidation_batches b" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY b.remesa_id"
+            remittances=tuple({"id":r[0], "name":r[1], "display":f"{r[0]} — {r[1]}"} for r in conn.execute(sql,args))
+        return {"campaigns":campaigns,"companies":companies,"crops":crops,"remittances":remittances}
+
+    def history_summary(self, **filters):
+        clauses, args = self._history_clauses(filters)
+        sql="""SELECT COUNT(*) batch_count,
+          COALESCE(SUM((SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=b.batch_id)),0) line_count,
+          COALESCE(SUM((SELECT COUNT(DISTINCT recipient_member_id) FROM liquidaciones l WHERE l.batch_id=b.batch_id)),0) recipient_count
+          FROM liquidation_batches b""" + (" WHERE " + " AND ".join(clauses) if clauses else "")
+        with self.database.connect() as conn: return conn.execute(sql,args).fetchone()
+
+    def search_liquidation_members(self, text, campaign=None, company=None, crop=None, remittance_id=None, status=None, limit=30):
+        text=" ".join(str(text or "").split())
+        if not text: return ()
+        normalized="".join(c for c in unicodedata.normalize("NFD", text).upper() if unicodedata.category(c) != "Mn")
+        def normalize(value):
+            return "".join(c for c in unicodedata.normalize("NFD", str(value or "")).upper() if unicodedata.category(c) != "Mn")
+        with self.database.connect() as conn:
+            conn.create_function("NORMALIZE_MEMBER", 1, normalize)
+            clauses, args=self._history_clauses({"campaign":campaign,"company":company,"crop":crop,"remittance_id":remittance_id,"status":status})
+            where=" AND ".join(clauses) if clauses else "1=1"
+            return conn.execute(f"""SELECT l.recipient_member_id AS member_id, MAX(l.socio) AS name
+              FROM liquidaciones l JOIN liquidation_batches b ON b.batch_id=l.batch_id WHERE {where}
+              GROUP BY l.recipient_member_id
+              HAVING CAST(l.recipient_member_id AS TEXT) LIKE ? OR NORMALIZE_MEMBER(MAX(l.socio)) LIKE ?
+              ORDER BY CASE WHEN CAST(l.recipient_member_id AS TEXT)=? THEN 0 WHEN CAST(l.recipient_member_id AS TEXT) LIKE ? THEN 1 WHEN NORMALIZE_MEMBER(MAX(l.socio)) LIKE ? THEN 2 ELSE 3 END, l.recipient_member_id LIMIT ?""",
+              (*args, f"%{text}%", f"%{normalized}%", text, f"{text}%", f"{normalized}%", int(limit))).fetchall()
 
     def list_batch_documents(self, batch_id: str):
         with self.database.connect() as conn:
