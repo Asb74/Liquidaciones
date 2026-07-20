@@ -230,11 +230,33 @@ class LiquidationHistoryDialog(tk.Toplevel):
     def _crop_changed(self):
         if self._updating_filter_options: return
         self.vars['remittance_id'].set('Todos'); self._load_options()
-    def _search_members(self,text): return self.history.search_liquidation_members(text, **self._filters())
+    def _member_search_filters(self):
+        """Return only context filters; a member cannot scope its own lookup."""
+        filters = self._filters()
+        return {
+            "campaign": filters["campaign"],
+            "company": filters["company"],
+            "crop": filters["crop"],
+            "remittance_id": filters["remittance_id"],
+            "status": filters["status"],
+            "date_from": filters["date_from"],
+            "date_to": filters["date_to"],
+        }
+
+    def _search_members(self, text):
+        return self.history.search_liquidation_members(
+            text, **self._member_search_filters()
+        )
     def selected_batch_ids(self): return tuple(self.tree.item(item,"values")[0] for item in self.tree.selection())
     def batch_id(self):
         selected=self.selected_batch_ids(); return selected[0] if selected else None
     def refresh(self):
+        member_text = self.member_search.member_search_text.get().strip()
+        if member_text and self.member_search.selected_member_id is None:
+            messagebox.showwarning(
+                "Socio", "Seleccione un socio de la lista de resultados.", parent=self
+            )
+            return
         try: filters=self._filters()
         except ValueError as exc: messagebox.showerror("Filtros",str(exc),parent=self); return
         logger.info("[HistoryFilterReload]\nselected_campaign=%s\nselected_company=%s\nselected_crop=%s\nselected_status=%s", filters['campaign'], filters['company'], filters['crop'], filters['status'])
