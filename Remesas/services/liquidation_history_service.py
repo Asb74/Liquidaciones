@@ -6,10 +6,11 @@ from datetime import datetime, timezone
 class LiquidationHistoryService:
     """Fachada de consulta posterior al guardado; la UI nunca accede a SQLite."""
 
-    def __init__(self, repository, document_service, modification_service=None):
+    def __init__(self, repository, document_service, modification_service=None, csv_export_service=None):
         self.repository = repository
         self.document_service = document_service
         self.modification_service = modification_service
+        self.csv_export_service = csv_export_service
 
     def list_batches(self, filters=None):
         return self.repository.list_batches(**(filters or {}))
@@ -43,3 +44,17 @@ class LiquidationHistoryService:
 
     def regenerate_documents(self, batch_id, recipient_member_id=None):
         return self.document_service.regenerate_documents(batch_id, recipient_member_id=recipient_member_id)
+
+    def export_csv(self, batch_id, *, member_id=None, user=None, force=False):
+        if not self.csv_export_service: raise RuntimeError("La exportación CSV no está configurada")
+        batch=self.repository.get_batch(batch_id)
+        if batch and batch["modification_group_id"] and batch["operation_type"] in ("REVERSAL", "REPLACEMENT"):
+            return self.csv_export_service.export_modification(batch["modification_group_id"], user=user, force=force)
+        return self.csv_export_service.export_batch(batch_id, member_id=member_id, user=user, force=force)
+
+    def list_csv_exports(self, batch_id):
+        return self.repository.list_csv_exports(batch_id=batch_id)
+
+    def regenerate_csv_export(self, export_id, *, user=None):
+        if not self.csv_export_service: raise RuntimeError("La exportación CSV no está configurada")
+        return self.csv_export_service.regenerate_export(export_id, user=user)

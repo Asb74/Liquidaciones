@@ -17,6 +17,45 @@ class LiquidationRepository:
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? ORDER BY recipient_member_id,id", (batch_id,)).fetchall()
 
+    _CSV_COLUMNS = "id,id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo"
+
+    def list_csv_rows_for_batch(self, batch_id: str, member_id: int | None = None):
+        clauses = ["batch_id=?", "status NOT IN ('VOIDED','SUPERSEDED')"]
+        args = [batch_id]
+        if member_id is not None:
+            clauses.append("id_socio=?"); args.append(member_id)
+        with self.database.connect() as conn:
+            return conn.execute(f"SELECT {self._CSV_COLUMNS} FROM liquidaciones WHERE {' AND '.join(clauses)} ORDER BY id ASC", args).fetchall()
+
+    def list_csv_rows_for_modification(self, modification_group_id: str):
+        with self.database.connect() as conn:
+            return conn.execute(f"SELECT {self._CSV_COLUMNS},operation_type,batch_id FROM liquidaciones WHERE modification_group_id=? AND operation_type IN ('REVERSAL','REPLACEMENT') ORDER BY CASE operation_type WHEN 'REVERSAL' THEN 0 ELSE 1 END,id ASC", (modification_group_id,)).fetchall()
+
+    def get_csv_export(self, export_id: int):
+        with self.database.connect() as conn:
+            return conn.execute("SELECT * FROM accounting_exports WHERE id=?", (export_id,)).fetchone()
+
+    def list_csv_exports(self, batch_id=None, modification_group_id=None):
+        clauses=[]; args=[]
+        if batch_id is not None: clauses.append("batch_id=?"); args.append(batch_id)
+        if modification_group_id is not None: clauses.append("modification_group_id=?"); args.append(modification_group_id)
+        sql="SELECT * FROM accounting_exports" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY id DESC"
+        with self.database.connect() as conn: return conn.execute(sql,args).fetchall()
+
+    def find_generated_csv_export(self, *, batch_id, modification_group_id, member_id, export_type, source_fingerprint):
+        with self.database.connect() as conn:
+            return conn.execute("SELECT * FROM accounting_exports WHERE batch_id IS ? AND modification_group_id IS ? AND member_id IS ? AND export_type=? AND source_fingerprint=? AND status='GENERATED' ORDER BY id DESC LIMIT 1", (batch_id, modification_group_id, member_id, export_type, source_fingerprint)).fetchone()
+
+    def record_csv_export(self, **values) -> int:
+        from data.persistence.migrations import utcnow
+        with self.database.connect() as conn:
+            attempt = conn.execute("SELECT COALESCE(MAX(generation_attempt),0) FROM accounting_exports WHERE batch_id IS ? AND modification_group_id IS ? AND member_id IS ? AND export_type=?", (values.get("batch_id"),values.get("modification_group_id"),values.get("member_id"),values["export_type"])).fetchone()[0] + 1
+            cursor=conn.execute("INSERT INTO accounting_exports(batch_id,modification_group_id,remittance_id,member_id,export_type,file_path,info_file_path,status,line_count,excluded_line_count,net_total,amount_total,file_hash,source_fingerprint,generated_at,created_at,created_by,error_message,generation_attempt,supersedes_export_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (values.get("batch_id"),values.get("modification_group_id"),values.get("remittance_id"),values.get("member_id"),values["export_type"],values.get("file_path", ""),values.get("info_file_path"),values["status"],values.get("line_count",0),values.get("excluded_line_count",0),values.get("net_total"),values.get("amount_total"),values.get("file_hash"),values.get("source_fingerprint"),values.get("generated_at"),utcnow(),values.get("created_by"),values.get("error_message"),attempt,values.get("supersedes_export_id")))
+            return cursor.lastrowid
+
+    def mark_csv_export_superseded(self, export_id: int) -> None:
+        with self.database.connect() as conn: conn.execute("UPDATE accounting_exports SET status='SUPERSEDED' WHERE id=? AND status='GENERATED'", (export_id,))
+
     def list_modification_chain(self, batch_id: str):
         """All persisted movements linked to the selected batch, for history/detail UI."""
         with self.database.connect() as conn:
