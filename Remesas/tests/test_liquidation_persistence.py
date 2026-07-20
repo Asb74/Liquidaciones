@@ -9,7 +9,7 @@ from services.liquidation_split_service import LiquidationSplitService
 def test_migrations_seed_confirmed_prefixes(tmp_path):
     db=PersistenceDatabase(str(tmp_path/"liquidaciones.sqlite")); db.initialize(); db.initialize()
     with db.connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]==4
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]==5
         assert dict(conn.execute("SELECT crop,prefix FROM liquidation_prefixes"))["DIRECTO"]=="VE"
         assert dict(conn.execute("SELECT crop,prefix FROM liquidation_prefixes"))["DIRECTOCHF"]=="VC"
         assert dict(conn.execute("SELECT crop,prefix FROM liquidation_prefixes"))["CIRUELA"]=="CR"

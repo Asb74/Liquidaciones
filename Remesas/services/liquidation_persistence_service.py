@@ -101,12 +101,15 @@ class LiquidationPersistenceService:
             conn.execute("BEGIN IMMEDIATE")
             duplicate=conn.execute("SELECT batch_id FROM liquidation_batches WHERE remesa_id=? AND calculation_fingerprint=? AND status='ACTIVE'",(int(h.remesa_id),preview.fingerprint)).fetchone()
             if duplicate: raise ValueError(f"La remesa ya está guardada en el batch {duplicate[0]}")
-            conn.execute("INSERT INTO liquidation_batches VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(batch_id,int(h.remesa_id),h.remesa_name,str(h.campana),str(h.empresa),str(h.cultivo),str(h.fecha_pago),preview.fingerprint,preview.original_line_count,len(preview.lines),"ACTIVE",now,user,None,None,None))
+            conn.execute("""INSERT INTO liquidation_batches
+              (batch_id,remesa_id,remesa_name,campaign,company,crop,payment_date,calculation_fingerprint,
+               original_line_count,final_line_count,status,created_at,created_by,operation_type)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(batch_id,int(h.remesa_id),h.remesa_name,str(h.campana),str(h.empresa),str(h.cultivo),str(h.fecha_pago),preview.fingerprint,preview.original_line_count,len(preview.lines),"ACTIVE",now,user,"ORIGINAL"))
             for line in preview.lines:
                 id_liq=self._next_id(conn,str(h.cultivo),str(h.campana),str(h.empresa),user,batch_id)
                 key="|".join(map(str,(h.campana,h.empresa,h.cultivo,h.remesa_id,line.source_member_id,line.variety)))
-                values=(id_liq,str(h.fecha_pago),str(h.cultivo),str(h.campana),str(h.empresa),line.recipient_member_id,line.recipient_name,line.cod_art,line.variety,_d(line.net_kg),_d(line.gross_amount),_d(line.commercial_price) if line.commercial_price is not None else None,_d(line.collection_amount),_d(line.hectare_fee_amount),_d(line.quality_amount),_d(line.transport_amount),_d(line.globalgap_amount),_d(line.taxable_base),_d(line.final_average_price) if line.final_average_price is not None else None,_d(line.vat_rate),_d(line.withholding_rate),_d(line.total_amount),int(h.remesa_id),h.remesa_name,h.tipo_liquidacion,int(h.remesa_id),line.source_member_id,line.recipient_member_id,line.source_member_name,line.variety,key,line.split_rule_id,line.split_type,_d(line.split_factor),int(line.split_factor!=1),batch_id,"ACTIVE",now,user,preview.fingerprint)
-                conn.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,remesa_id,source_member_id,recipient_member_id,source_member_name,source_variety,source_liquidation_key,split_rule_id,split_type,split_factor,is_split,batch_id,status,created_at,created_by,calculation_fingerprint) VALUES("+",".join("?" for _ in values)+")",values)
+                values=(id_liq,str(h.fecha_pago),str(h.cultivo),str(h.campana),str(h.empresa),line.recipient_member_id,line.recipient_name,line.cod_art,line.variety,_d(line.net_kg),_d(line.gross_amount),_d(line.commercial_price) if line.commercial_price is not None else None,_d(line.collection_amount),_d(line.hectare_fee_amount),_d(line.quality_amount),_d(line.transport_amount),_d(line.globalgap_amount),_d(line.taxable_base),_d(line.final_average_price) if line.final_average_price is not None else None,_d(line.vat_rate),_d(line.withholding_rate),_d(line.total_amount),int(h.remesa_id),h.remesa_name,h.tipo_liquidacion,int(h.remesa_id),line.source_member_id,line.recipient_member_id,line.source_member_name,line.variety,key,line.split_rule_id,line.split_type,_d(line.split_factor),int(line.split_factor!=1),batch_id,"ACTIVE",now,user,preview.fingerprint,"ORIGINAL")
+                conn.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,remesa_id,source_member_id,recipient_member_id,source_member_name,source_variety,source_liquidation_key,split_rule_id,split_type,split_factor,is_split,batch_id,status,created_at,created_by,calculation_fingerprint,operation_type) VALUES("+",".join("?" for _ in values)+")",values)
                 persisted.append(PersistedLiquidation(id_liq,line.recipient_member_id,line.total_amount))
             conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)",(batch_id,"SAVE","BATCH",batch_id,json.dumps({"lines":len(persisted)}),_now(),user)); conn.commit()
         except Exception: conn.rollback(); raise
@@ -114,6 +117,12 @@ class LiquidationPersistenceService:
         return PersistenceBatch(batch_id,"ACTIVE",tuple(persisted))
 
     def void_batch(self,batch_id: str,reason: str,user: str | None=None) -> None:
+        # Kept as the compatibility entry point used by older UI flows.  The
+        # accounting cancellation itself is now an immutable reversal.
+        from services.liquidation_modification_service import LiquidationModificationService
+        return LiquidationModificationService(self).void(batch_id, reason, user=user)
+
+    def _void_batch_legacy(self,batch_id: str,reason: str,user: str | None=None) -> None:
         if not reason.strip(): raise ValueError("El motivo de anulación es obligatorio")
         conn=self.database.connect(); now=_now()
         try:

@@ -38,6 +38,22 @@ CREATE INDEX ix_exported_drafts_context ON exported_draft_documents(campaign,cro
 """),(4, "exported_draft_metadata", """
 ALTER TABLE exported_draft_documents ADD COLUMN company TEXT NOT NULL DEFAULT '';
 ALTER TABLE exported_draft_documents ADD COLUMN file_hash TEXT;
+"""),(5, "liquidation_rectification", """
+ALTER TABLE liquidation_batches ADD COLUMN operation_type TEXT NOT NULL DEFAULT 'ORIGINAL';
+ALTER TABLE liquidation_batches ADD COLUMN original_batch_id TEXT REFERENCES liquidation_batches(batch_id);
+ALTER TABLE liquidation_batches ADD COLUMN replacement_batch_id TEXT REFERENCES liquidation_batches(batch_id);
+ALTER TABLE liquidation_batches ADD COLUMN modification_group_id TEXT;
+ALTER TABLE liquidaciones ADD COLUMN operation_type TEXT NOT NULL DEFAULT 'ORIGINAL';
+ALTER TABLE liquidaciones ADD COLUMN original_batch_id TEXT;
+ALTER TABLE liquidaciones ADD COLUMN original_id_liq TEXT;
+ALTER TABLE liquidaciones ADD COLUMN replacement_batch_id TEXT;
+ALTER TABLE liquidaciones ADD COLUMN replacement_id_liq TEXT;
+ALTER TABLE liquidaciones ADD COLUMN modification_group_id TEXT;
+CREATE INDEX ix_batch_modification_group ON liquidation_batches(modification_group_id);
+CREATE INDEX ix_liq_modification_group ON liquidaciones(modification_group_id);
+CREATE INDEX ix_liq_original_id ON liquidaciones(original_id_liq);
+UPDATE liquidation_batches SET operation_type='ORIGINAL' WHERE operation_type IS NULL OR operation_type='';
+UPDATE liquidaciones SET operation_type='ORIGINAL' WHERE operation_type IS NULL OR operation_type='';
 """))
 
 def utcnow() -> str:
