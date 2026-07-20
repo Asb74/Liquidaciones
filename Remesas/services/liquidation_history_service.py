@@ -16,6 +16,19 @@ class LiquidationHistoryService:
     def list_batches(self, filters=None):
         return self.repository.list_batches(**(filters or {}))
 
+    def list_history_filter_options(self, **filters):
+        return self.repository.list_history_filter_options(**filters)
+
+    def search_liquidation_members(self, text, **filters):
+        return self.repository.search_liquidation_members(text, **filters)
+
+    def history_summary(self, filters=None):
+        return self.repository.history_summary(**(filters or {}))
+
+    def filtered_batch_ids(self, filters=None):
+        """Deliberately queries SQLite again: this is not the paged Treeview scope."""
+        return tuple(row["batch_id"] for row in self.list_batches(filters))
+
     def get_batch_detail(self, batch_id):
         return {"batch": self.repository.get_batch(batch_id), "lines": self.repository.list_batch_liquidations(batch_id),
                 "chain": self.repository.list_modification_chain(batch_id)}

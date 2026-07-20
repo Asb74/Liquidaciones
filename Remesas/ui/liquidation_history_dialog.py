@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import date, datetime
 from pathlib import Path
 import tkinter as tk
@@ -154,87 +155,155 @@ class DocumentSelectorDialog(tk.Toplevel):
         messagebox.showinfo("Regenerar", f"Generados: {len(result.generated_documents)}\nErrores: {len(result.failed_documents)}", parent=self)
 
 
+class MemberAutocompleteEntry(ttk.Frame):
+    """Reusable debounced member picker. Free text never becomes a history filter."""
+    def __init__(self, parent, search, *, width=46):
+        super().__init__(parent); self.search=search; self.member_search_text=tk.StringVar(); self.selected_member_id=None; self._after=None; self._results=[]; self._selecting=False
+        self.entry=ttk.Entry(self, textvariable=self.member_search_text, width=width); self.entry.pack(side="left", fill="x", expand=True)
+        ttk.Button(self, text="Limpiar", command=self.clear).pack(side="left", padx=(4,0))
+        self.popup=None; self.member_search_text.trace_add("write", self._changed)
+        self.entry.bind("<Down>", self._down); self.entry.bind("<Up>", self._up); self.entry.bind("<Return>", self._accept); self.entry.bind("<Escape>", lambda _e:self._close())
+    def _changed(self, *_):
+        if self._selecting: return
+        self.selected_member_id=None
+        if self._after: self.after_cancel(self._after)
+        text=self.member_search_text.get().strip()
+        if len(text) < 2: self._close(); return
+        self._after=self.after(250, self._search)
+    def _search(self):
+        self._after=None; text=self.member_search_text.get().strip()
+        self._results=tuple(self.search(text))
+        if not self._results: self._close(); return
+        if not self.popup:
+            self.popup=tk.Toplevel(self); self.popup.wm_overrideredirect(True); self.popup.transient(self.winfo_toplevel())
+            self.listbox=tk.Listbox(self.popup, height=min(8,len(self._results)), exportselection=False); self.listbox.pack(fill="both", expand=True)
+            self.listbox.bind("<ButtonRelease-1>", self._accept); self.listbox.bind("<Return>", self._accept); self.listbox.bind("<Escape>", lambda _e:self._close())
+        self.listbox.delete(0,"end")
+        for row in self._results: self.listbox.insert("end", f"{row['member_id']} — {row['name']}")
+        self.listbox.selection_set(0); self.popup.geometry(f"+{self.winfo_rootx()}+{self.winfo_rooty()+self.winfo_height()}"); self.popup.deiconify()
+    def _accept(self, _event=None):
+        if not self.popup: return "break"
+        selection=self.listbox.curselection()
+        if selection:
+            row=self._results[selection[0]]; self._selecting=True; self.member_search_text.set(f"{row['member_id']} — {row['name']}"); self._selecting=False; self.selected_member_id=row['member_id']
+        self._close(); return "break"
+    def _down(self, _event):
+        if self.popup: self.listbox.focus_set(); self.listbox.selection_clear(0,"end"); self.listbox.selection_set(0)
+        return "break"
+    def _up(self, event): return self._down(event)
+    def _close(self):
+        if self.popup: self.popup.destroy(); self.popup=None
+    def clear(self):
+        self.selected_member_id=None; self.member_search_text.set(""); self._close(); self.entry.focus_set()
+
+
 class LiquidationHistoryDialog(tk.Toplevel):
     def __init__(self, parent, history):
-        super().__init__(parent); self.history=history; self.title("Liquidaciones guardadas — Historial"); self.geometry("1300x650"); self.transient(parent)
-        filters=ttk.LabelFrame(self,text="Filtros"); filters.pack(fill="x",padx=8,pady=8); self.vars={}
-        for i,name in enumerate(("campaign","company","crop","remittance_id","member_id","date_from","date_to","status")):
-            ttk.Label(filters,text=FILTER_LABELS[name]).grid(row=0,column=i,sticky="w")
-            self.vars[name]=tk.StringVar(value="Todos" if name == "status" else "")
-            if name == "status":
-                ttk.Combobox(filters, textvariable=self.vars[name], values=tuple(STATUS_FILTER_VALUES), state="readonly", width=12).grid(row=1,column=i,padx=2)
-            else:
-                ttk.Entry(filters,textvariable=self.vars[name],width=14).grid(row=1,column=i,padx=2)
-        ttk.Button(filters,text="Buscar",command=self.refresh).grid(row=1,column=8,padx=6)
+        super().__init__(parent); self.history=history; self.title("Liquidaciones guardadas — Historial"); self.geometry("1300x720"); self.transient(parent)
+        self.vars={name:tk.StringVar(value="Todos") for name in ("campaign","company","crop","remittance_id","status")}; self.vars.update(date_from=tk.StringVar(), date_to=tk.StringVar())
+        self.export_all_filtered=tk.BooleanVar(value=False); self.remittance_display_to_id={}; self._last_export_batch_ids=()
+        filters=ttk.LabelFrame(self,text="Filtros"); filters.pack(fill="x",padx=8,pady=8)
+        self.combos={}
+        for col,(key,label) in enumerate((("campaign","Campaña"),("company","Empresa"),("crop","Cultivo"),("remittance_id","N.º remesa"),("status","Estado"))):
+            ttk.Label(filters,text=label).grid(row=0,column=col,sticky="w",padx=2)
+            combo=ttk.Combobox(filters,textvariable=self.vars[key],state="readonly",width=20); combo.grid(row=1,column=col,sticky="ew",padx=2); self.combos[key]=combo
+        self.combos['campaign'].bind('<<ComboboxSelected>>', lambda _e:self._campaign_changed()); self.combos['company'].bind('<<ComboboxSelected>>', lambda _e:self._company_changed()); self.combos['crop'].bind('<<ComboboxSelected>>', lambda _e:self._crop_changed())
+        ttk.Label(filters,text="Socio").grid(row=2,column=0,sticky="w",padx=2); self.member_search=MemberAutocompleteEntry(filters,self._search_members,width=52); self.member_search.grid(row=3,column=0,columnspan=2,sticky="ew",padx=2)
+        for col,key in ((2,"date_from"),(3,"date_to")):
+            ttk.Label(filters,text=FILTER_LABELS[key]).grid(row=2,column=col,sticky="w",padx=2); ttk.Entry(filters,textvariable=self.vars[key],width=18).grid(row=3,column=col,sticky="ew",padx=2)
+        ttk.Checkbutton(filters,text="Exportar todas las liquidaciones filtradas",variable=self.export_all_filtered,command=self._update_scope_label).grid(row=3,column=4,sticky="w",padx=4)
+        ttk.Button(filters,text="Buscar",command=self.refresh).grid(row=4,column=3,pady=5); ttk.Button(filters,text="Limpiar filtros",command=self.clear_filters).grid(row=4,column=4,pady=5)
+        for i in range(5): filters.columnconfigure(i,weight=1)
+        self.summary_var=tk.StringVar(); ttk.Label(self,textvariable=self.summary_var).pack(anchor="w",padx=12)
         cols=("batch_id","remesa","fecha","cultivo","campaña","empresa","líneas","destinatarios","pdfs","estado","creado")
-        self.tree=ttk.Treeview(self,columns=cols,show="headings", selectmode="extended")
-        column_widths = {"batch_id": 240, "remesa": 100, "fecha": 95, "cultivo": 110, "campaña": 80, "empresa": 70, "líneas": 70, "destinatarios": 95, "pdfs": 60, "estado": 80, "creado": 135}
-        for c in cols:self.tree.heading(c,text=COLUMN_LABELS[c]); self.tree.column(c,width=column_widths[c])
+        self.tree=ttk.Treeview(self,columns=cols,show="headings",selectmode="extended")
+        widths={"batch_id":240,"remesa":100,"fecha":95,"cultivo":110,"campaña":80,"empresa":70,"líneas":70,"destinatarios":95,"pdfs":60,"estado":80,"creado":135}
+        for c in cols:self.tree.heading(c,text=COLUMN_LABELS[c]); self.tree.column(c,width=widths[c])
         self.tree.pack(fill="both",expand=True,padx=8,pady=4)
-        bar=ttk.Frame(self); bar.pack(fill="x",padx=8,pady=8)
-        self.void_button = None
-        for text,cmd in (("Ver detalle",self.detail),("Visualizar PDF",self.documents),("Regenerar PDF",self.regenerate),("Exportar CSV",self.export_csv),("Abrir último CSV",self.open_last_csv),("Regenerar CSV",self.regenerate_csv),("Anular liquidación",self.void),("Abrir carpeta",self.folder),("Cerrar",self.destroy)):
+        bar=ttk.Frame(self); bar.pack(fill="x",padx=8,pady=8); self.void_button=None; self.export_button=None; self.regenerate_csv_button=None
+        for text,cmd in (("Seleccionar todo lo visible",self.select_visible),("Limpiar selección",self.clear_selection),("Ver detalle",self.detail),("Visualizar PDF",self.documents),("Regenerar PDF",self.regenerate),("Exportar CSV",self.export_csv),("Abrir último CSV",self.open_last_csv),("Regenerar CSV",self.regenerate_csv),("Anular liquidación",self.void),("Abrir carpeta",self.folder),("Cerrar",self.destroy)):
             button=ttk.Button(bar,text=text,command=cmd); button.pack(side="left",padx=3)
-            if text == "Anular liquidación": self.void_button = button
-        self.tree.bind("<<TreeviewSelect>>", lambda _event: self._update_actions()); self.refresh()
-    def selected_batch_ids(self):
-        return tuple(self.tree.item(item, "values")[0] for item in self.tree.selection())
+            if text == "Anular liquidación": self.void_button=button
+            if text == "Exportar CSV": self.export_button=button
+            if text == "Regenerar CSV": self.regenerate_csv_button=button
+        self.tree.bind("<<TreeviewSelect>>", lambda _event:self._update_actions()); self._load_options(); self.refresh()
+    def _filters(self):
+        if self.vars['date_from'].get() and self.vars['date_to'].get() and self.vars['date_from'].get() > self.vars['date_to'].get(): raise ValueError("Fecha desde no puede ser posterior a Fecha hasta.")
+        return {"campaign":None if self.vars['campaign'].get()=="Todos" else self.vars['campaign'].get(), "company":None if self.vars['company'].get()=="Todos" else self.vars['company'].get(), "crop":None if self.vars['crop'].get()=="Todos" else self.vars['crop'].get(), "remittance_id":self.remittance_display_to_id.get(self.vars['remittance_id'].get()), "status":STATUS_FILTER_VALUES.get(self.vars['status'].get(),""), "member_id":self.member_search.selected_member_id, "date_from":self.vars['date_from'].get().strip() or None, "date_to":self.vars['date_to'].get().strip() or None}
+    def _load_options(self):
+        f=self._filters(); options=self.history.list_history_filter_options(**f)
+        self.combos['campaign']['values']=("Todos",*options['campaigns']); self.combos['company']['values']=("Todos",*options['companies']); self.combos['crop']['values']=("Todos",*options['crops']); self.combos['status']['values']=tuple(STATUS_FILTER_VALUES)
+        self.remittance_display_to_id={r['display']:r['id'] for r in options['remittances']}; self.combos['remittance_id']['values']=("Todos",*self.remittance_display_to_id)
+    def _campaign_changed(self): self.vars['company'].set('Todos'); self.vars['crop'].set('Todos'); self.vars['remittance_id'].set('Todos'); self._load_options()
+    def _company_changed(self): self.vars['crop'].set('Todos'); self.vars['remittance_id'].set('Todos'); self._load_options()
+    def _crop_changed(self): self.vars['remittance_id'].set('Todos'); self._load_options()
+    def _search_members(self,text): return self.history.search_liquidation_members(text, **self._filters())
+    def selected_batch_ids(self): return tuple(self.tree.item(item,"values")[0] for item in self.tree.selection())
     def batch_id(self):
-        selected = self.selected_batch_ids(); return selected[0] if selected else None
+        selected=self.selected_batch_ids(); return selected[0] if selected else None
     def refresh(self):
-        self.tree.delete(*self.tree.get_children()); filters={k:v.get().strip() for k,v in self.vars.items() if k != "status" and v.get().strip()}
-        status = STATUS_FILTER_VALUES.get(self.vars["status"].get(), "")
-        if status: filters["status"] = status
-        for b in self.history.list_batches(filters): self.tree.insert("","end",values=(b["batch_id"],b["remesa_id"],_date_label(b["payment_date"]),b["crop"],b["campaign"],b["company"],b["line_count"],b["recipient_count"],b["document_count"],_status_label(b["status"]),_date_label(b["created_at"], include_time=True)))
-        self._update_actions()
+        try: filters=self._filters()
+        except ValueError as exc: messagebox.showerror("Filtros",str(exc),parent=self); return
+        self.tree.delete(*self.tree.get_children())
+        for b in self.history.list_batches(filters): self.tree.insert("","end",values=(b['batch_id'],b['remesa_id'],_date_label(b['payment_date']),b['crop'],b['campaign'],b['company'],b['line_count'],b['recipient_count'],b['document_count'],_status_label(b['status']),_date_label(b['created_at'],include_time=True)))
+        summary=self.history.history_summary(filters); self.summary_var.set(f"Resultados: {summary['batch_count']} remesas · {summary['line_count']} líneas · {summary['recipient_count']} destinatarios" + (" — alcance de la exportación filtrada" if self.export_all_filtered.get() else "")); self._update_actions()
+    def clear_filters(self):
+        for key in self.vars: self.vars[key].set("Todos" if key in self.combos else "")
+        self.member_search.clear(); self.export_all_filtered.set(False); self._load_options(); self.refresh()
+    def _update_scope_label(self): self.refresh()
+    def select_visible(self): self.tree.selection_set(self.tree.get_children())
+    def clear_selection(self): self.tree.selection_remove(self.tree.selection())
     def _update_actions(self):
-        bid=self.batch_id(); batch=self.history.get_batch_detail(bid)["batch"] if bid else None
-        self.void_button.configure(state="normal" if batch and batch["status"] == "ACTIVE" else "disabled")
+        bid=self.batch_id(); batch=self.history.get_batch_detail(bid)['batch'] if bid else None; self.void_button.configure(state="normal" if batch and batch['status']=='ACTIVE' else 'disabled')
     def detail(self):
         bid=self.batch_id()
         if bid:
-            d=self.history.get_batch_detail(bid)
-            chain="\n".join(f"{x['operation_type']}: {x['batch_id']} ({_status_label(x['status'])})" for x in d.get("chain", ()))
+            d=self.history.get_batch_detail(bid); chain="\n".join(f"{x['operation_type']}: {x['batch_id']} ({_status_label(x['status'])})" for x in d.get('chain',()))
             messagebox.showinfo("Detalle",f"Id. de lote: {bid}\nRemesa: {d['batch']['remesa_name']}\nEstado: {_status_label(d['batch']['status'])}\nLíneas: {len(d['lines'])}\n\nTrazabilidad:\n{chain or 'Sin rectificaciones'}",parent=self)
     def documents(self):
         if self.batch_id(): DocumentSelectorDialog(self,self.history,(self.batch_id(),))
     def regenerate(self):
         if self.batch_id(): self.history.regenerate_documents(self.batch_id()); self.refresh()
     def export_csv(self):
-        batch_ids=self.selected_batch_ids()
-        if not batch_ids: return
-        try:
-            result=self.history.export_csv(batch_ids[0]) if len(batch_ids) == 1 else self.history.export_csv_batches(batch_ids)
-            if result.already_existed:
-                messagebox.showinfo("Exportar CSV", "Esta liquidación ya fue exportada a contabilidad.", parent=self); return
-            if not result.success: raise ValueError(result.error_message)
-            if len(batch_ids) == 1:
-                message = f"CSV generado correctamente.\n\nRemesa: {self.history.get_batch_detail(batch_ids[0])['batch']['remesa_name']}\nLíneas exportadas: {result.line_count}\nLíneas excluidas: {result.excluded_line_count}\nNeto: {result.net_total}\nImporte total: {result.amount_total}\nRuta: {result.csv_path}"
-            else:
-                remittances = "\n".join(str(self.history.get_batch_detail(batch_id)['batch']['remesa_id']) for batch_id in batch_ids)
-                message = f"Exportación masiva generada correctamente.\n\nRemesas:\n{remittances}\n\nLíneas: {result.line_count}\nNeto: {result.net_total}\nImporte: {result.amount_total}\nRuta: {result.csv_path}"
-            messagebox.showinfo("Exportar CSV", message, parent=self)
-        except Exception as exc: messagebox.showerror("Exportar CSV", str(exc), parent=self)
+        try: filters=self._filters()
+        except ValueError as exc: messagebox.showerror("Exportar CSV",str(exc),parent=self); return
+        batch_ids=self.history.filtered_batch_ids(filters) if self.export_all_filtered.get() else self.selected_batch_ids()
+        if not batch_ids: messagebox.showinfo("Exportar CSV","No existen liquidaciones que coincidan con los filtros seleccionados." if self.export_all_filtered.get() else "Seleccione una o varias remesas.",parent=self); return
+        if self.export_all_filtered.get() and len(batch_ids)>1:
+            s=self.history.history_summary(filters); text=f"Se van a exportar:\n\nRemesas: {s['batch_count']}\nLiquidaciones: {s['line_count']}\nDestinatarios: {s['recipient_count']}\nCampaña: {filters['campaign'] or 'Todas'}\nEmpresa: {filters['company'] or 'Todas'}\nCultivo: {filters['crop'] or 'Todos'}\nFechas: {filters['date_from'] or 'Sin límite'} — {filters['date_to'] or 'Sin límite'}\n\nSe generará un único archivo CSV.\n\n¿Desea continuar?"
+            if not messagebox.askyesno("Confirmar exportación",text,parent=self): return
+        self._last_export_batch_ids=tuple(batch_ids); self.export_button.configure(state='disabled'); self.regenerate_csv_button.configure(state='disabled')
+        def work():
+            try: result=self.history.export_csv(batch_ids[0]) if len(batch_ids)==1 else self.history.export_csv_batches(batch_ids)
+            except Exception as exc: self.after(0,lambda: done(None,exc)); return
+            self.after(0,lambda: done(result,None))
+        def done(result,error):
+            self.export_button.configure(state='normal'); self.regenerate_csv_button.configure(state='normal')
+            if error: messagebox.showerror("Exportar CSV",str(error),parent=self); return
+            if result.already_existed: messagebox.showinfo("Exportar CSV","Esta liquidación ya fue exportada a contabilidad.",parent=self); return
+            if not result.success: messagebox.showerror("Exportar CSV",result.error_message,parent=self); return
+            messagebox.showinfo("Exportar CSV",f"CSV generado correctamente.\n\nLíneas: {result.line_count}\nLíneas excluidas: {result.excluded_line_count}\nNeto: {result.net_total}\nImporte total: {result.amount_total}\nRuta: {result.csv_path}",parent=self)
+        threading.Thread(target=work,daemon=True).start()
     def open_last_csv(self):
-        batch_ids=self.selected_batch_ids(); generated=self.history.last_csv_export(batch_ids) if batch_ids else None
+        batch_ids=self._last_export_batch_ids or self.selected_batch_ids(); generated=self.history.last_csv_export(batch_ids) if batch_ids else None
         if generated:
-            try: open_path(generated["file_path"])
-            except Exception as exc: messagebox.showerror("Abrir CSV", str(exc), parent=self)
+            try: open_path(generated['file_path'])
+            except Exception as exc: messagebox.showerror("Abrir CSV",str(exc),parent=self)
     def regenerate_csv(self):
         batch_ids=self.selected_batch_ids(); generated=self.history.last_csv_export(batch_ids) if batch_ids else None
-        if not generated: messagebox.showinfo("Regenerar CSV", "No existe una exportación CSV generada para este lote.", parent=self); return
+        if not generated: messagebox.showinfo("Regenerar CSV","No existe una exportación CSV generada para este lote.",parent=self); return
         try:
-            result=self.history.regenerate_csv_export(generated["id"])
+            result=self.history.regenerate_csv_export(generated['id'])
             if not result.success: raise ValueError(result.error_message)
-            messagebox.showinfo("Regenerar CSV", f"CSV regenerado correctamente:\n{result.csv_path}", parent=self)
-        except Exception as exc: messagebox.showerror("Regenerar CSV", str(exc), parent=self)
+            messagebox.showinfo("Regenerar CSV",f"CSV regenerado correctamente:\n{result.csv_path}",parent=self)
+        except Exception as exc: messagebox.showerror("Regenerar CSV",str(exc),parent=self)
     def void(self):
-        bid=self.batch_id(); batch=self.history.get_batch_detail(bid)["batch"] if bid else None
-        if not batch or batch["status"] != "ACTIVE": self._update_actions(); return
+        bid=self.batch_id(); batch=self.history.get_batch_detail(bid)['batch'] if bid else None
+        if not batch or batch['status']!='ACTIVE': self._update_actions(); return
         reason=simpledialog.askstring("Anular liquidación","Motivo obligatorio:",parent=self)
-        if reason and messagebox.askyesno("Confirmar",f"¿Anular la remesa {batch['remesa_name']}?",parent=self): self.history.void_batch(bid,reason); logger.info("[BatchVoided]\nbatch_id=%s\nreason=%s",bid,reason); self.refresh()
+        if reason and messagebox.askyesno("Confirmar",f"¿Anular la remesa {batch['remesa_name']}?",parent=self): self.history.void_batch(bid,reason); logger.info("[BatchVoided]\\nbatch_id=%s\\nreason=%s",bid,reason); self.refresh()
     def folder(self):
         bid=self.batch_id(); docs=self.history.list_recipient_documents(bid) if bid else ()
         if docs:
-            try: open_path(Path(docs[0]["file_path"]).parent)
-            except Exception as exc: messagebox.showerror("Abrir carpeta", str(exc), parent=self)
+            try: open_path(Path(docs[0]['file_path']).parent)
+            except Exception as exc: messagebox.showerror("Abrir carpeta",str(exc),parent=self)

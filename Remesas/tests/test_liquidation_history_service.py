@@ -53,3 +53,17 @@ def test_latest_document_query_returns_newest_attempt(history, tmp_path):
     assert latest[0]["status"] == "FAILED"
     assert latest[0]["file_path"].endswith("member_v2.pdf")
     assert len(service.list_documents("b1")) == 2
+
+
+def test_history_filter_options_are_dependent_and_members_are_normalized(history):
+    service, db = history
+    with db.connect() as conn:
+        conn.execute("INSERT INTO liquidation_batches(batch_id,remesa_id,remesa_name,campaign,company,crop,payment_date,calculation_fingerprint,original_line_count,final_line_count,status,created_at) VALUES('b2',8,'Sem 44','2027','2','KAKIS','2027-02-01','fp2',1,1,'ACTIVE','now')")
+        conn.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,variedad,neto,imp_bruto,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,source_member_id,recipient_member_id,source_liquidation_key,batch_id,created_at) VALUES('KA2027010001','2027-02-01','KAKIS','2027','2',1540,'GARCÍA PÉREZ, ANTONIO','KAKI','10','20','1','1','0','0','0','18','12','2','19.8',8,'R8','NORMAL',99,1540,'key2','b2','now')")
+    options=service.list_history_filter_options(campaign='2027')
+    assert options['companies']==('2',) and options['crops']==('KAKIS',)
+    assert options['remittances']==({'id':8,'name':'Sem 44','display':'8 — Sem 44'},)
+    assert [row['member_id'] for row in service.search_liquidation_members('154')] == [1540]
+    assert [row['member_id'] for row in service.search_liquidation_members('garcia')] == [1540]
+    assert [row['member_id'] for row in service.search_liquidation_members('GARCÍA', campaign='2027')] == [1540]
+    assert service.history_summary({'campaign':'2027'})['batch_count']==1
