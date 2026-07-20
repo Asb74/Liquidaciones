@@ -17,6 +17,16 @@ class LiquidationRepository:
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? ORDER BY recipient_member_id,id", (batch_id,)).fetchall()
 
+    def list_modification_chain(self, batch_id: str):
+        """All persisted movements linked to the selected batch, for history/detail UI."""
+        with self.database.connect() as conn:
+            batch = conn.execute("SELECT * FROM liquidation_batches WHERE batch_id=?", (batch_id,)).fetchone()
+            if not batch: return ()
+            root = batch["original_batch_id"] or batch_id
+            return conn.execute("""SELECT * FROM liquidation_batches
+              WHERE batch_id=? OR original_batch_id=? OR replacement_batch_id=?
+              ORDER BY created_at""", (root, root, root)).fetchall()
+
     def list_active_batches_for_remittance(self, remittance_id: int):
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidation_batches WHERE remesa_id=? AND status='ACTIVE' ORDER BY created_at DESC", (remittance_id,)).fetchall()

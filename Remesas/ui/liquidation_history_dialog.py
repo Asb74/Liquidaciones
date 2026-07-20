@@ -51,6 +51,7 @@ STATUS_FILTER_VALUES = {
     "Todos": "",
     "Activa": "ACTIVE",
     "Anulada": "VOIDED",
+    "Sustituida": "SUPERSEDED",
     "Parcial": "PARTIAL",
 }
 
@@ -190,7 +191,9 @@ class LiquidationHistoryDialog(tk.Toplevel):
     def detail(self):
         bid=self.batch_id()
         if bid:
-            d=self.history.get_batch_detail(bid); messagebox.showinfo("Detalle",f"Id. de lote: {bid}\nRemesa: {d['batch']['remesa_name']}\nEstado: {_status_label(d['batch']['status'])}\nLíneas: {len(d['lines'])}",parent=self)
+            d=self.history.get_batch_detail(bid)
+            chain="\n".join(f"{x['operation_type']}: {x['batch_id']} ({_status_label(x['status'])})" for x in d.get("chain", ()))
+            messagebox.showinfo("Detalle",f"Id. de lote: {bid}\nRemesa: {d['batch']['remesa_name']}\nEstado: {_status_label(d['batch']['status'])}\nLíneas: {len(d['lines'])}\n\nTrazabilidad:\n{chain or 'Sin rectificaciones'}",parent=self)
     def documents(self):
         if self.batch_id(): DocumentSelectorDialog(self,self.history,(self.batch_id(),))
     def regenerate(self):

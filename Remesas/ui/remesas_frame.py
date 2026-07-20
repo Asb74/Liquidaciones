@@ -45,6 +45,7 @@ from services.liquidation_persistence_service import LiquidationPersistenceServi
 from data.persistence.liquidation_repository import LiquidationRepository
 from services.document_generation_service import DocumentGenerationOptions, DocumentGenerationService
 from services.liquidation_history_service import LiquidationHistoryService
+from services.liquidation_modification_service import LiquidationModificationService
 from services.pdf_preview_service import PdfPreviewService
 from ui.persistence_result_dialog import PersistenceResultDialog
 from ui.liquidation_history_dialog import LiquidationHistoryDialog
@@ -179,7 +180,8 @@ class RemesasFrame(ttk.Frame):
                 output_root=Path("C:/Liquidaciones/salidas/remesas") if Path("C:/").exists() else Path.cwd().parent/"salidas"/"remesas"
                 self.liquidation_repository=LiquidationRepository(self.persistence_service.database)
                 self.document_service=DocumentGenerationService(self.liquidation_repository, output_root)
-                self.history_service=LiquidationHistoryService(self.liquidation_repository,self.document_service)
+                self.modification_service=LiquidationModificationService(self.persistence_service)
+                self.history_service=LiquidationHistoryService(self.liquidation_repository,self.document_service,self.modification_service)
                 self.liquidation_master_repository=LiquidationMasterRepository(self.persistence_service.database)
                 self.persistence_service.import_legacy_split_rules(); self.persistence_enabled=True
             self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.hectare_master_service=HectareFeeMasterService(self.master_repository, HectareFeeCropRepository(self.conn)); self.calculations=CalculationService(self.conn, self.config); self._refresh_database_status(); self._refresh_action_states()
