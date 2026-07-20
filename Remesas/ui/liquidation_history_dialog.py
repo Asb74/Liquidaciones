@@ -7,6 +7,9 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
+from ui.widgets.member_search_entry import MemberSearchEntry
+from ui.widgets.nullable_date_entry import NullableDateEntry
+
 from services.path_opener import open_path
 
 logger = logging.getLogger(__name__)
@@ -155,52 +158,11 @@ class DocumentSelectorDialog(tk.Toplevel):
         messagebox.showinfo("Regenerar", f"Generados: {len(result.generated_documents)}\nErrores: {len(result.failed_documents)}", parent=self)
 
 
-class MemberAutocompleteEntry(ttk.Frame):
-    """Reusable debounced member picker. Free text never becomes a history filter."""
-    def __init__(self, parent, search, *, width=46):
-        super().__init__(parent); self.search=search; self.member_search_text=tk.StringVar(); self.selected_member_id=None; self._after=None; self._results=[]; self._selecting=False
-        self.entry=ttk.Entry(self, textvariable=self.member_search_text, width=width); self.entry.pack(side="left", fill="x", expand=True)
-        ttk.Button(self, text="Limpiar", command=self.clear).pack(side="left", padx=(4,0))
-        self.popup=None; self.member_search_text.trace_add("write", self._changed)
-        self.entry.bind("<Down>", self._down); self.entry.bind("<Up>", self._up); self.entry.bind("<Return>", self._accept); self.entry.bind("<Escape>", lambda _e:self._close())
-    def _changed(self, *_):
-        if self._selecting: return
-        self.selected_member_id=None
-        if self._after: self.after_cancel(self._after)
-        text=self.member_search_text.get().strip()
-        if len(text) < 2: self._close(); return
-        self._after=self.after(250, self._search)
-    def _search(self):
-        self._after=None; text=self.member_search_text.get().strip()
-        self._results=tuple(self.search(text))
-        if not self._results: self._close(); return
-        if not self.popup:
-            self.popup=tk.Toplevel(self); self.popup.wm_overrideredirect(True); self.popup.transient(self.winfo_toplevel())
-            self.listbox=tk.Listbox(self.popup, height=min(8,len(self._results)), exportselection=False); self.listbox.pack(fill="both", expand=True)
-            self.listbox.bind("<ButtonRelease-1>", self._accept); self.listbox.bind("<Return>", self._accept); self.listbox.bind("<Escape>", lambda _e:self._close())
-        self.listbox.delete(0,"end")
-        for row in self._results: self.listbox.insert("end", f"{row['member_id']} — {row['name']}")
-        self.listbox.selection_set(0); self.popup.geometry(f"+{self.winfo_rootx()}+{self.winfo_rooty()+self.winfo_height()}"); self.popup.deiconify()
-    def _accept(self, _event=None):
-        if not self.popup: return "break"
-        selection=self.listbox.curselection()
-        if selection:
-            row=self._results[selection[0]]; self._selecting=True; self.member_search_text.set(f"{row['member_id']} — {row['name']}"); self._selecting=False; self.selected_member_id=row['member_id']
-        self._close(); return "break"
-    def _down(self, _event):
-        if self.popup: self.listbox.focus_set(); self.listbox.selection_clear(0,"end"); self.listbox.selection_set(0)
-        return "break"
-    def _up(self, event): return self._down(event)
-    def _close(self):
-        if self.popup: self.popup.destroy(); self.popup=None
-    def clear(self):
-        self.selected_member_id=None; self.member_search_text.set(""); self._close(); self.entry.focus_set()
-
-
 class LiquidationHistoryDialog(tk.Toplevel):
     def __init__(self, parent, history):
         super().__init__(parent); self.history=history; self.title("Liquidaciones guardadas — Historial"); self.geometry("1300x720"); self.transient(parent)
-        self.vars={name:tk.StringVar(value="Todos") for name in ("campaign","company","crop","remittance_id","status")}; self.vars.update(date_from=tk.StringVar(), date_to=tk.StringVar())
+        self.vars={name:tk.StringVar(value="Todos") for name in ("campaign","company","crop","remittance_id","status")}
+        self._updating_filter_options=False
         self.export_all_filtered=tk.BooleanVar(value=False); self.remittance_display_to_id={}; self._last_export_batch_ids=()
         filters=ttk.LabelFrame(self,text="Filtros"); filters.pack(fill="x",padx=8,pady=8)
         self.combos={}
@@ -208,9 +170,9 @@ class LiquidationHistoryDialog(tk.Toplevel):
             ttk.Label(filters,text=label).grid(row=0,column=col,sticky="w",padx=2)
             combo=ttk.Combobox(filters,textvariable=self.vars[key],state="readonly",width=20); combo.grid(row=1,column=col,sticky="ew",padx=2); self.combos[key]=combo
         self.combos['campaign'].bind('<<ComboboxSelected>>', lambda _e:self._campaign_changed()); self.combos['company'].bind('<<ComboboxSelected>>', lambda _e:self._company_changed()); self.combos['crop'].bind('<<ComboboxSelected>>', lambda _e:self._crop_changed())
-        ttk.Label(filters,text="Socio").grid(row=2,column=0,sticky="w",padx=2); self.member_search=MemberAutocompleteEntry(filters,self._search_members,width=52); self.member_search.grid(row=3,column=0,columnspan=2,sticky="ew",padx=2)
-        for col,key in ((2,"date_from"),(3,"date_to")):
-            ttk.Label(filters,text=FILTER_LABELS[key]).grid(row=2,column=col,sticky="w",padx=2); ttk.Entry(filters,textvariable=self.vars[key],width=18).grid(row=3,column=col,sticky="ew",padx=2)
+        ttk.Label(filters,text="Socio").grid(row=2,column=0,sticky="w",padx=2); self.member_search=MemberSearchEntry(filters,self._search_members,width=52); self.member_search.grid(row=3,column=0,columnspan=2,sticky="ew",padx=2)
+        self.date_from_picker=NullableDateEntry(filters, "Desde"); self.date_from_picker.grid(row=3,column=2,sticky="w",padx=2)
+        self.date_to_picker=NullableDateEntry(filters, "Hasta"); self.date_to_picker.grid(row=3,column=3,sticky="w",padx=2)
         ttk.Checkbutton(filters,text="Exportar todas las liquidaciones filtradas",variable=self.export_all_filtered,command=self._update_scope_label).grid(row=3,column=4,sticky="w",padx=4)
         ttk.Button(filters,text="Buscar",command=self.refresh).grid(row=4,column=3,pady=5); ttk.Button(filters,text="Limpiar filtros",command=self.clear_filters).grid(row=4,column=4,pady=5)
         for i in range(5): filters.columnconfigure(i,weight=1)
@@ -227,16 +189,46 @@ class LiquidationHistoryDialog(tk.Toplevel):
             if text == "Exportar CSV": self.export_button=button
             if text == "Regenerar CSV": self.regenerate_csv_button=button
         self.tree.bind("<<TreeviewSelect>>", lambda _event:self._update_actions()); self._load_options(); self.refresh()
+    @staticmethod
+    def _combo_filter_value(value):
+        return None if value in ("", "Todos") else value
+
     def _filters(self):
-        if self.vars['date_from'].get() and self.vars['date_to'].get() and self.vars['date_from'].get() > self.vars['date_to'].get(): raise ValueError("Fecha desde no puede ser posterior a Fecha hasta.")
-        return {"campaign":None if self.vars['campaign'].get()=="Todos" else self.vars['campaign'].get(), "company":None if self.vars['company'].get()=="Todos" else self.vars['company'].get(), "crop":None if self.vars['crop'].get()=="Todos" else self.vars['crop'].get(), "remittance_id":self.remittance_display_to_id.get(self.vars['remittance_id'].get()), "status":STATUS_FILTER_VALUES.get(self.vars['status'].get(),""), "member_id":self.member_search.selected_member_id, "date_from":self.vars['date_from'].get().strip() or None, "date_to":self.vars['date_to'].get().strip() or None}
+        date_from = self.date_from_picker.iso_value()
+        date_to = self.date_to_picker.iso_value()
+        if date_from and date_to and date_from > date_to:
+            raise ValueError("La fecha desde no puede ser posterior a la fecha hasta.")
+        return {"campaign": self._combo_filter_value(self.vars['campaign'].get()), "company": self._combo_filter_value(self.vars['company'].get()), "crop": self._combo_filter_value(self.vars['crop'].get()), "remittance_id": self.remittance_display_to_id.get(self.vars['remittance_id'].get()), "status": STATUS_FILTER_VALUES.get(self.vars['status'].get()) or None, "member_id": self.member_search.selected_member_id, "date_from": date_from, "date_to": date_to}
+
     def _load_options(self):
-        f=self._filters(); options=self.history.list_history_filter_options(**f)
-        self.combos['campaign']['values']=("Todos",*options['campaigns']); self.combos['company']['values']=("Todos",*options['companies']); self.combos['crop']['values']=("Todos",*options['crops']); self.combos['status']['values']=tuple(STATUS_FILTER_VALUES)
-        self.remittance_display_to_id={r['display']:r['id'] for r in options['remittances']}; self.combos['remittance_id']['values']=("Todos",*self.remittance_display_to_id)
-    def _campaign_changed(self): self.vars['company'].set('Todos'); self.vars['crop'].set('Todos'); self.vars['remittance_id'].set('Todos'); self._load_options()
-    def _company_changed(self): self.vars['crop'].set('Todos'); self.vars['remittance_id'].set('Todos'); self._load_options()
-    def _crop_changed(self): self.vars['remittance_id'].set('Todos'); self._load_options()
+        try:
+            filters = self._filters()
+            options = self.history.list_history_filter_options(**filters)
+        except Exception as exc:
+            logger.exception("[HistoryFilterOptionsFailed]")
+            messagebox.showerror("Filtros del historial", f"No se pudieron cargar los filtros del historial.\n\nDetalle:\n{exc}", parent=self)
+            return
+        logger.info("[HistoryFilterOptions]\ncampaigns=%s\ncompanies=%s\ncrops=%s\nremittances=%s", options['campaigns'], options['companies'], options['crops'], options['remittances'])
+        self._updating_filter_options = True
+        try:
+            self.combos['campaign']['values'] = ("Todos", *options['campaigns'])
+            self.combos['company']['values'] = ("Todos", *options['companies'])
+            self.combos['crop']['values'] = ("Todos", *options['crops'])
+            self.combos['status']['values'] = tuple(STATUS_FILTER_VALUES)
+            self.remittance_display_to_id = {row['display']: row['id'] for row in options['remittances']}
+            self.combos['remittance_id']['values'] = ("Todos", *self.remittance_display_to_id)
+        finally:
+            self._updating_filter_options = False
+
+    def _campaign_changed(self):
+        if self._updating_filter_options: return
+        self.vars['company'].set('Todos'); self.vars['crop'].set('Todos'); self.vars['remittance_id'].set('Todos'); self._load_options()
+    def _company_changed(self):
+        if self._updating_filter_options: return
+        self.vars['crop'].set('Todos'); self.vars['remittance_id'].set('Todos'); self._load_options()
+    def _crop_changed(self):
+        if self._updating_filter_options: return
+        self.vars['remittance_id'].set('Todos'); self._load_options()
     def _search_members(self,text): return self.history.search_liquidation_members(text, **self._filters())
     def selected_batch_ids(self): return tuple(self.tree.item(item,"values")[0] for item in self.tree.selection())
     def batch_id(self):
@@ -244,12 +236,20 @@ class LiquidationHistoryDialog(tk.Toplevel):
     def refresh(self):
         try: filters=self._filters()
         except ValueError as exc: messagebox.showerror("Filtros",str(exc),parent=self); return
-        self.tree.delete(*self.tree.get_children())
-        for b in self.history.list_batches(filters): self.tree.insert("","end",values=(b['batch_id'],b['remesa_id'],_date_label(b['payment_date']),b['crop'],b['campaign'],b['company'],b['line_count'],b['recipient_count'],b['document_count'],_status_label(b['status']),_date_label(b['created_at'],include_time=True)))
-        summary=self.history.history_summary(filters); self.summary_var.set(f"Resultados: {summary['batch_count']} remesas · {summary['line_count']} líneas · {summary['recipient_count']} destinatarios" + (" — alcance de la exportación filtrada" if self.export_all_filtered.get() else "")); self._update_actions()
+        logger.info("[HistoryFilterReload]\nselected_campaign=%s\nselected_company=%s\nselected_crop=%s\nselected_status=%s", filters['campaign'], filters['company'], filters['crop'], filters['status'])
+        try:
+            self.tree.delete(*self.tree.get_children())
+            for b in self.history.list_batches(filters): self.tree.insert("","end",values=(b['batch_id'],b['remesa_id'],_date_label(b['payment_date']),b['crop'],b['campaign'],b['company'],b['line_count'],b['recipient_count'],b['document_count'],_status_label(b['status']),_date_label(b['created_at'],include_time=True)))
+            summary=self.history.history_summary(filters)
+        except Exception as exc:
+            logger.exception("[HistoryFilterReloadFailed]")
+            self.summary_var.set(f"Error al consultar el historial: {exc}")
+            messagebox.showerror("Historial", f"No se pudo consultar el historial.\n\nDetalle:\n{exc}", parent=self)
+            return
+        self.summary_var.set(f"Resultados: {summary['batch_count']} remesas · {summary['line_count']} líneas · {summary['recipient_count']} destinatarios" + (" — alcance de la exportación filtrada" if self.export_all_filtered.get() else "")); self._update_actions()
     def clear_filters(self):
-        for key in self.vars: self.vars[key].set("Todos" if key in self.combos else "")
-        self.member_search.clear(); self.export_all_filtered.set(False); self._load_options(); self.refresh()
+        for key in self.combos: self.vars[key].set("Todos")
+        self.member_search.clear(); self.date_from_picker.clear(); self.date_to_picker.clear(); self.export_all_filtered.set(False); self._load_options(); self.refresh()
     def _update_scope_label(self): self.refresh()
     def select_visible(self): self.tree.selection_set(self.tree.get_children())
     def clear_selection(self): self.tree.selection_remove(self.tree.selection())

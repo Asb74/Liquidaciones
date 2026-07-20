@@ -67,3 +67,16 @@ def test_history_filter_options_are_dependent_and_members_are_normalized(history
     assert [row['member_id'] for row in service.search_liquidation_members('garcia')] == [1540]
     assert [row['member_id'] for row in service.search_liquidation_members('GARCÍA', campaign='2027')] == [1540]
     assert service.history_summary({'campaign':'2027'})['batch_count']==1
+
+
+def test_member_filter_uses_recipient_lines_and_not_batch_headers(history):
+    service, db = history
+    with db.connect() as conn:
+        conn.execute("INSERT INTO liquidation_batches(batch_id,remesa_id,remesa_name,campaign,company,crop,payment_date,calculation_fingerprint,original_line_count,final_line_count,status,created_at) VALUES('other',9,'R9','2026','1','CITRICOS','2026-02-02','fp-other',1,1,'ACTIVE','now')")
+        conn.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,variedad,neto,imp_bruto,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,source_member_id,recipient_member_id,source_liquidation_key,batch_id,created_at) VALUES('CI2026010002','2026-02-02','CITRICOS','2026','1',11,'OTRO SOCIO','NAVEL','10','20','1','1','0','0','0','18','12','2','19.8',9,'R9','NORMAL',11,11,'key-other','other','now')")
+    assert [row['batch_id'] for row in service.list_batches({'member_id': 10})] == ['b1']
+
+
+def test_search_normalization_removes_accents_and_normalizes_spaces():
+    from data.persistence.search_text import normalize_search_text
+    assert normalize_search_text(' García   Pérez ') == 'GARCIA PEREZ'
