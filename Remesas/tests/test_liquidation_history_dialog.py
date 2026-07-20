@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from ui.liquidation_history_dialog import _date_label, _status_label
+from ui.liquidation_history_dialog import _date_label, _optional_filter, _status_label
 
 
 def test_status_labels_are_translated_without_altering_unknown_values():
@@ -26,3 +26,10 @@ def test_date_label_preserves_empty_and_unparseable_values():
     assert _date_label(None) == ""
     assert _date_label("") == ""
     assert _date_label("fecha desconocida") == "fecha desconocida"
+
+
+def test_optional_filter_converts_all_unfiltered_combo_values_to_none():
+    assert _optional_filter(None) is None
+    assert _optional_filter("") is None
+    assert _optional_filter("Todos") is None
+    assert _optional_filter("2026") == "2026"

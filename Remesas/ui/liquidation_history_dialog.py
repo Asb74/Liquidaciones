@@ -60,6 +60,11 @@ STATUS_FILTER_VALUES = {
 }
 
 
+def _optional_filter(value):
+    """Convert UI's unfiltered sentinel into the repository's ``None`` value."""
+    return None if value in (None, "", "Todos") else value
+
+
 def _status_label(value: str) -> str:
     labels = {
         "ACTIVE": "Activa",
@@ -189,16 +194,12 @@ class LiquidationHistoryDialog(tk.Toplevel):
             if text == "Exportar CSV": self.export_button=button
             if text == "Regenerar CSV": self.regenerate_csv_button=button
         self.tree.bind("<<TreeviewSelect>>", lambda _event:self._update_actions()); self._load_options(); self.refresh()
-    @staticmethod
-    def _combo_filter_value(value):
-        return None if value in ("", "Todos") else value
-
     def _filters(self):
         date_from = self.date_from_picker.iso_value()
         date_to = self.date_to_picker.iso_value()
         if date_from and date_to and date_from > date_to:
             raise ValueError("La fecha desde no puede ser posterior a la fecha hasta.")
-        return {"campaign": self._combo_filter_value(self.vars['campaign'].get()), "company": self._combo_filter_value(self.vars['company'].get()), "crop": self._combo_filter_value(self.vars['crop'].get()), "remittance_id": self.remittance_display_to_id.get(self.vars['remittance_id'].get()), "status": STATUS_FILTER_VALUES.get(self.vars['status'].get()) or None, "member_id": self.member_search.selected_member_id, "date_from": date_from, "date_to": date_to}
+        return {"campaign": _optional_filter(self.vars['campaign'].get()), "company": _optional_filter(self.vars['company'].get()), "crop": _optional_filter(self.vars['crop'].get()), "remittance_id": _optional_filter(self.remittance_display_to_id.get(self.vars['remittance_id'].get())), "status": _optional_filter(STATUS_FILTER_VALUES.get(self.vars['status'].get())), "member_id": _optional_filter(self.member_search.selected_member_id), "date_from": _optional_filter(date_from), "date_to": _optional_filter(date_to)}
 
     def _load_options(self):
         try:

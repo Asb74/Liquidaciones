@@ -16,8 +16,28 @@ class LiquidationHistoryService:
     def list_batches(self, filters=None):
         return self.repository.list_batches(**(filters or {}))
 
-    def list_history_filter_options(self, **filters):
-        return self.repository.list_history_filter_options(**filters)
+    def list_history_filter_options(
+        self,
+        *,
+        campaign=None,
+        company=None,
+        crop=None,
+        remittance_id=None,
+        member_id=None,
+        status=None,
+        date_from=None,
+        date_to=None,
+    ):
+        return self.repository.list_history_filter_options(
+            campaign=campaign,
+            company=company,
+            crop=crop,
+            remittance_id=remittance_id,
+            member_id=member_id,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+        )
 
     def search_liquidation_members(self, text, **filters):
         return self.repository.search_liquidation_members(text, **filters)

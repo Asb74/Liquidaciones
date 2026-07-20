@@ -85,8 +85,6 @@ class PdfMergeService:
             if should_cancel and should_cancel(): raise PdfMergeCancelled()
             if progress_callback: progress_callback("validando",index,len(docs),0)
             path=doc.file_path; normalized=str(path.resolve()).casefold(); key=(doc.batch_id,doc.member_id,doc.document_kind)
-            duplicate=(doc.document_id is not None and doc.document_id in seen_ids) or normalized in seen_paths or (doc.batch_id is not None and key in seen_keys)
-            if duplicate: items.append(PdfValidationItem(doc,PdfValidationStatus.DUPLICATE)); continue
             if not path.exists() or not path.is_file(): items.append(PdfValidationItem(doc,PdfValidationStatus.MISSING)); continue
             if path.suffix.casefold() != ".pdf" or path.stat().st_size == 0: items.append(PdfValidationItem(doc,PdfValidationStatus.EMPTY)); continue
             try:
@@ -103,6 +101,8 @@ class PdfMergeService:
                         except Exception: items.append(PdfValidationItem(doc,PdfValidationStatus.ENCRYPTED)); continue
                     pages=len(reader.pages)
                     if not pages: items.append(PdfValidationItem(doc,PdfValidationStatus.EMPTY)); continue
+                duplicate=(doc.document_id is not None and doc.document_id in seen_ids) or normalized in seen_paths or (doc.batch_id is not None and key in seen_keys)
+                if duplicate: items.append(PdfValidationItem(doc,PdfValidationStatus.DUPLICATE)); continue
                 items.append(PdfValidationItem(doc,PdfValidationStatus.VALID,pages))
                 seen_ids.add(doc.document_id); seen_paths.add(normalized); seen_keys.add(key); seen_hashes.add(digest)
             except Exception as exc: items.append(PdfValidationItem(doc,PdfValidationStatus.CORRUPT,detail=str(exc)))
