@@ -69,6 +69,43 @@ def test_history_filter_options_are_dependent_and_members_are_normalized(history
     assert service.history_summary({'campaign':'2027'})['batch_count']==1
 
 
+def test_history_filter_options_accept_all_history_filters_and_remittance_scopes_members(history):
+    service, db = history
+    with db.connect() as conn:
+        conn.execute("INSERT INTO liquidation_batches(batch_id,remesa_id,remesa_name,campaign,company,crop,payment_date,calculation_fingerprint,original_line_count,final_line_count,status,created_at) VALUES('b2',8,'R8','2026','1','CITRICOS','2026-03-01','fp2',1,1,'VOIDED','now')")
+        conn.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,variedad,neto,imp_bruto,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,source_member_id,recipient_member_id,source_liquidation_key,batch_id,created_at) VALUES('CI2026030001','2026-03-01','CITRICOS','2026','1',20,'OTRO','NAVEL','10','20','1','1','0','0','0','18','12','2','19.8',8,'R8','NORMAL',20,20,'key2','b2','now')")
+
+    options = service.list_history_filter_options(
+        campaign='2026', company='1', crop='CITRICOS', remittance_id=7,
+        member_id=10, status='ACTIVE', date_from='2026-01-01', date_to='2026-02-28',
+    )
+    # The selected remittance scopes dependent options but is deliberately omitted
+    # from its own list, so it does not erase the alternative valid remittances.
+    assert options['campaigns'] == ('2026',)
+    assert options['companies'] == ('1',)
+    assert options['crops'] == ('CITRICOS',)
+    assert options['remittances'] == ({'id': 7, 'name': 'R7', 'display': '7 — R7'},)
+    assert [row['member_id'] for row in service.search_liquidation_members('10', remittance_id=7)] == [10]
+    assert service.search_liquidation_members('20', remittance_id=7) == ()
+
+
+def test_history_filter_options_initial_load_returns_every_dimension(history):
+    service, _ = history
+    options = service.list_history_filter_options()
+    assert options['campaigns'] == ('2026',)
+    assert options['companies'] == ('1',)
+    assert options['crops'] == ('CITRICOS',)
+    assert options['remittances'] == ({'id': 7, 'name': 'R7', 'display': '7 — R7'},)
+
+
+def test_selected_remittance_does_not_restrict_its_own_option_list(history):
+    service, db = history
+    with db.connect() as conn:
+        conn.execute("INSERT INTO liquidation_batches(batch_id,remesa_id,remesa_name,campaign,company,crop,payment_date,calculation_fingerprint,original_line_count,final_line_count,status,created_at) VALUES('b2',8,'R8','2026','1','CITRICOS','2026-03-01','fp2',1,1,'ACTIVE','now')")
+    options = service.list_history_filter_options(remittance_id=7)
+    assert [remittance['id'] for remittance in options['remittances']] == [7, 8]
+
+
 def test_member_filter_uses_recipient_lines_and_not_batch_headers(history):
     service, db = history
     with db.connect() as conn:

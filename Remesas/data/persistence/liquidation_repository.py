@@ -126,26 +126,51 @@ class LiquidationRepository:
         if filters.get("date_to"): clauses.append(f"substr({batch_alias}.payment_date,1,10)<=?"); args.append(str(filters["date_to"]))
         return clauses, args
 
-    def list_history_filter_options(self, campaign=None, company=None, crop=None,
-                                    status=None, date_from=None, date_to=None):
-        """Read each cascading option from the real ``liquidation_batches`` columns."""
-        base = {"status": status, "date_from": date_from, "date_to": date_to}
+    def list_history_filter_options(
+        self,
+        *,
+        campaign=None,
+        company=None,
+        crop=None,
+        remittance_id=None,
+        member_id=None,
+        status=None,
+        date_from=None,
+        date_to=None,
+    ):
+        """Read cascading options while excluding each option's own selection.
 
-        def distinct(column, scope):
-            clauses, args = self._history_clauses({**base, **scope})
+        This keeps the remittance selector populated after selecting a remittance,
+        while the same selection still scopes the other dependent selectors.
+        """
+        base = {
+            "campaign": campaign,
+            "company": company,
+            "crop": crop,
+            "remittance_id": remittance_id,
+            "member_id": member_id,
+            "status": status,
+            "date_from": date_from,
+            "date_to": date_to,
+        }
+
+        def distinct(column, excluded_filter):
+            scope = {key: value for key, value in base.items() if key != excluded_filter}
+            clauses, args = self._history_clauses(scope)
             clauses.extend((f"b.{column} IS NOT NULL", f"TRIM(b.{column}) <> ''"))
             return (f"SELECT DISTINCT b.{column} FROM liquidation_batches b WHERE "
                     + " AND ".join(clauses), args)
 
         with self.database.connect() as conn:
-            sql, args = distinct("campaign", {})
+            sql, args = distinct("campaign", "campaign")
             campaigns = tuple(row[0] for row in conn.execute(sql + " ORDER BY b.campaign DESC", args))
-            sql, args = distinct("company", {"campaign": campaign})
+            sql, args = distinct("company", "company")
             companies = tuple(row[0] for row in conn.execute(sql + " ORDER BY b.company", args))
-            sql, args = distinct("crop", {"campaign": campaign, "company": company})
+            sql, args = distinct("crop", "crop")
             crops = tuple(row[0] for row in conn.execute(sql + " ORDER BY b.crop", args))
-            clauses, args = self._history_clauses({**base, "campaign": campaign,
-                                                   "company": company, "crop": crop})
+            clauses, args = self._history_clauses(
+                {key: value for key, value in base.items() if key != "remittance_id"}
+            )
             sql = "SELECT DISTINCT b.remesa_id, b.remesa_name FROM liquidation_batches b"
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
