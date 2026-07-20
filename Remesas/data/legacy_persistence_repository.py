@@ -26,6 +26,21 @@ class LegacyPersistenceRepository:
             except sqlite3.OperationalError: continue
         return None
 
+    def member_is_self_billed(self, member_id: int) -> bool:
+        """Return whether the legacy member must be omitted from accounting CSVs.
+
+        Do not turn database errors into a false answer: exporting an incomplete
+        accounting file is worse than stopping the operation.
+        """
+        sql = f"SELECT FacSoc FROM {self.schema}.DSocio WHERE IdSocio=?"
+        try:
+            row = self.conn.execute(sql, (member_id,)).fetchone()
+        except sqlite3.OperationalError:
+            row = self.conn.execute(sql.replace(f"{self.schema}.", ""), (member_id,)).fetchone()
+        if row is None:
+            return False
+        return str(row[0] or "").strip().upper() == "SI"
+
     def article_code(self, crop: str, variety: str, aliases: dict[str,str] | None=None) -> int | None:
         compatible=(aliases or {}).get(crop.upper(),crop).upper()
         sql=f"SELECT ARTICULO FROM {self.schema}.MVariedad WHERE UPPER(TRIM(CULTIVO))=? AND UPPER(TRIM(Variedad))=?"

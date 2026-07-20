@@ -54,6 +54,19 @@ CREATE INDEX ix_liq_modification_group ON liquidaciones(modification_group_id);
 CREATE INDEX ix_liq_original_id ON liquidaciones(original_id_liq);
 UPDATE liquidation_batches SET operation_type='ORIGINAL' WHERE operation_type IS NULL OR operation_type='';
 UPDATE liquidaciones SET operation_type='ORIGINAL' WHERE operation_type IS NULL OR operation_type='';
+"""),(6, "accounting_exports", """
+CREATE TABLE IF NOT EXISTS accounting_exports(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ batch_id TEXT NULL, modification_group_id TEXT NULL, remittance_id INTEGER NULL,
+ member_id INTEGER NULL, export_type TEXT NOT NULL, file_path TEXT NOT NULL,
+ info_file_path TEXT NULL, status TEXT NOT NULL, line_count INTEGER NOT NULL DEFAULT 0,
+ excluded_line_count INTEGER NOT NULL DEFAULT 0, net_total TEXT NULL, amount_total TEXT NULL,
+ file_hash TEXT NULL, source_fingerprint TEXT, generated_at TEXT NULL,
+ created_at TEXT NOT NULL, created_by TEXT NULL, error_message TEXT NULL,
+ generation_attempt INTEGER NOT NULL DEFAULT 1, supersedes_export_id INTEGER NULL
+);
+CREATE INDEX IF NOT EXISTS ix_accounting_exports_scope ON accounting_exports(batch_id, modification_group_id, member_id, export_type, status);
+CREATE INDEX IF NOT EXISTS ix_accounting_exports_fingerprint ON accounting_exports(source_fingerprint, status);
 """))
 
 def utcnow() -> str:
