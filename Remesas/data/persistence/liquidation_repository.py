@@ -4,6 +4,7 @@ import logging
 
 from data.persistence.database import PersistenceDatabase
 from data.persistence.search_text import normalize_search_text
+from domain.member_rules import SYSTEM_MEMBER_ID, is_excluded_member
 
 
 logger = logging.getLogger(__name__)
@@ -21,13 +22,13 @@ class LiquidationRepository:
 
     def list_batch_liquidations(self, batch_id: str):
         with self.database.connect() as conn:
-            return conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? ORDER BY recipient_member_id,id", (batch_id,)).fetchall()
+            return conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? AND recipient_member_id<>? AND id_socio<>? ORDER BY recipient_member_id,id", (batch_id, SYSTEM_MEMBER_ID, SYSTEM_MEMBER_ID)).fetchall()
 
     _CSV_COLUMNS = "id,id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo"
 
     def list_csv_rows_for_batch(self, batch_id: str, member_id: int | None = None):
-        clauses = ["batch_id=?", "status NOT IN ('VOIDED','SUPERSEDED')"]
-        args = [batch_id]
+        clauses = ["batch_id=?", "status NOT IN ('VOIDED','SUPERSEDED')", "recipient_member_id<>?", "id_socio<>?"]
+        args = [batch_id, SYSTEM_MEMBER_ID, SYSTEM_MEMBER_ID]
         if member_id is not None:
             clauses.append("id_socio=?"); args.append(member_id)
         with self.database.connect() as conn:
@@ -46,6 +47,7 @@ class LiquidationRepository:
                 WHERE l.batch_id IN ({placeholders})
                   AND l.status NOT IN ('VOIDED','SUPERSEDED')
                   AND b.status IN ('ACTIVE','PARTIAL')
+                  AND l.recipient_member_id <> {SYSTEM_MEMBER_ID} AND l.id_socio <> {SYSTEM_MEMBER_ID}
                 ORDER BY b.campaign, b.company, b.crop, b.remesa_id,
                   CASE l.operation_type WHEN 'REVERSAL' THEN 0 WHEN 'REPLACEMENT' THEN 1 ELSE 2 END, l.id""",
                 batch_ids,
@@ -53,7 +55,7 @@ class LiquidationRepository:
 
     def list_csv_rows_for_modification(self, modification_group_id: str):
         with self.database.connect() as conn:
-            return conn.execute(f"SELECT {self._CSV_COLUMNS},operation_type,batch_id FROM liquidaciones WHERE modification_group_id=? AND operation_type IN ('REVERSAL','REPLACEMENT') ORDER BY CASE operation_type WHEN 'REVERSAL' THEN 0 ELSE 1 END,id ASC", (modification_group_id,)).fetchall()
+            return conn.execute(f"SELECT {self._CSV_COLUMNS},operation_type,batch_id FROM liquidaciones WHERE modification_group_id=? AND operation_type IN ('REVERSAL','REPLACEMENT') AND recipient_member_id<>? AND id_socio<>? ORDER BY CASE operation_type WHEN 'REVERSAL' THEN 0 ELSE 1 END,id ASC", (modification_group_id, SYSTEM_MEMBER_ID, SYSTEM_MEMBER_ID)).fetchall()
 
     def get_csv_export(self, export_id: int):
         with self.database.connect() as conn:
@@ -96,7 +98,8 @@ class LiquidationRepository:
 
     def list_recipient_lines(self, batch_id: str, recipient_member_id: int):
         with self.database.connect() as conn:
-            return conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? AND recipient_member_id=? ORDER BY id", (batch_id, recipient_member_id)).fetchall()
+            if is_excluded_member(recipient_member_id): return ()
+            return conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? AND recipient_member_id=? AND id_socio<>? ORDER BY id", (batch_id, recipient_member_id, SYSTEM_MEMBER_ID)).fetchall()
 
     def list_batches(self, **filters):
         clauses=[]; args=[]
@@ -105,13 +108,15 @@ class LiquidationRepository:
             if filters.get(key) not in (None, ""):
                 clauses.append(f"{column}=?"); args.append(filters[key])
         if filters.get("member_id") not in (None, ""):
-            clauses.append("EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id=b.batch_id AND l.recipient_member_id=?)"); args.append(filters["member_id"])
+            if is_excluded_member(filters["member_id"]): return ()
+            clauses.append("EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id=b.batch_id AND l.recipient_member_id=? AND l.id_socio<>?)"); args.extend((filters["member_id"], SYSTEM_MEMBER_ID))
+        clauses.append("(NOT EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id=b.batch_id) OR EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id=b.batch_id AND l.recipient_member_id<>0 AND l.id_socio<>0))")
         if filters.get("date_from"): clauses.append("substr(b.payment_date,1,10)>=?"); args.append(filters["date_from"])
         if filters.get("date_to"): clauses.append("substr(b.payment_date,1,10)<=?"); args.append(filters["date_to"])
         sql = """SELECT b.*,
-          (SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=b.batch_id) line_count,
-          (SELECT COUNT(DISTINCT recipient_member_id) FROM liquidaciones l WHERE l.batch_id=b.batch_id) recipient_count,
-          (SELECT COUNT(*) FROM generated_documents d WHERE d.batch_id=b.batch_id AND d.status='GENERATED') document_count
+          (SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=b.batch_id AND l.recipient_member_id<>0 AND l.id_socio<>0) line_count,
+          (SELECT COUNT(DISTINCT recipient_member_id) FROM liquidaciones l WHERE l.batch_id=b.batch_id AND l.recipient_member_id<>0 AND l.id_socio<>0) recipient_count,
+          (SELECT COUNT(*) FROM generated_documents d WHERE d.batch_id=b.batch_id AND d.status='GENERATED' AND d.recipient_member_id<>0) document_count
           FROM liquidation_batches b"""
         if clauses: sql += " WHERE " + " AND ".join(clauses)
         with self.database.connect() as conn:
@@ -126,7 +131,10 @@ class LiquidationRepository:
             if filters.get(key) not in (None, ""):
                 clauses.append(f"{column}=?"); args.append(filters[key])
         if filters.get("member_id") not in (None, ""):
-            clauses.append(f"EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id={batch_alias}.batch_id AND l.recipient_member_id=?)"); args.append(filters["member_id"])
+            if is_excluded_member(filters["member_id"]): clauses.append("0=1")
+            else:
+                clauses.append(f"EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id={batch_alias}.batch_id AND l.recipient_member_id=? AND l.id_socio<>0)"); args.append(filters["member_id"])
+        clauses.append(f"(NOT EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id={batch_alias}.batch_id) OR EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id={batch_alias}.batch_id AND l.recipient_member_id<>0 AND l.id_socio<>0))")
         if filters.get("date_from"): clauses.append(f"substr({batch_alias}.payment_date,1,10)>=?"); args.append(str(filters["date_from"]))
         if filters.get("date_to"): clauses.append(f"substr({batch_alias}.payment_date,1,10)<=?"); args.append(str(filters["date_to"]))
         return clauses, args
@@ -189,8 +197,8 @@ class LiquidationRepository:
     def history_summary(self, **filters):
         clauses, args = self._history_clauses(filters)
         sql="""SELECT COUNT(*) batch_count,
-          COALESCE(SUM((SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=b.batch_id)),0) line_count,
-          COALESCE(SUM((SELECT COUNT(DISTINCT recipient_member_id) FROM liquidaciones l WHERE l.batch_id=b.batch_id)),0) recipient_count
+          COALESCE(SUM((SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=b.batch_id AND l.recipient_member_id<>0 AND l.id_socio<>0)),0) line_count,
+          COALESCE(SUM((SELECT COUNT(DISTINCT recipient_member_id) FROM liquidaciones l WHERE l.batch_id=b.batch_id AND l.recipient_member_id<>0 AND l.id_socio<>0)),0) recipient_count
           FROM liquidation_batches b""" + (" WHERE " + " AND ".join(clauses) if clauses else "")
         with self.database.connect() as conn: return conn.execute(sql,args).fetchone()
 
@@ -231,6 +239,7 @@ class LiquidationRepository:
                 JOIN liquidation_batches b ON b.batch_id = l.batch_id
                 WHERE {where}
                   AND l.recipient_member_id IS NOT NULL
+                  AND l.recipient_member_id <> 0 AND l.id_socio <> 0
                   AND (CAST(l.recipient_member_id AS TEXT) LIKE ?
                        OR NORMALIZE_SEARCH_TEXT(l.socio) LIKE ?)
                 ORDER BY CASE
@@ -255,7 +264,7 @@ class LiquidationRepository:
               (SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id) line_count,
               (SELECT group_concat(id_liq,' · ') FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id) id_liqs
               FROM generated_documents d JOIN liquidation_batches b ON b.batch_id=d.batch_id
-              WHERE d.batch_id=? ORDER BY d.id DESC""",(batch_id,)).fetchall()
+              WHERE d.batch_id=? AND d.recipient_member_id<>0 ORDER BY d.id DESC""",(batch_id,)).fetchall()
 
     def list_latest_batch_documents(self, batch_id: str):
         """Return the newest attempt for each recipient and document type."""
@@ -265,7 +274,7 @@ class LiquidationRepository:
               (SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id) line_count,
               (SELECT group_concat(id_liq,' · ') FROM liquidaciones l WHERE l.batch_id=d.batch_id AND l.recipient_member_id=d.recipient_member_id) id_liqs
               FROM generated_documents d JOIN liquidation_batches b ON b.batch_id=d.batch_id
-              WHERE d.batch_id=? AND d.id=(
+              WHERE d.batch_id=? AND d.recipient_member_id<>0 AND d.id=(
                 SELECT MAX(d2.id) FROM generated_documents d2
                 WHERE d2.batch_id=d.batch_id
                   AND d2.recipient_member_id=d.recipient_member_id
@@ -284,6 +293,9 @@ class LiquidationRepository:
             return conn.execute("UPDATE liquidaciones SET status='VOIDED',voided_at=?,voided_by=?,void_reason=? WHERE batch_id=? AND status='ACTIVE'",(voided_at,user,reason,batch_id)).rowcount
 
     def record_document(self, **values) -> None:
+        if is_excluded_member(values.get("recipient_member_id")):
+            logger.warning("[SYSTEM_MEMBER_EXCLUDED] origin=LiquidationRepository.record_document records=1")
+            return
         with self.database.connect() as conn:
             previous = conn.execute("SELECT COALESCE(MAX(generation_attempt),0) FROM generated_documents WHERE batch_id=? AND recipient_member_id=? AND document_type=?", (values["batch_id"], values["recipient_member_id"], values["document_type"])).fetchone()[0]
             conn.execute("INSERT INTO generated_documents(batch_id,remittance_id,recipient_member_id,document_type,file_path,status,generated_at,error_message,generation_attempt,file_hash,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (values["batch_id"],values["remittance_id"],values["recipient_member_id"],values["document_type"],values["file_path"],values["status"],values.get("generated_at"),values.get("error_message"),previous+1,values.get("file_hash"),values.get("created_by")))
@@ -298,6 +310,9 @@ class LiquidationRepository:
             conn.execute("UPDATE generated_documents SET status='SUPERSEDED' WHERE batch_id=? AND status='GENERATED'", (batch_id,))
 
     def record_exported_draft(self, **values) -> None:
+        if is_excluded_member(values.get("recipient_member_id")):
+            logger.warning("[SYSTEM_MEMBER_EXCLUDED] origin=LiquidationRepository.record_exported_draft records=1")
+            return
         with self.database.connect() as conn:
             conn.execute("""INSERT INTO exported_draft_documents
               (remittance_id,recipient_member_id,member_name,campaign,company,crop,remittance_name,file_path,status,generated_at,source,file_hash)
@@ -307,7 +322,7 @@ class LiquidationRepository:
               values.get("source", "MANUAL_DRAFT_EXPORT"), values.get("file_hash")))
 
     def list_mergeable_documents(self, *, document_kind: str, include_voided: bool = False, **filters):
-        clauses=[]; args=[]
+        clauses=["recipient_member_id<>0"]; args=[]
         mapping={"campaign":"b.campaign","company":"b.company","crop":"b.crop","remittance_id":"b.remesa_id","member_id":"d.recipient_member_id","status":"d.status"}
         if document_kind == "PDF_DRAFT":
             mapping={"campaign":"campaign","company":"company","crop":"crop","remittance_id":"remittance_id","member_id":"recipient_member_id","status":"status"}

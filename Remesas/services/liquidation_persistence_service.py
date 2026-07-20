@@ -13,6 +13,11 @@ from domain.persistence_models import (BatchPersistenceSaveResult, PendingBatchP
     PendingRemittancePersistence, PersistedLiquidation, PersistenceBatch,
     PersistencePreview, RemittancePersistenceSaveResult)
 from services.liquidation_split_service import LiquidationSplitService
+from domain.member_rules import (SYSTEM_MEMBER_EXCLUDED_MESSAGE, is_excluded_member,
+                                 log_system_member_excluded)
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _now(): return datetime.now(timezone.utc).isoformat()
@@ -32,14 +37,21 @@ class LiquidationPersistenceService:
             prefix=conn.execute("SELECT prefix FROM liquidation_prefixes WHERE crop=? AND active=1",(str(h.cultivo).strip().upper(),)).fetchone()
             if not prefix: raise ValueError(f"No existe prefijo activo para {h.cultivo}")
             splitter=LiquidationSplitService(conn,self.legacy_conn); lines=[]
-            for member in result.member_results:
+            excluded = [member for member in result.member_results if is_excluded_member(member.member_id)]
+            members = [member for member in result.member_results if not is_excluded_member(member.member_id)]
+            if excluded:
+                log_system_member_excluded(logger, origin="LiquidationPersistenceService.prepare_preview",
+                                           count=len(excluded), net_kg=sum((Decimal(x.net_kg) for x in excluded), Decimal("0")), remesa_id=remesa_id)
+            for member in members:
                 if Decimal(member.net_kg)<0: raise ValueError(f"Neto negativo para socio {member.member_id}")
                 cod=self.legacy.article_code(str(h.cultivo),member.variety,self.aliases)
                 if cod is None: raise ValueError(f"No se encontró MVariedad.ARTICULO para {member.variety}")
                 lines.extend(splitter.split(member,h,cod_art=cod))
+        if not lines:
+            raise ValueError("No existen liquidaciones válidas para guardar. El socio 0 es un registro técnico excluido.")
         payload={"header":[remesa_id,h.remesa_name,h.campana,h.empresa,h.cultivo,h.fecha_pago,h.tipo_liquidacion],"lines":[[x.source_member_id,x.recipient_member_id,x.variety,*(_d(getattr(x,n)) for n in ("split_factor","net_kg","gross_amount","taxable_base","total_amount"))] for x in lines]}
         fingerprint=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
-        return PersistencePreview(h,tuple(lines),fingerprint,len(result.member_results),tuple(w for x in lines for w in x.warnings))
+        return PersistencePreview(h,tuple(lines),fingerprint,len(members),tuple(w for x in lines for w in x.warnings))
 
     def prepare_batch_preview(self, result) -> PendingBatchPersistence:
         """Prepara divisiones para resultados ya calculados, sin recalcular ni guardar."""
@@ -95,6 +107,13 @@ class LiquidationPersistenceService:
         return f"{row['prefix']}{campaign}{company_fmt}{sequence:04d}"
 
     def save(self, preview: PersistencePreview, *, user: str | None=None) -> PersistenceBatch:
+        if not preview.lines:
+            raise ValueError("No existen liquidaciones válidas para guardar. El socio 0 es un registro técnico excluido.")
+        invalid = [line for line in preview.lines if is_excluded_member(line.source_member_id) or is_excluded_member(line.recipient_member_id)]
+        if invalid:
+            log_system_member_excluded(logger, origin="LiquidationPersistenceService.save", count=len(invalid),
+                                       net_kg=sum((Decimal(x.net_kg) for x in invalid), Decimal("0")))
+            raise ValueError(SYSTEM_MEMBER_EXCLUDED_MESSAGE)
         h=preview.header; batch_id=str(uuid.uuid4()); now=_now(); persisted=[]
         conn=self.database.connect()
         try:

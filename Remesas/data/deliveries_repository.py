@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from domain.models import Delivery, DeliveryFilter, Summary
+from domain.member_rules import SYSTEM_MEMBER_ID
 from domain.utils import decimal_or_zero, format_display_date, is_liquidated
 
 
@@ -18,8 +19,8 @@ class DeliveriesRepository:
         return "date(substr(p.Fcarga, 1, 10))"
 
     def _build_where(self, filters: DeliveryFilter) -> tuple[str, list[Any]]:
-        clauses = ["p.CAMPAÑA=?", "p.EMPRESA=?", "p.CULTIVO=?", f"{self._date_expr()} BETWEEN date(?) AND date(?)"]
-        params: list[Any] = [filters.context.campana, filters.context.empresa, filters.context.cultivo, filters.period.start.isoformat(), filters.period.end.isoformat()]
+        clauses = ["p.CAMPAÑA=?", "p.EMPRESA=?", "p.CULTIVO=?", f"{self._date_expr()} BETWEEN date(?) AND date(?)", "CAST(p.IdSocio AS TEXT) <> ?"]
+        params: list[Any] = [filters.context.campana, filters.context.empresa, filters.context.cultivo, filters.period.start.isoformat(), filters.period.end.isoformat(), str(SYSTEM_MEMBER_ID)]
         if filters.varieties:
             clauses.append("p.Variedad IN (" + ",".join("?" for _ in filters.varieties) + ")")
             params.extend(filters.varieties)
