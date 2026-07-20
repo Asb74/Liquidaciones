@@ -59,3 +59,30 @@ def test_modification_exports_reversal_before_replacement_and_regenerates(tmp_pa
     regenerated=service.regenerate_export(result.export_id)
     assert regenerated.success and regenerated.export_id != result.export_id
     assert service.repository.get_csv_export(result.export_id)["status"] == "SUPERSEDED"
+
+
+def test_mass_export_builds_one_ordered_csv_and_information_file(tmp_path):
+    db=PersistenceDatabase(str(tmp_path/"db.sqlite"))
+    _save(db, batch_id="second", net="2", total="20")
+    _save(db, batch_id="first", net="1", total="10")
+    with db.connect() as c:
+        c.execute("UPDATE liquidation_batches SET remesa_id=2088, campaign='2026', company='B', crop='KAKIS' WHERE batch_id='second'")
+        c.execute("UPDATE liquidation_batches SET remesa_id=2087, campaign='2026', company='A', crop='KAKIS' WHERE batch_id='first'")
+    service=LiquidationCsvExportService(LiquidationRepository(db), Legacy(), tmp_path)
+    result=service.export_batches(("second", "first"), user="tester")
+    assert result.success and result.line_count == 2
+    assert result.csv_path.name.startswith("Exportación masiva ")
+    assert result.csv_path.parent == tmp_path / "Impresiones masivas" / "Exportaciones"
+    lines=result.csv_path.read_text(encoding="cp1252").splitlines()
+    assert lines[0] == ";".join(CSV_HEADERS) and len(lines) == 3
+    assert "CIfirst42" in lines[1] and "CIsecond42" in lines[2]
+    info=result.info_path.read_text(encoding="cp1252")
+    assert "Número de remesas: 2" in info and "2087" in info and "2088" in info
+    regenerated=service.regenerate_export(result.export_id)
+    assert regenerated.success
+
+def test_individual_export_is_saved_with_remittance_documents(tmp_path):
+    db=PersistenceDatabase(str(tmp_path/"db.sqlite")); _save(db)
+    result=LiquidationCsvExportService(LiquidationRepository(db), Legacy(), tmp_path).export_batch("batch-1")
+    assert result.success
+    assert result.csv_path.parent == tmp_path / "2025" / "CITRICOS" / "BLANCA TEMPRANA" / "Exportaciones"

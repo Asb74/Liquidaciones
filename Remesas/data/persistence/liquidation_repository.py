@@ -27,6 +27,23 @@ class LiquidationRepository:
         with self.database.connect() as conn:
             return conn.execute(f"SELECT {self._CSV_COLUMNS} FROM liquidaciones WHERE {' AND '.join(clauses)} ORDER BY id ASC", args).fetchall()
 
+    def export_batches(self, batch_ids):
+        """Return active CSV rows for the selected batches in accounting order."""
+        batch_ids = tuple(dict.fromkeys(batch_ids))
+        if not batch_ids:
+            return ()
+        placeholders = ",".join("?" for _ in batch_ids)
+        with self.database.connect() as conn:
+            return conn.execute(
+                f"""SELECT {self._CSV_COLUMNS}, b.remesa_id AS remittance_id FROM liquidaciones l
+                JOIN liquidation_batches b ON b.batch_id=l.batch_id
+                WHERE l.batch_id IN ({placeholders})
+                  AND l.status NOT IN ('VOIDED','SUPERSEDED')
+                  AND b.status IN ('ACTIVE','PARTIAL')
+                ORDER BY b.campaign, b.company, b.crop, b.remesa_id, l.id""",
+                batch_ids,
+            ).fetchall()
+
     def list_csv_rows_for_modification(self, modification_group_id: str):
         with self.database.connect() as conn:
             return conn.execute(f"SELECT {self._CSV_COLUMNS},operation_type,batch_id FROM liquidaciones WHERE modification_group_id=? AND operation_type IN ('REVERSAL','REPLACEMENT') ORDER BY CASE operation_type WHEN 'REVERSAL' THEN 0 ELSE 1 END,id ASC", (modification_group_id,)).fetchall()
@@ -50,7 +67,7 @@ class LiquidationRepository:
         from data.persistence.migrations import utcnow
         with self.database.connect() as conn:
             attempt = conn.execute("SELECT COALESCE(MAX(generation_attempt),0) FROM accounting_exports WHERE batch_id IS ? AND modification_group_id IS ? AND member_id IS ? AND export_type=?", (values.get("batch_id"),values.get("modification_group_id"),values.get("member_id"),values["export_type"])).fetchone()[0] + 1
-            cursor=conn.execute("INSERT INTO accounting_exports(batch_id,modification_group_id,remittance_id,member_id,export_type,file_path,info_file_path,status,line_count,excluded_line_count,net_total,amount_total,file_hash,source_fingerprint,generated_at,created_at,created_by,error_message,generation_attempt,supersedes_export_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (values.get("batch_id"),values.get("modification_group_id"),values.get("remittance_id"),values.get("member_id"),values["export_type"],values.get("file_path", ""),values.get("info_file_path"),values["status"],values.get("line_count",0),values.get("excluded_line_count",0),values.get("net_total"),values.get("amount_total"),values.get("file_hash"),values.get("source_fingerprint"),values.get("generated_at"),utcnow(),values.get("created_by"),values.get("error_message"),attempt,values.get("supersedes_export_id")))
+            cursor=conn.execute("INSERT INTO accounting_exports(batch_id,modification_group_id,remittance_id,member_id,export_type,file_path,info_file_path,status,line_count,excluded_line_count,net_total,amount_total,file_hash,source_fingerprint,generated_at,created_at,created_by,error_message,generation_attempt,supersedes_export_id,batch_ids_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (values.get("batch_id"),values.get("modification_group_id"),values.get("remittance_id"),values.get("member_id"),values["export_type"],values.get("file_path", ""),values.get("info_file_path"),values["status"],values.get("line_count",0),values.get("excluded_line_count",0),values.get("net_total"),values.get("amount_total"),values.get("file_hash"),values.get("source_fingerprint"),values.get("generated_at"),utcnow(),values.get("created_by"),values.get("error_message"),attempt,values.get("supersedes_export_id"),values.get("batch_ids_json")))
             return cursor.lastrowid
 
     def mark_csv_export_superseded(self, export_id: int) -> None:

@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS accounting_exports(
 );
 CREATE INDEX IF NOT EXISTS ix_accounting_exports_scope ON accounting_exports(batch_id, modification_group_id, member_id, export_type, status);
 CREATE INDEX IF NOT EXISTS ix_accounting_exports_fingerprint ON accounting_exports(source_fingerprint, status);
+"""),(7, "accounting_mass_export", """
+ALTER TABLE accounting_exports ADD COLUMN batch_ids_json TEXT;
+CREATE INDEX IF NOT EXISTS ix_accounting_exports_batch_ids ON accounting_exports(export_type,status);
 """))
 
 def utcnow() -> str:
