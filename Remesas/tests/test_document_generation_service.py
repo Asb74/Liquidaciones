@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 
 from data.persistence.database import PersistenceDatabase
 from data.persistence.liquidation_repository import LiquidationRepository
@@ -33,18 +34,17 @@ def test_failure_is_registered_without_changing_persisted_batch(tmp_path):
     result=DocumentGenerationService(LiquidationRepository(db),tmp_path/"out",exporter=broken).generate_for_batch("batch",options=DocumentGenerationOptions())
     assert len(result.failed_documents)==2
     with db.connect() as conn:
-        assert conn.execute("SELECT status FROM liquidation_batches WHERE batch_id='batch'").fetchone()[0]=="ACTIVE"
+        assert conn.execute("SELECT status FROM liquidation_batches WHERE batch_id='batch'").fetchone()[0]=="PARTIAL"
         assert conn.execute("SELECT COUNT(*) FROM generated_documents WHERE status='FAILED'").fetchone()[0]==2
 
 
-def test_regeneration_keeps_ids_and_versions_existing_file(tmp_path):
+def test_regeneration_without_snapshot_explains_the_missing_document_data(tmp_path):
     db=_database(tmp_path); seen=[]
     def exporter(vm,path): seen.append(vm.id_liqs); path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(b"pdf"); return path
     service=DocumentGenerationService(LiquidationRepository(db),tmp_path/"out",exporter=exporter)
-    first=service.generate_for_batch("batch",options=DocumentGenerationOptions())
-    second=service.regenerate_documents("batch")
-    assert seen[0]==seen[2]
-    assert all("_v2.pdf" in str(x.path) for x in second.generated_documents)
+    service.generate_for_batch("batch",options=DocumentGenerationOptions())
+    with pytest.raises(ValueError, match="falta el snapshot documental"):
+        service.regenerate_documents("batch")
     with db.connect() as conn: assert conn.execute("SELECT last_sequence FROM liquidation_sequences").fetchall()==[]
 
 

@@ -69,21 +69,28 @@ class DocumentGenerationService:
         out=self.output_root/safe_path_part(batch["campaign"])/safe_path_part(batch["crop"])/safe_path_part(batch["remesa_name"])/"definitivos"
         good=[]; bad=[]; self.repository.audit(batch_id,"DOCUMENT_GENERATION_STARTED",json.dumps({"recipients":len(groups)}))
         for index,(recipient,member_rows) in enumerate(groups.items(),1):
-            snapshot=self.repository.get_document_snapshot(batch_id, recipient)
-            vm=load_document_snapshot(snapshot["payload_json"]) if snapshot else self._vm(batch,member_rows); self._emit(progress_callback,"BUILDING_VIEWMODEL",batch_id=batch_id,recipient_index=index,recipient_count=len(groups),recipient_member_id=recipient)
-            suffix=vm.id_liqs[0] if len(vm.id_liqs)==1 else str(batch["remesa_id"])
-            recipient_name=getattr(vm, "recipient_name", getattr(vm, "member_name", ""))
-            path=self._available_path(out/f"Liquidacion_{recipient}_{safe_path_part(recipient_name)}_{safe_path_part(suffix)}.pdf",options.overwrite_existing)
+            path=out/f"Liquidacion_{recipient}.pdf"
             try:
+                snapshot=self.repository.get_document_snapshot(batch_id, recipient)
+                vm=load_document_snapshot(snapshot["payload_json"]) if snapshot else self._vm(batch, member_rows)
+                self._emit(progress_callback,"BUILDING_VIEWMODEL",batch_id=batch_id,recipient_index=index,recipient_count=len(groups),recipient_member_id=recipient)
+                suffix=vm.id_liqs[0] if len(vm.id_liqs)==1 else str(batch["remesa_id"])
+                recipient_name=getattr(vm, "recipient_name", getattr(vm, "member_name", ""))
+                path=self._available_path(out/f"Liquidacion_{recipient}_{safe_path_part(recipient_name)}_{safe_path_part(suffix)}.pdf",options.overwrite_existing)
+                logger.info("[PDFGeneration]\nbatch_id=%s\nrecipient_member_id=%s\nstatus=STARTED", batch_id, recipient)
                 if options.generate_pdfs: self._emit(progress_callback,"GENERATING_PDF",path=str(path)); self.exporter(vm,path)
                 digest=sha256(path.read_bytes()).hexdigest() if path.exists() else None; now=datetime.now(timezone.utc).isoformat()
                 doc=GeneratedDocument(batch_id,int(batch["remesa_id"]),recipient,DocumentType.PDF_MEMBER.value,path,True); good.append(doc)
                 self.repository.record_document(batch_id=batch_id,remittance_id=int(batch["remesa_id"]),recipient_member_id=recipient,document_type=DocumentType.PDF_MEMBER.value,file_path=str(path),status="GENERATED",generated_at=now,file_hash=digest,created_by=self.user)
-                self.repository.audit(batch_id,"DOCUMENT_GENERATED",json.dumps({"recipient_member_id":recipient,"path":str(path)}))
+                self.repository.audit(batch_id,"PDF_GENERATION_COMPLETED",json.dumps({"recipient_member_id":recipient,"path":str(path)}))
             except Exception as exc:
                 doc=GeneratedDocument(batch_id,int(batch["remesa_id"]),recipient,DocumentType.PDF_MEMBER.value,path,False,str(exc)); bad.append(doc)
                 self.repository.record_document(batch_id=batch_id,remittance_id=int(batch["remesa_id"]),recipient_member_id=recipient,document_type=DocumentType.PDF_MEMBER.value,file_path=str(path),status="FAILED",generated_at=None,error_message=str(exc),created_by=self.user)
-                self.repository.audit(batch_id,"DOCUMENT_GENERATION_FAILED",json.dumps({"recipient_member_id":recipient,"error":str(exc)})); self._emit(progress_callback,"ERROR",error=str(exc))
+                self.repository.audit(batch_id,"PDF_GENERATION_FAILED",json.dumps({"recipient_member_id":recipient,"error_type":type(exc).__name__,"error_message":str(exc)})); self._emit(progress_callback,"ERROR",error=str(exc))
+                logger.exception("[PDFGeneration]\nbatch_id=%s\nrecipient_member_id=%s\nstatus=FAILED\nerror_type=%s\nerror_message=%s", batch_id, recipient, type(exc).__name__, exc)
+        if bad:
+            self.repository.mark_batch_partial(batch_id)
+            self.repository.audit(batch_id,"BATCH_MARKED_PARTIAL",json.dumps({"failed_documents":len(bad)}))
         self._emit(progress_callback,"FINISHED",batch_id=batch_id)
         logger.info("[DocumentGenerationFinished]\nbatch_id=%s\nrequested=%s\ngenerated=%s\nfailed=%s", batch_id, len(groups), len(good), len(bad))
         return DocumentGenerationResult(batch_id,len(groups),tuple(good),tuple(bad),out)
@@ -96,4 +103,8 @@ class DocumentGenerationService:
         failed=sum(bool(x.failed_documents) for x in results)
         return BatchDocumentGenerationResult(len(batch_ids),len(results)-failed,failed,tuple(results),cancelled)
     def regenerate_documents(self,batch_id:str,*,recipient_member_id:int|None=None,options:DocumentGenerationOptions=DocumentGenerationOptions()):
+        rows = self.repository.list_batch_liquidations(batch_id)
+        recipients = {int(row["recipient_member_id"]) for row in rows if recipient_member_id is None or int(row["recipient_member_id"]) == recipient_member_id}
+        if any(self.repository.get_document_snapshot(batch_id, recipient) is None for recipient in recipients):
+            raise ValueError("No se puede regenerar el documento porque falta el snapshot documental de esta liquidación.")
         self.repository.audit(batch_id,"DOCUMENT_REGENERATED",json.dumps({"recipient_member_id":recipient_member_id})); return self.generate_for_batch(batch_id,options=options,recipient_member_id=recipient_member_id)
