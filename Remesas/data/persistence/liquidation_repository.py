@@ -32,6 +32,32 @@ class LiquidationRepository:
         with self.database.connect() as conn:
             conn.execute("UPDATE liquidation_batches SET status='PARTIAL' WHERE batch_id=? AND status='ACTIVE'", (batch_id,))
 
+    def mark_batch_active_if_documents_generated(self, batch_id: str) -> bool:
+        """Reactivate a partial batch only when every recipient's latest PDF succeeded."""
+        with self.database.connect() as conn:
+            recipients = {
+                row[0] for row in conn.execute(
+                    "SELECT DISTINCT recipient_member_id FROM liquidaciones WHERE batch_id=? AND recipient_member_id<>? AND id_socio<>?",
+                    (batch_id, SYSTEM_MEMBER_ID, SYSTEM_MEMBER_ID),
+                )
+            }
+            latest_statuses = {
+                row["recipient_member_id"]: row["status"]
+                for row in conn.execute(
+                    """SELECT d.recipient_member_id,d.status FROM generated_documents d
+                       JOIN (SELECT recipient_member_id,MAX(id) AS id FROM generated_documents
+                             WHERE batch_id=? AND document_type='PDF_MEMBER' GROUP BY recipient_member_id) latest
+                         ON latest.id=d.id""",
+                    (batch_id,),
+                )
+            }
+            if not recipients or any(latest_statuses.get(recipient) != "GENERATED" for recipient in recipients):
+                return False
+            return conn.execute(
+                "UPDATE liquidation_batches SET status='ACTIVE' WHERE batch_id=? AND status='PARTIAL'",
+                (batch_id,),
+            ).rowcount == 1
+
     def list_incomplete_batches(self):
         """Diagnose legacy batches persisted before document snapshots existed."""
         with self.database.connect() as conn:
