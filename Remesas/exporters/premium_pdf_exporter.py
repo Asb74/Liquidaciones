@@ -8,6 +8,7 @@ from pathlib import Path
 
 from decimal import Decimal
 from domain.calculation_models import LiquidationResult
+from domain.document_models import LiquidationDocumentMode
 from exporters.file_lock import FileLockedError, ensure_target_is_writable
 from presentation.premium_liquidation_view_model import (
     PremiumLiquidationViewModel, format_kg, format_money, format_percent,
@@ -57,7 +58,7 @@ def export_premium_member_pdfs(result: LiquidationResult, output_dir: Path, conf
     return tuple(export_premium_member_pdf(from_member_liquidation(result.header, m), target_dir / premium_member_filename(from_member_liquidation(result.header, m)), config_path) for m in result.member_results)
 
 
-def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, config_path: str | Path = "config/premium_pdf_config.json", *, is_draft: bool = False) -> Path:
+def generate_liquidation_pdf(vm: PremiumLiquidationViewModel, path: Path, config_path: str | Path = "config/premium_pdf_config.json", *, document_mode: LiquidationDocumentMode = LiquidationDocumentMode.FINAL) -> Path:
     try:
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.platypus import SimpleDocTemplate
@@ -78,7 +79,7 @@ def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, confi
         doc = SimpleDocTemplate(tmp, pagesize=page_size, leftMargin=margin, rightMargin=margin, topMargin=margin, bottomMargin=margin, pageCompression=0)
         story = build_premium_story(vm, config, available_width)
         def draft_banner(canvas, _doc):
-            if is_draft:
+            if document_mode is LiquidationDocumentMode.DRAFT:
                 canvas.saveState(); canvas.setFillColorRGB(.70,.12,.12); canvas.setFont("Helvetica-Bold",11)
                 canvas.drawCentredString(page_size[0]/2, page_size[1]-5*MM, "BORRADOR · NO GUARDADO")
                 canvas.restoreState()
@@ -94,14 +95,19 @@ def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, confi
     return path
 
 
+def export_premium_member_pdf(vm: PremiumLiquidationViewModel, path: Path, config_path: str | Path = "config/premium_pdf_config.json", *, is_draft: bool = False) -> Path:
+    """Compatibility entry point for callers not yet using the explicit mode."""
+    return generate_liquidation_pdf(vm, path, config_path, document_mode=(LiquidationDocumentMode.DRAFT if is_draft else LiquidationDocumentMode.FINAL))
+
+
 class PremiumLiquidationPdfRenderer:
     """Única plantilla Premium para modelos preliminares y persistidos."""
 
     def __init__(self, config_path: str | Path = "config/premium_pdf_config.json"):
         self.config_path = config_path
 
-    def render(self, view_model, path: Path, *, is_draft: bool = False) -> Path:
-        return export_premium_member_pdf(view_model, path, self.config_path, is_draft=is_draft)
+    def render(self, view_model, path: Path, *, document_mode: LiquidationDocumentMode = LiquidationDocumentMode.FINAL) -> Path:
+        return generate_liquidation_pdf(view_model, path, self.config_path, document_mode=document_mode)
 
 
 def _premium_styles():

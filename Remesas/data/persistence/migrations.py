@@ -70,6 +70,12 @@ CREATE INDEX IF NOT EXISTS ix_accounting_exports_fingerprint ON accounting_expor
 """),(7, "accounting_mass_export", """
 ALTER TABLE accounting_exports ADD COLUMN batch_ids_json TEXT;
 CREATE INDEX IF NOT EXISTS ix_accounting_exports_batch_ids ON accounting_exports(export_type,status);
+"""),(8, "liquidation_document_snapshots", """
+CREATE TABLE IF NOT EXISTS liquidation_document_snapshots(
+ batch_id TEXT NOT NULL REFERENCES liquidation_batches(batch_id), recipient_member_id INTEGER NOT NULL,
+ payload_json TEXT NOT NULL, schema_version INTEGER NOT NULL, calculation_fingerprint TEXT NOT NULL,
+ created_at TEXT NOT NULL, created_by TEXT, PRIMARY KEY(batch_id,recipient_member_id)
+);
 """))
 
 def utcnow() -> str:

@@ -20,6 +20,14 @@ class LiquidationRepository:
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidation_batches WHERE batch_id=?", (batch_id,)).fetchone()
 
+    def save_document_snapshot(self, *, batch_id: str, recipient_member_id: int, payload_json: str, schema_version: int, calculation_fingerprint: str, created_at: str, created_by: str | None = None) -> None:
+        with self.database.connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by))
+
+    def get_document_snapshot(self, batch_id: str, recipient_member_id: int):
+        with self.database.connect() as conn:
+            return conn.execute("SELECT * FROM liquidation_document_snapshots WHERE batch_id=? AND recipient_member_id=?", (batch_id,recipient_member_id)).fetchone()
+
     def list_batch_liquidations(self, batch_id: str):
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? AND recipient_member_id<>? AND id_socio<>? ORDER BY recipient_member_id,id", (batch_id, SYSTEM_MEMBER_ID, SYSTEM_MEMBER_ID)).fetchall()

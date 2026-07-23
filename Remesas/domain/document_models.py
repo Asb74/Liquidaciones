@@ -1,6 +1,13 @@
 from enum import Enum
 
 
+class LiquidationDocumentMode(str, Enum):
+    """Explicit rendering mode; it affects only the draft watermark."""
+
+    DRAFT = "DRAFT"
+    FINAL = "FINAL"
+
+
 class DocumentType(str, Enum):
     """Tipos documentales admitidos; CSV queda preparado para una fase posterior."""
 
