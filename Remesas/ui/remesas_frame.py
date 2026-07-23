@@ -4,6 +4,7 @@ import csv
 import hashlib
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
@@ -16,6 +17,7 @@ from data.hectare_fee_master_repository import HectareFeeCropRepository
 from data.group_benchmark_repository import GroupBenchmarkRepository
 from data.remesas_repository import RemesasRepository
 from domain.models import DeliveryFilter, Period, Remesa
+from domain.document_models import LiquidationDocumentMode
 from domain.varieties import STATUS_EMPTY_GROUP, STATUS_GROUP, STATUS_NOT_FOUND, STATUS_VARIETY, normalize_variety_text
 from domain.hectare_fee_master import HectareFeeMasterRepository
 from domain.validators import parse_user_date, validate_context, validate_period
@@ -39,6 +41,7 @@ from services.batch_remittance_service import BatchProgress, BatchRemittanceServ
 from exporters.file_lock import FileLockedError
 from exporters.hectare_fee_auditor import export_hectare_fee_audit
 from presentation.premium_liquidation_view_model import from_member_liquidation
+from presentation.liquidation_document_snapshot import SCHEMA_VERSION, dump as dump_document_snapshot
 from data.persistence.database import PersistenceDatabase
 from data.persistence.master_repository import LiquidationMasterRepository
 from services.liquidation_persistence_service import LiquidationPersistenceService
@@ -57,7 +60,7 @@ import json
 
 logger = logging.getLogger(__name__)
 from exporters.pdf_exporter import export_member_pdf
-from exporters.premium_pdf_exporter import LOCKED_PDF_MESSAGE, export_premium_member_pdf, premium_member_filename
+from exporters.premium_pdf_exporter import LOCKED_PDF_MESSAGE, generate_liquidation_pdf, premium_member_filename
 
 class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
@@ -222,6 +225,17 @@ class RemesasFrame(ttk.Frame):
             win.wait_window()
             if not result["confirm"]: return
             batch=self.persistence_service.save(preview)
+            # Persist the exact presentation model used by the draft. Regeneration
+            # therefore never queries Access nor rebuilds a reduced PDF payload.
+            for member in self._premium_members():
+                if member.member_id == 0:
+                    continue
+                self.liquidation_repository.save_document_snapshot(
+                    batch_id=batch.batch_id, recipient_member_id=member.member_id,
+                    payload_json=dump_document_snapshot(from_member_liquidation(self.current_calculation.result.header, member, group_benchmark=self._benchmark_for_member(member))),
+                    schema_version=SCHEMA_VERSION, calculation_fingerprint=preview.fingerprint,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
             documents=self.document_service.generate_for_batch(batch.batch_id,options=DocumentGenerationOptions())
             self.current_calculation_persisted=True
             self.current_persisted_batch_ids=(batch.batch_id,)
@@ -910,15 +924,15 @@ class RemesasFrame(ttk.Frame):
             member_name=member.member_name,
             remittance_name=result.header.remesa_name,
         )
-        export_premium_member_pdf(vm, path, is_draft=True)
+        generate_liquidation_pdf(vm, path, document_mode=LiquidationDocumentMode.DRAFT)
         self.preview_service.open_preview(path)
         return path
 
     def _export_premium_draft(self, member, *, source="MANUAL_DRAFT_EXPORT") -> Path:
         result = self.current_calculation.result
-        path=export_premium_member_pdf(
+        path=generate_liquidation_pdf(
             from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member)),
-            self._premium_member_path(member), is_draft=True,
+            self._premium_member_path(member), document_mode=LiquidationDocumentMode.DRAFT,
         )
         if getattr(self,"persistence_enabled",False):
             from datetime import datetime, timezone

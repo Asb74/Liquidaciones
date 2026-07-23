@@ -11,6 +11,7 @@ import logging
 
 from data.persistence.liquidation_repository import LiquidationRepository
 from domain.document_models import DocumentType
+from presentation.liquidation_document_snapshot import load as load_document_snapshot
 from domain.member_rules import is_excluded_member, log_system_member_excluded
 from domain.utils import safe_path_part
 from exporters.persisted_liquidation_pdf_exporter import export_persisted_liquidation_pdf
@@ -68,9 +69,11 @@ class DocumentGenerationService:
         out=self.output_root/safe_path_part(batch["campaign"])/safe_path_part(batch["crop"])/safe_path_part(batch["remesa_name"])/"definitivos"
         good=[]; bad=[]; self.repository.audit(batch_id,"DOCUMENT_GENERATION_STARTED",json.dumps({"recipients":len(groups)}))
         for index,(recipient,member_rows) in enumerate(groups.items(),1):
-            vm=self._vm(batch,member_rows); self._emit(progress_callback,"BUILDING_VIEWMODEL",batch_id=batch_id,recipient_index=index,recipient_count=len(groups),recipient_member_id=recipient)
+            snapshot=self.repository.get_document_snapshot(batch_id, recipient)
+            vm=load_document_snapshot(snapshot["payload_json"]) if snapshot else self._vm(batch,member_rows); self._emit(progress_callback,"BUILDING_VIEWMODEL",batch_id=batch_id,recipient_index=index,recipient_count=len(groups),recipient_member_id=recipient)
             suffix=vm.id_liqs[0] if len(vm.id_liqs)==1 else str(batch["remesa_id"])
-            path=self._available_path(out/f"Liquidacion_{recipient}_{safe_path_part(vm.recipient_name)}_{safe_path_part(suffix)}.pdf",options.overwrite_existing)
+            recipient_name=getattr(vm, "recipient_name", getattr(vm, "member_name", ""))
+            path=self._available_path(out/f"Liquidacion_{recipient}_{safe_path_part(recipient_name)}_{safe_path_part(suffix)}.pdf",options.overwrite_existing)
             try:
                 if options.generate_pdfs: self._emit(progress_callback,"GENERATING_PDF",path=str(path)); self.exporter(vm,path)
                 digest=sha256(path.read_bytes()).hexdigest() if path.exists() else None; now=datetime.now(timezone.utc).isoformat()

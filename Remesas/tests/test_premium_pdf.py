@@ -143,3 +143,18 @@ def test_header_shows_period_without_payment_date():
     assert period == "Periodo: 10/12/2025 – 05/03/2026"
     assert "Pago:" not in period
     assert "·" not in period
+
+
+def test_draft_and_final_share_the_same_story_and_only_draft_has_watermark(tmp_path: Path):
+    from domain.document_models import LiquidationDocumentMode
+    from exporters.premium_pdf_exporter import generate_liquidation_pdf
+
+    vm = from_member_liquidation(_header(), _member(variety="SALUSTIANA"))
+    draft = generate_liquidation_pdf(vm, tmp_path / "draft.pdf", document_mode=LiquidationDocumentMode.DRAFT)
+    final = generate_liquidation_pdf(vm, tmp_path / "final.pdf", document_mode=LiquidationDocumentMode.FINAL)
+    draft_text = draft.read_bytes().decode("latin1", errors="ignore")
+    final_text = final.read_bytes().decode("latin1", errors="ignore")
+    assert "BORRADOR" in draft_text and "BORRADOR" not in final_text
+    assert draft.read_bytes().count(b"/Type /Page\n") == final.read_bytes().count(b"/Type /Page\n") == 1
+    for section in ("RESUMEN DE PRODUCCI", "DESGLOSE COMERCIAL", "COMPARATIVA", "DISTRIBUCI", "FISCALIDAD"):
+        assert section in draft_text and section in final_text

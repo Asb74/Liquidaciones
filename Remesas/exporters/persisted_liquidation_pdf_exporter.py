@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from exporters.premium_pdf_exporter import PremiumLiquidationPdfRenderer
+from domain.document_models import LiquidationDocumentMode
 from presentation.premium_liquidation_view_model import CommercialBreakdownRow, PremiumLiquidationViewModel, PESETA_RATE
 
 
@@ -41,4 +42,4 @@ def _premium_view_model(vm):
 
 
 def export_persisted_liquidation_pdf(vm, path: Path) -> Path:
-    return PremiumLiquidationPdfRenderer().render(_premium_view_model(vm), path, is_draft=False)
+    return PremiumLiquidationPdfRenderer().render(_premium_view_model(vm), path, document_mode=LiquidationDocumentMode.FINAL)
