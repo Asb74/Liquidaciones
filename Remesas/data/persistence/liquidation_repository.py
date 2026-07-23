@@ -28,6 +28,24 @@ class LiquidationRepository:
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidation_document_snapshots WHERE batch_id=? AND recipient_member_id=?", (batch_id,recipient_member_id)).fetchone()
 
+    def mark_batch_partial(self, batch_id: str) -> None:
+        with self.database.connect() as conn:
+            conn.execute("UPDATE liquidation_batches SET status='PARTIAL' WHERE batch_id=? AND status='ACTIVE'", (batch_id,))
+
+    def list_incomplete_batches(self):
+        """Diagnose legacy batches persisted before document snapshots existed."""
+        with self.database.connect() as conn:
+            return conn.execute("""SELECT b.batch_id,b.remesa_id,b.status,
+              (SELECT COUNT(*) FROM liquidaciones l WHERE l.batch_id=b.batch_id) AS line_count,
+              (SELECT COUNT(*) FROM liquidation_document_snapshots s WHERE s.batch_id=b.batch_id) AS snapshot_count,
+              (SELECT COUNT(*) FROM generated_documents d WHERE d.batch_id=b.batch_id) AS document_count
+              FROM liquidation_batches b
+              WHERE b.status='ACTIVE'
+                AND EXISTS(SELECT 1 FROM liquidaciones l WHERE l.batch_id=b.batch_id)
+                AND NOT EXISTS(SELECT 1 FROM liquidation_document_snapshots s WHERE s.batch_id=b.batch_id)
+                AND NOT EXISTS(SELECT 1 FROM generated_documents d WHERE d.batch_id=b.batch_id)
+              ORDER BY b.created_at DESC""").fetchall()
+
     def list_batch_liquidations(self, batch_id: str):
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? AND recipient_member_id<>? AND id_socio<>? ORDER BY recipient_member_id,id", (batch_id, SYSTEM_MEMBER_ID, SYSTEM_MEMBER_ID)).fetchall()

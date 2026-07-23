@@ -16,6 +16,7 @@ from services.liquidation_split_service import LiquidationSplitService
 from domain.member_rules import (SYSTEM_MEMBER_EXCLUDED_MESSAGE, is_excluded_member,
                                  log_system_member_excluded)
 import logging
+from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -74,14 +75,15 @@ class LiquidationPersistenceService:
             sum(len(x.persistence_preview.lines) for x in pending), tuple(warnings),
             any(x.valid for x in pending), tuple(x.remittance for x in result.failed_results))
 
-    def save_batch(self, preview: PendingBatchPersistence) -> BatchPersistenceSaveResult:
+    def save_batch(self, preview: PendingBatchPersistence, *, snapshots_by_remittance: Mapping[int, Mapping[int, str]] | None = None) -> BatchPersistenceSaveResult:
         """Guarda cada remesa en su propia transacción y continúa tras un fallo."""
         results=[]; warnings=[]
         for item in preview.remittances:
             if not item.valid:
                 continue
             try:
-                batch=self.save(item.persistence_preview)
+                snapshots = (snapshots_by_remittance or {}).get(int(item.persistence_preview.header.remesa_id), {})
+                batch=self.save(item.persistence_preview, document_snapshots=snapshots)
                 results.append(RemittancePersistenceSaveResult(item.remittance,True,batch,None,()))
             except Exception as exc:
                 warnings.append(f"Remesa {item.remittance.remittance_id}: {exc}")
@@ -106,7 +108,8 @@ class LiquidationPersistenceService:
         conn.execute("UPDATE liquidation_sequences SET last_sequence=?,updated_at=? WHERE crop=? AND campaign=? AND company=?",(sequence,_now(),crop,campaign,company_key))
         return f"{row['prefix']}{campaign}{company_fmt}{sequence:04d}"
 
-    def save(self, preview: PersistencePreview, *, user: str | None=None) -> PersistenceBatch:
+    def save(self, preview: PersistencePreview, *, user: str | None=None,
+             document_snapshots: Mapping[int, str] | None = None) -> PersistenceBatch:
         if not preview.lines:
             raise ValueError("No existen liquidaciones válidas para guardar. El socio 0 es un registro técnico excluido.")
         invalid = [line for line in preview.lines if is_excluded_member(line.source_member_id) or is_excluded_member(line.recipient_member_id)]
@@ -130,8 +133,17 @@ class LiquidationPersistenceService:
                 values=(id_liq,str(h.fecha_pago),str(h.cultivo),str(h.campana),str(h.empresa),line.recipient_member_id,line.recipient_name,line.cod_art,line.variety,_d(line.net_kg),_d(line.gross_amount),_d(line.commercial_price) if line.commercial_price is not None else None,_d(line.collection_amount),_d(line.hectare_fee_amount),_d(line.quality_amount),_d(line.transport_amount),_d(line.globalgap_amount),_d(line.taxable_base),_d(line.final_average_price) if line.final_average_price is not None else None,_d(line.vat_rate),_d(line.withholding_rate),_d(line.total_amount),int(h.remesa_id),h.remesa_name,h.tipo_liquidacion,int(h.remesa_id),line.source_member_id,line.recipient_member_id,line.source_member_name,line.variety,key,line.split_rule_id,line.split_type,_d(line.split_factor),int(line.split_factor!=1),batch_id,"ACTIVE",now,user,preview.fingerprint,"ORIGINAL")
                 conn.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,remesa_id,source_member_id,recipient_member_id,source_member_name,source_variety,source_liquidation_key,split_rule_id,split_type,split_factor,is_split,batch_id,status,created_at,created_by,calculation_fingerprint,operation_type) VALUES("+",".join("?" for _ in values)+")",values)
                 persisted.append(PersistedLiquidation(id_liq,line.recipient_member_id,line.total_amount))
+            for recipient_member_id, payload_json in (document_snapshots or {}).items():
+                logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=1\nstatus=STARTED", batch_id, recipient_member_id)
+                conn.execute("INSERT OR REPLACE INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, int(recipient_member_id), payload_json, 1, preview.fingerprint, now, user))
+                conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, "DOCUMENT_SNAPSHOT_SAVED", "DOCUMENT", str(recipient_member_id), json.dumps({"recipient_member_id": recipient_member_id, "schema_version": 1, "calculation_fingerprint": preview.fingerprint}), now, user))
+                logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=1\nstatus=SAVED", batch_id, recipient_member_id)
             conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)",(batch_id,"SAVE","BATCH",batch_id,json.dumps({"lines":len(persisted)}),_now(),user)); conn.commit()
-        except Exception: conn.rollback(); raise
+            logger.info("[PersistenceTransaction]\nbatch_id=%s\nstatus=COMMITTED", batch_id)
+        except Exception as exc:
+            conn.rollback()
+            logger.exception("[PersistenceTransaction]\nbatch_id=%s\nstatus=ROLLED_BACK\nerror_type=%s\nerror_message=%s", batch_id, type(exc).__name__, exc)
+            raise
         finally: conn.close()
         return PersistenceBatch(batch_id,"ACTIVE",tuple(persisted))
 

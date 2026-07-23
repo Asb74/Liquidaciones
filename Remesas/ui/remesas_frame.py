@@ -224,27 +224,20 @@ class RemesasFrame(ttk.Frame):
             ttk.Label(buttons,text="No se escribirá en Access. Los PDF definitivos se generan después del commit.").pack(side="left")
             win.wait_window()
             if not result["confirm"]: return
-            batch=self.persistence_service.save(preview)
-            # Persist the exact presentation model used by the draft. Regeneration
-            # therefore never queries Access nor rebuilds a reduced PDF payload.
-            for member in self._premium_members():
-                if member.member_id == 0:
-                    continue
-                self.liquidation_repository.save_document_snapshot(
-                    batch_id=batch.batch_id, recipient_member_id=member.member_id,
-                    payload_json=dump_document_snapshot(from_member_liquidation(self.current_calculation.result.header, member, group_benchmark=self._benchmark_for_member(member))),
-                    schema_version=SCHEMA_VERSION, calculation_fingerprint=preview.fingerprint,
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                )
+            snapshots=self._document_snapshots(self.current_calculation.result)
+            batch=self.persistence_service.save(preview, document_snapshots=snapshots)
             documents=self.document_service.generate_for_batch(batch.batch_id,options=DocumentGenerationOptions())
             self.current_calculation_persisted=True
             self.current_persisted_batch_ids=(batch.batch_id,)
             self.current_generated_documents=documents.generated_documents+documents.failed_documents
-            self.current_persistence_status="ACTIVE"
+            self.current_persistence_status="PARTIAL" if documents.failed_documents else "ACTIVE"
             logger.info("[PostPersistenceState]\nbatch_ids=%s\nactive_batches=%s\ndocuments=%s\ncan_void=true\ncan_view=%s",self.current_persisted_batch_ids,self.current_persisted_batch_ids,len(self.current_generated_documents),bool(documents.generated_documents))
             PersistenceResultDialog(self,self.history_service,self.current_persisted_batch_ids,self.current_generated_documents,len(batch.liquidations))
-            self.status.set(f"Persistencia completada: batch {batch.batch_id}")
+            self.status.set("La liquidación se guardó, pero algunos documentos no pudieron generarse. Puede regenerarlos desde el historial." if documents.failed_documents else f"Persistencia completada: batch {batch.batch_id}")
             self._refresh_action_states()
+        except TypeError as exc:
+            logger.exception("No se pudieron guardar las liquidaciones")
+            messagebox.showerror("Guardar liquidaciones", "No se pudo completar el guardado de la remesa.\n\nLa persistencia documental falló al serializar la comparativa.\nNo se ha confirmado el guardado del lote.\n\nDetalle técnico:\n" + str(exc))
         except Exception as exc:
             logger.exception("No se pudieron guardar las liquidaciones"); messagebox.showerror("Guardar liquidaciones",str(exc))
 
@@ -267,7 +260,9 @@ class RemesasFrame(ttk.Frame):
             dialog=BatchPersistencePreviewDialog(self.winfo_toplevel(),preview,allow_confirm=True)
             if not dialog.show(): return False
             if not messagebox.askyesno("Confirmar guardado",f"Se van a guardar las liquidaciones definitivas de {valid} remesas.\n\nUna vez guardadas se generarán los PDFs definitivos por destinatario.\n\nEl Excel resumen seguirá mostrando las liquidaciones originales sin división.\n\nSe guardarán {valid} de {total} remesas.\n\n¿Desea continuar?"): return False
-            result=self.persistence_service.save_batch(preview); self.current_batch_save_result=result; self.current_batch_persisted=result.failed==0
+            snapshots={int(item.persistence_preview.header.remesa_id): self._document_snapshots(item.calculation_result)
+                       for item in preview.remittances if item.valid}
+            result=self.persistence_service.save_batch(preview, snapshots_by_remittance=snapshots); self.current_batch_save_result=result; self.current_batch_persisted=result.failed==0
             batch_ids=[x.batch.batch_id for x in result.remittance_results if x.saved]
             documents=self.document_service.generate_for_batches(batch_ids,options=DocumentGenerationOptions(),progress_callback=self._document_progress,cancel_requested=lambda:self.batch_cancel_requested)
             self.current_persisted_batch_ids=tuple(batch_ids)
@@ -867,6 +862,16 @@ class RemesasFrame(ttk.Frame):
         # MemberLiquidation ya viene agrupado por socio y variedad desde el motor.
         # No deduplicamos por socio para no ocultar variedades dentro de la misma remesa.
         return sorted(result.member_results, key=lambda member: (member.member_id, member.variety or ""))
+
+    def _document_snapshots(self, result):
+        """Build the immutable document payloads before opening the SQL transaction."""
+        snapshots = {}
+        for member in sorted(result.member_results, key=lambda item: (item.member_id, item.variety or "")):
+            if member.member_id != 0:
+                snapshots[member.member_id] = dump_document_snapshot(
+                    from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member))
+                )
+        return snapshots
 
     def _premium_member_label(self, member) -> str:
         variety = f" · {member.variety}" if getattr(member, "variety", "") else ""
