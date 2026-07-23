@@ -14,7 +14,7 @@ from domain.document_models import DocumentType
 from presentation.liquidation_document_snapshot import load as load_document_snapshot
 from domain.member_rules import is_excluded_member, log_system_member_excluded
 from domain.utils import safe_path_part
-from exporters.persisted_liquidation_pdf_exporter import export_persisted_liquidation_pdf
+from exporters.persisted_liquidation_pdf_exporter import build_premium_view_model_from_persisted, export_persisted_liquidation_pdf
 from presentation.persisted_liquidation_pdf_view_model import PersistedLiquidationPdfLine, PersistedLiquidationPdfTotals, PersistedLiquidationPdfViewModel
 
 logger = logging.getLogger(__name__)
@@ -72,17 +72,22 @@ class DocumentGenerationService:
             path=out/f"Liquidacion_{recipient}.pdf"
             try:
                 snapshot=self.repository.get_document_snapshot(batch_id, recipient)
-                vm=load_document_snapshot(snapshot["payload_json"]) if snapshot else self._vm(batch, member_rows)
+                vm = (
+                    load_document_snapshot(snapshot["payload_json"])
+                    if snapshot
+                    else build_premium_view_model_from_persisted(self._vm(batch, member_rows))
+                )
                 self._emit(progress_callback,"BUILDING_VIEWMODEL",batch_id=batch_id,recipient_index=index,recipient_count=len(groups),recipient_member_id=recipient)
                 suffix=vm.id_liqs[0] if len(vm.id_liqs)==1 else str(batch["remesa_id"])
                 recipient_name=getattr(vm, "recipient_name", getattr(vm, "member_name", ""))
                 path=self._available_path(out/f"Liquidacion_{recipient}_{safe_path_part(recipient_name)}_{safe_path_part(suffix)}.pdf",options.overwrite_existing)
-                logger.info("[PDFGeneration]\nbatch_id=%s\nrecipient_member_id=%s\nstatus=STARTED", batch_id, recipient)
+                logger.info("[PDFGeneration]\nbatch_id=%s\nrecipient_member_id=%s\ninput_model_type=%s\nstatus=STARTED", batch_id, recipient, type(vm).__name__)
                 if options.generate_pdfs: self._emit(progress_callback,"GENERATING_PDF",path=str(path)); self.exporter(vm,path)
                 digest=sha256(path.read_bytes()).hexdigest() if path.exists() else None; now=datetime.now(timezone.utc).isoformat()
                 doc=GeneratedDocument(batch_id,int(batch["remesa_id"]),recipient,DocumentType.PDF_MEMBER.value,path,True); good.append(doc)
                 self.repository.record_document(batch_id=batch_id,remittance_id=int(batch["remesa_id"]),recipient_member_id=recipient,document_type=DocumentType.PDF_MEMBER.value,file_path=str(path),status="GENERATED",generated_at=now,file_hash=digest,created_by=self.user)
                 self.repository.audit(batch_id,"PDF_GENERATION_COMPLETED",json.dumps({"recipient_member_id":recipient,"path":str(path)}))
+                logger.info("[PDFGeneration]\nbatch_id=%s\nrecipient_member_id=%s\nstatus=GENERATED", batch_id, recipient)
             except Exception as exc:
                 doc=GeneratedDocument(batch_id,int(batch["remesa_id"]),recipient,DocumentType.PDF_MEMBER.value,path,False,str(exc)); bad.append(doc)
                 self.repository.record_document(batch_id=batch_id,remittance_id=int(batch["remesa_id"]),recipient_member_id=recipient,document_type=DocumentType.PDF_MEMBER.value,file_path=str(path),status="FAILED",generated_at=None,error_message=str(exc),created_by=self.user)
@@ -91,6 +96,8 @@ class DocumentGenerationService:
         if bad:
             self.repository.mark_batch_partial(batch_id)
             self.repository.audit(batch_id,"BATCH_MARKED_PARTIAL",json.dumps({"failed_documents":len(bad)}))
+        elif self.repository.mark_batch_active_if_documents_generated(batch_id):
+            self.repository.audit(batch_id,"BATCH_MARKED_ACTIVE",json.dumps({"generated_documents":len(good)}))
         self._emit(progress_callback,"FINISHED",batch_id=batch_id)
         logger.info("[DocumentGenerationFinished]\nbatch_id=%s\nrequested=%s\ngenerated=%s\nfailed=%s", batch_id, len(groups), len(good), len(bad))
         return DocumentGenerationResult(batch_id,len(groups),tuple(good),tuple(bad),out)

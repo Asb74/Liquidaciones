@@ -3,6 +3,8 @@ import pytest
 
 from data.persistence.database import PersistenceDatabase
 from data.persistence.liquidation_repository import LiquidationRepository
+from presentation.liquidation_document_snapshot import dump
+from exporters.persisted_liquidation_pdf_exporter import build_premium_view_model_from_persisted
 from services.document_generation_service import DocumentGenerationOptions, DocumentGenerationService
 
 
@@ -22,9 +24,9 @@ def test_groups_varieties_per_recipient_and_reads_persisted_ids(tmp_path):
     def exporter(vm,path): captured.append(vm); path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes("|".join(vm.id_liqs).encode()); return path
     result=DocumentGenerationService(LiquidationRepository(db),tmp_path/"out",exporter=exporter).generate_for_batch("batch",options=DocumentGenerationOptions())
     assert result.requested_documents==2
-    recipient=next(vm for vm in captured if vm.recipient_member_id==5893)
-    assert len(recipient.lines)==2 and recipient.id_liqs==("CI2026010001","CI2026010002")
-    assert str(recipient.totals.importe_total)=="110"
+    recipient=next(vm for vm in captured if vm.member_id==5893)
+    assert recipient.id_liqs==("CI2026010001","CI2026010002")
+    assert str(recipient.total_amount)=="110"
     with db.connect() as conn: assert conn.execute("SELECT COUNT(*) FROM generated_documents WHERE status='GENERATED'").fetchone()[0]==2
 
 
@@ -46,6 +48,24 @@ def test_regeneration_without_snapshot_explains_the_missing_document_data(tmp_pa
     with pytest.raises(ValueError, match="falta el snapshot documental"):
         service.regenerate_documents("batch")
     with db.connect() as conn: assert conn.execute("SELECT last_sequence FROM liquidation_sequences").fetchall()==[]
+
+
+def test_regeneration_from_snapshots_reactivates_a_partial_batch(tmp_path):
+    db=_database(tmp_path); repo=LiquidationRepository(db)
+    service=DocumentGenerationService(repo,tmp_path/"out")
+    batch=repo.get_batch("batch")
+    for recipient in (5893, 5970):
+        snapshot_vm=build_premium_view_model_from_persisted(service._vm(batch, repo.list_recipient_lines("batch", recipient)))
+        repo.save_document_snapshot(batch_id="batch", recipient_member_id=recipient, payload_json=dump(snapshot_vm), schema_version=1, calculation_fingerprint="fp", created_at="now")
+
+    failed=service.generate_for_batch("batch", options=DocumentGenerationOptions(), progress_callback=None)
+    assert not failed.failed_documents
+    repo.mark_batch_partial("batch")
+    regenerated=service.regenerate_documents("batch", options=DocumentGenerationOptions(overwrite_existing=True))
+    assert regenerated.requested_documents==2 and not regenerated.failed_documents
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM liquidation_batches WHERE batch_id='batch'").fetchone()[0]=="ACTIVE"
+        assert conn.execute("SELECT COUNT(*) FROM generated_documents WHERE status='GENERATED'").fetchone()[0]==4
 
 
 def test_void_supersedes_documents_without_deleting_files(tmp_path):
