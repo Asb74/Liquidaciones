@@ -361,7 +361,23 @@ class LiquidacionCalculator:
         reason = next((str(r.get("Motivo exclusión")) for r in rows if r.get("Motivo exclusión")), "")
         boletas = sorted({str(r.get("Boleta DEEPP")) for r in rows if r.get("Boleta DEEPP")})
         audit_boleta = getattr(self.hectare_repository, "get_boleta_surface_audit", None)
-        reviewed = tuple(audit_boleta(r.get("IdSocio"), b, next((r.get("Campaña DEEPP") for r in rows if str(r.get("Boleta DEEPP")) == b), ""), next((r.get("Empresa DEEPP") for r in rows if str(r.get("Boleta DEEPP")) == b), ""), eligible_crops) for b in boletas) if callable(audit_boleta) else ()
+        # A comprehension's iteration variable is local in Python 3.  Keep the
+        # matching audit row with each boleta so all arguments are read from
+        # the same record rather than referring to a leaked ``r`` afterwards.
+        rows_by_boleta = {
+            boleta: next(row for row in rows if str(row.get("Boleta DEEPP")) == boleta)
+            for boleta in boletas
+        }
+        reviewed = tuple(
+            audit_boleta(
+                row.get("IdSocio"),
+                boleta,
+                row.get("Campaña DEEPP", ""),
+                row.get("Empresa DEEPP", ""),
+                eligible_crops,
+            )
+            for boleta, row in rows_by_boleta.items()
+        ) if callable(audit_boleta) else ()
         for item in reviewed:
             self.logger.info("[CuotaHaAudit] member_id=%s boleta=%s estado=%s superficie_total=%s superficie_valida=%s superficie_excluida=%s motivos=%s incidencias=%s", item["parcelas"][0].get("IdSocio") if item["parcelas"] else "", item["boleta"], item["estado_boleta"], item["superficie_total"], item["superficie_valida"], item["superficie_excluida"], ",".join(item["motivos_exclusion"]), ",".join(item["incidencias"]))
         return HectareFeeAuditData(tuple(eligible_crops), price, hectares, total_fee, total_kg, rate, line_kg, line_fee, status, tuple(warnings), candidate_boletas, active_cha_boletas, candidate_parcels, included_parcels, excluded_parcels, young_parcels, inactive_parcels, kg_by_crop, reason, getattr(balance, "already_applied_fee", Decimal("0")), getattr(balance, "projected_applied_fee", Decimal("0")), getattr(balance, "remaining_fee", Decimal("0")), getattr(balance, "status", "OPEN"), reviewed, tuple(p for item in reviewed for p in item["parcelas"]))
