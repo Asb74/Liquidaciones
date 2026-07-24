@@ -78,7 +78,7 @@ def main() -> None:
     repository=LiquidationRepository(PersistenceDatabase(config.persistence_database_path))
     def open_fee_report():
         if not frame.conn: return messagebox.showwarning("Informe de cuota por hectárea", "Conecte primero las bases de datos.")
-        meta=frame.meta; HectareFeeReportDialog(root,HectareFeeReportService(HectareRepository(frame.conn)),meta.campaigns(),meta.empresas(frame.context_panel.campana.get()) if frame.context_panel.campana.get() else [])
+        meta=frame.meta; HectareFeeReportDialog(root, HectareFeeReportService(HectareRepository(frame.conn)), meta.campaigns(), meta.empresas, frame.context_panel.campana.get(), frame.context_panel.empresa.get())
     root.config(menu=build_main_menu(root, MainMenuHandlers(close=frame.close_application, open_hectare_fee_master=frame.open_hectare_fee_master, open_calibre_master=lambda: CalibreMasterDialog(root), open_production_destination_master=lambda: ProductionDestinationMasterDialog(root), open_liquidation_prefix_master=frame.open_liquidation_prefix_master, open_liquidation_split_master=frame.open_liquidation_split_master, show_about=frame.show_about, refresh_local_databases=lambda: frame.synchronize_local_databases(manual=True), open_data_folder=frame.open_data_folder, open_liquidation_history=frame.open_liquidation_history, open_pdf_merge_tool=lambda: PdfMergeToolDialog(root,PdfMergeService(repository)), open_hectare_fee_report=open_fee_report)))
     root.mainloop()
 if __name__ == "__main__": main()
