@@ -35,3 +35,6 @@ class VarietySelectionResolution:
     varieties: tuple[str, ...]
     status: str
     warnings: tuple[str, ...] = ()
+    source_crop: str = ""
+    resolved_master_crop: str | None = None
+    candidate_master_crops: tuple[str, ...] = ()

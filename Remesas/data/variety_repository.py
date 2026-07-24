@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Iterable
 
 from dataclasses import dataclass
 
@@ -19,6 +20,12 @@ class VarietalGroup:
     @property
     def label(self) -> str:
         return f"{self.group} {self.subgroup}".strip()
+
+
+@dataclass(frozen=True)
+class VarietyMatch:
+    crop: str
+    variety: str
 
 
 class VarietyRepository:
@@ -85,6 +92,15 @@ class VarietyRepository:
         row = self.conn.execute(sql, (normalize_variety_text(crop), normalized_variety)).fetchone()
         return str(row[0]) if row else None
 
+    def find_exact_varieties(self, master_crops: Iterable[str], normalized_value: str) -> tuple[VarietyMatch, ...]:
+        """Find exact normalized varieties while retaining the matching master crop."""
+        matches: list[VarietyMatch] = []
+        for crop in dict.fromkeys(normalize_variety_text(crop) for crop in master_crops):
+            for variety in self.list_varieties(crop):
+                if normalize_variety_text(variety) == normalized_value:
+                    matches.append(VarietyMatch(crop, variety))
+        return tuple(matches)
+
     def find_group_by_label(self, crop: str, normalized_label: str) -> VarietalGroup | None:
         sql = """
         SELECT TRIM(GRUPO) AS Grupo, TRIM(SUBGRUPO) AS Subgrupo
@@ -98,6 +114,13 @@ class VarietyRepository:
         """
         row = self.conn.execute(sql, (normalize_variety_text(crop), normalized_label)).fetchone()
         return VarietalGroup(crop, str(row[0]), str(row[1])) if row else None
+
+    def find_groups_by_label(self, master_crops: Iterable[str], normalized_value: str) -> tuple[VarietalGroup, ...]:
+        """Find group labels across candidate master crops."""
+        matches: list[VarietalGroup] = []
+        for crop in dict.fromkeys(normalize_variety_text(crop) for crop in master_crops):
+            matches.extend(group for group in self.list_groups(crop) if normalize_variety_text(group.label) == normalized_value)
+        return tuple(matches)
 
     def list_group_varieties(self, crop: str, group: str, subgroup: str) -> tuple[str, ...]:
         return self.resolve_group(crop, group, subgroup)
