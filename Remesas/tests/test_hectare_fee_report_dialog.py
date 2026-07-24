@@ -29,6 +29,24 @@ def _dialog():
     return dialog
 
 
+def test_company_option_keeps_technical_code_separate_from_display_text():
+    option = report_dialog.CompanyOption(company_id="42", code="01", name="Empresa demo")
+
+    assert option.display_text == "01 - Empresa demo"
+    assert option.company_id == "42"
+    assert option.code == "01"
+
+
+def test_selected_company_rejects_placeholder_and_resolves_display_map():
+    dialog = _dialog()
+    dialog.company_options = {"01 - Empresa demo": report_dialog.CompanyOption("42", "01", "Empresa demo")}
+    dialog.company.value = report_dialog.SELECT_COMPANY
+    assert dialog._selected_company() is None
+
+    dialog.company.value = "01 - Empresa demo"
+    assert dialog._selected_company().code == "01"
+
+
 def _save_path(monkeypatch, path):
     monkeypatch.setattr(report_dialog.filedialog, "asksaveasfilename", lambda **kwargs: str(path))
 

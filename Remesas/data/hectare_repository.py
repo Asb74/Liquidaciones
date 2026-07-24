@@ -103,7 +103,7 @@ class HectareRepository:
             if boleta_key in processed_boletas:
                 continue
             processed_boletas.add(boleta_key)
-            dp_rows = self._dparcela_by_boleta(boleta)
+            dp_rows = self._dparcela_by_boleta(boleta, campaign, company)
             dparcela_by_boleta[boleta_key] = dp_rows
             seen_physical_rows: set[str] = set()
             for idx, dp in enumerate(dp_rows):
@@ -236,7 +236,7 @@ class HectareRepository:
         for d in rows:
             if not is_active_cha(d[7]):
                 continue
-            for i, dp in enumerate(self._dparcela_by_boleta(boleta)):
+            for i, dp in enumerate(self._dparcela_by_boleta(boleta, campaign, company)):
                 audit, included, reason, identity = self._audit_dp_row(member_id, d, dp, campaign, company, crops, i)
                 if identity in seen: included, reason = False, "DUPLICADO_TECNICO_JOIN"
                 seen.add(identity)
@@ -255,7 +255,7 @@ class HectareRepository:
         parcels, seen = [], set()
         cha_active = any(is_active_cha(d[7]) for d in deepp)
         for d in deepp:
-            dp_rows = self._dparcela_by_boleta(boleta)
+            dp_rows = self._dparcela_by_boleta(boleta, campaign, company)
             if not dp_rows:
                 parcels.append(self._audit_no_dp(member_id, d))
                 continue
@@ -347,16 +347,18 @@ class HectareRepository:
         sql = f"SELECT d.CULTIVO, d.CHA, COUNT(*) FROM eepp.DEEPP AS d WHERE d.IdSocio=? AND CAST(d.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(d.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(d.CULTIVO)) IN ({ph}) GROUP BY d.CULTIVO, d.CHA ORDER BY d.CULTIVO, d.CHA"
         return self.conn.execute(sql, [member_id, str(campaign), str(company), *crops]).fetchall()
 
-    def _dparcela_by_boleta(self, boleta: Any) -> list[Any]:
+    def _dparcela_by_boleta(self, boleta: Any, campaign: Any, company: Any) -> list[Any]:
         sql = f"""
             SELECT dp.rowid AS RowIdParcela, dp.Boleta, dp.CAMPAÑA, dp.EMPRESA, dp.CULTIVO, dp.IdPM, dp.Pol, dp.Par, dp.Rec,
                    dp.SupCul, {self._col('DParcela','SupRec')}, dp.SupApor, {self._col('DParcela','ALTA')}, dp.BAJA, {self._col('DParcela','Año')}
             FROM eepp.DParcela AS dp
             WHERE TRIM(CAST(dp.Boleta AS TEXT)) = TRIM(CAST(? AS TEXT))
+              AND CAST(dp.CAMPAÑA AS TEXT)=CAST(? AS TEXT)
+              AND CAST(dp.EMPRESA AS TEXT)=CAST(? AS TEXT)
             ORDER BY dp.rowid
         """
         self.last_dparcela_sql = sql
-        return self.conn.execute(sql, [boleta]).fetchall()
+        return self.conn.execute(sql, [boleta, str(campaign), str(company)]).fetchall()
 
     def _base_counts(self, member_id: int, campaign: int | str, company: int | str, crops: Sequence[str]) -> dict[str, Any]:
         ph = ",".join("?" for _ in crops)
@@ -404,7 +406,7 @@ class HectareRepository:
         elif not is_old_enough_for_hectare_fee(year, int(campaign)): reasons.append("PLANTACION_MENOR_CINCO_ANOS")
         if decimal_or_zero(dp[9]) <= 0: reasons.append("PARCELA_SUPERFICIE_CERO")
         reason = "; ".join(reasons)
-        return ({"Consulta SQL DEEPP": self.last_deepp_sql, "Parámetros DEEPP": list(self.last_deepp_params), "Consulta SQL DParcela": self.last_dparcela_sql, "Parámetros DParcela": [dp[1]], "IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Variedad DEEPP": d[6], "RowId parcela": row_identity, "Boleta DParcela": dp[1], "Campaña DParcela": dp[2], "Empresa DParcela": dp[3], "Cultivo DParcela": dp[4], "IdPM": dp[5], "Pol": dp[6], "Par": dp[7], "Rec": dp[8], "SupCul DParcela": dp[9], "SupRec": dp[10], "SupApor": dp[11], "Alta DParcela": dp[12], "Baja DParcela": dp[13], "Año": year, "Año máximo admitido": int(campaign)-5, "Antigüedad": (int(campaign) - year) if year is not None else "", "Antigüedad suficiente": "Sí" if year is not None and is_old_enough_for_hectare_fee(year, int(campaign)) else "No", "Incluida": "Sí" if not reason else "No", "Motivo": "VALIDA" if not reason else reason, "Motivo exclusión": reason, "Identidad fila física": row_identity}, not reason, reason, row_identity)
+        return ({"Consulta SQL DEEPP": self.last_deepp_sql, "Parámetros DEEPP": list(self.last_deepp_params), "Consulta SQL DParcela": self.last_dparcela_sql, "Parámetros DParcela": [dp[1], str(campaign), str(company)], "IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Variedad DEEPP": d[6], "RowId parcela": row_identity, "Boleta DParcela": dp[1], "Campaña DParcela": dp[2], "Empresa DParcela": dp[3], "Cultivo DParcela": dp[4], "IdPM": dp[5], "Pol": dp[6], "Par": dp[7], "Rec": dp[8], "SupCul DParcela": dp[9], "SupRec": dp[10], "SupApor": dp[11], "Alta DParcela": dp[12], "Baja DParcela": dp[13], "Año": year, "Año máximo admitido": int(campaign)-5, "Antigüedad": (int(campaign) - year) if year is not None else "", "Antigüedad suficiente": "Sí" if year is not None and is_old_enough_for_hectare_fee(year, int(campaign)) else "No", "Incluida": "Sí" if not reason else "No", "Motivo": "VALIDA" if not reason else reason, "Motivo exclusión": reason, "Identidad fila física": row_identity}, not reason, reason, row_identity)
 
     def _audit_no_dp(self, member_id: int, d: Any) -> dict[str, Any]:
         return {"Consulta SQL DEEPP": self.last_deepp_sql, "Parámetros DEEPP": list(self.last_deepp_params), "IdSocio": member_id, "Boleta DEEPP": d[1], "Cultivo DEEPP": d[4], "Campaña DEEPP": d[2], "Empresa DEEPP": d[3], "CHA original": d[7], "CHA activo": "Sí", "Baja DEEPP": d[9], "SupCul DEEPP": d[8], "Variedad DEEPP": d[6], "Incluida": "No", "Motivo": "Sin filas DParcela por Boleta", "Motivo exclusión": "Sin filas DParcela por Boleta", "Identidad fila física": ""}

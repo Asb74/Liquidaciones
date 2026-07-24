@@ -39,6 +39,20 @@ def test_repository_filters_inactive_crops_before_boleta_grouping_and_incidents(
     assert repository.last_fee_report_query_counts == {"rows_read": 3, "rows_excluded_inactive_crop": 2, "rows_included": 1}
 
 
+def test_repository_report_queries_do_not_mix_companies_with_the_same_boleta():
+    repository = _repository()
+    repository.conn.execute(
+        "INSERT INTO PesosFres VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (9, "Otra empresa", "2026", "2", "100", "CITRICOS", 90000, 0),
+    )
+
+    boletas = repository.list_fee_report_boletas("2026", "1", active_fee_crops=("CITRICOS",))
+    deliveries = repository.get_boleta_deliveries(1, "100", "2026", "1", active_fee_crops=("CITRICOS",))
+
+    assert [(row[0], row[3], row[4]) for row in boletas] == [(1, "1", "100")]
+    assert [row[4] for row in deliveries] == [50000]
+
+
 def test_report_and_excel_exclude_kakis_and_recalculate_rate(tmp_path):
     repository = _repository()
     service = HectareFeeReportService(repository, MasterRepository(("CITRICOS",)))
@@ -124,3 +138,13 @@ def test_excel_exports_zero_and_optional_audit_values_without_changing_fee_amoun
     assert parcels.cell(2, 11).value == "PARCELA_SUPERFICIE_CERO"
     assert incidents.cell(2, 5).value == 0
     assert workbook["Resumen por boleta"].cell(2, 8).value == 390
+
+
+def test_excel_context_metadata_is_present_for_empty_reports(tmp_path):
+    path = tmp_path / "cuota_ha.xlsx"
+    export_hectare_fee_report(path, (), {}, {}, (), "2026", "01 - Empresa demo")
+
+    workbook = load_workbook(path, data_only=True)
+    assert workbook["Parámetros"].append is not None
+    assert workbook["Parámetros"].cell(2, 2).value == "2026"
+    assert workbook["Parámetros"].cell(3, 2).value == "01 - Empresa demo"

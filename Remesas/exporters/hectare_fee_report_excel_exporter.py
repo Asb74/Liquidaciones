@@ -12,7 +12,7 @@ def _text_or_empty(value):
 def _joined_text(values):
     return ", ".join(_text_or_empty(value) for value in (values or ()) if value is not None)
 
-def export_hectare_fee_report(path, summaries, crop_details, surface_details, incidents):
+def export_hectare_fee_report(path, summaries, crop_details, surface_details, incidents, campaign=None, company=None):
     wb=Workbook(); wb.remove(wb.active)
     sheets=[("Resumen por boleta", ["Socio","Agricultor","Boleta","Campaña","Empresa","Superficie","Precio/ha","Cuota Ha","Entregas","Cultivos","Índice €/kg","Cuota aplicada","Cuota pendiente","Estado"]), ("Detalle por cultivo", ["Socio","Agricultor","Boleta","Cultivo","Número de entregas","Kilos","Porcentaje","Índice €/kg","Cuota aplicada"]), ("Detalle de superficie", ["Socio","Agricultor","Boleta","Cultivo superficie","Variedad","Polígono","Parcela","Recinto","Superficie","CHA","Incluida","Motivo exclusión"]), ("Incidencias", ["Tipo","Socio","Boleta","Detalle"]), ("Boletas revisadas", ["Socio","Agricultor","Boleta","CHA","Nº parcelas","Superficie total","Superficie válida","Superficie excluida","Años detectados","Estado","Motivos","Incidencias"]), ("Detalle parcelas", ["Socio","Boleta","Polígono","Parcela","Recinto","SupCul","Año","Antigüedad","Incluida","Motivo","Incidencia"]), ("Incidencias Cuota Ha", ["Tipo","Socio","Boleta","Parcela","Valor encontrado","Descripción","Impide cálculo (Sí/No)"])]
     for name,headers in sheets:
@@ -36,6 +36,14 @@ def export_hectare_fee_report(path, summaries, crop_details, surface_details, in
             for incident in audit.get("incidencias") or ():
                 wb.worksheets[6].append([incident,s.member_id,s.boleta,"", "", incident, "No"])
     for row in incidents: wb.worksheets[3].append(row)
+    # Keep the requested context even if the report is empty, so it is
+    # unambiguous which company/campaign produced this workbook.
+    context = wb.create_sheet("Parámetros")
+    context.append(["Informe", "Cuota por hectárea"])
+    context.append(["Campaña", campaign if campaign is not None else (summaries[0].campaign if summaries else "")])
+    context.append(["Empresa", company if company is not None else (summaries[0].company if summaries else "")])
+    for cell in context[1]:
+        cell.font=Font(bold=True,color="FFFFFF"); cell.fill=PatternFill("solid",fgColor="1F4E78")
     for ws in wb.worksheets:
         for col in ws.columns: ws.column_dimensions[col[0].column_letter].width=min(45,max(12,max(len(str(c.value or "")) for c in col)+2))
         for row in ws.iter_rows(min_row=2):
