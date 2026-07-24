@@ -108,6 +108,10 @@ class HectareFeeAuditData:
     projected_applied_fee: Decimal = Decimal("0")
     remaining_fee: Decimal = Decimal("0")
     balance_status: str = "OPEN"
+    # One entry per DEEPP boleta reviewed.  Kept at the end to preserve the
+    # positional constructor used by older integrations.
+    reviewed_boletas: tuple[dict[str, Any], ...] = ()
+    reviewed_parcels: tuple[dict[str, Any], ...] = ()
 
     @property
     def surface_crops(self) -> tuple[str, ...]:
