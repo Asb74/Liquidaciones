@@ -9,7 +9,12 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from domain.calculation_models import CalculationStatus, LiquidationHeader, LiquidationResult, LiquidationTotals, MemberLiquidation
-from exporters.excel_exporter import SUMMARY_HEADERS, export_liquidation_summary
+from exporters.excel_exporter import (
+    PRICE_FORMAT,
+    SUMMARY_HEADERS,
+    calculate_export_commercial_price,
+    export_liquidation_summary,
+)
 from exporters.file_lock import FileLockedError
 
 
@@ -95,6 +100,9 @@ class ExcelSummaryExporterTests(unittest.TestCase):
         self.assertEqual(ws["M3"].value, "=IFERROR(P3/D3,0)")
         self.assertEqual(ws["S3"].value, None)
         self.assertEqual(ws["D2"].number_format, "#,##0;-#,##0;-")
+        self.assertEqual(Decimal(str(ws["F2"].value)).quantize(Decimal("0.00000001")), (Decimal("90849.35") / Decimal("105845")).quantize(Decimal("0.00000001")))
+        self.assertEqual(ws["F2"].number_format, PRICE_FORMAT)
+        self.assertLessEqual(abs(Decimal(str(ws["F2"].value)) * Decimal(str(ws["D2"].value)) - Decimal(str(ws["E2"].value))), Decimal("0.01"))
         self.assertEqual(ws["G2"].value, 0)
         self.assertNotEqual(ws["G2"].value, "-")
         self.assertEqual(ws["G2"].number_format, "#,##0.00;-#,##0.00;-")
@@ -117,6 +125,38 @@ class ExcelSummaryExporterTests(unittest.TestCase):
         self.assertEqual(ws["U2"].value, "=IFERROR(166.386*J2/D2,0)")
         expected = Decimal("166.386") * Decimal("-10.50") / Decimal("105845")
         self.assertLess(expected, 0)
+
+    def test_commercial_price_uses_exported_gross_over_exported_net(self):
+        result = self._result(net=Decimal("94563"))
+        member = result.member_results[0]
+        from dataclasses import replace
+        result = replace(result, member_results=(replace(
+            member,
+            gross_amount=Decimal("55843.48"),
+            commercial_average_price=Decimal("0.70931"),
+        ),))
+        _, ws = self._export_and_load(result)
+        self.assertEqual(Decimal(str(ws["F2"].value)).quantize(Decimal("0.00000001")), (Decimal("55843.48") / Decimal("94563")).quantize(Decimal("0.00000001")))
+        self.assertEqual(Decimal(str(ws["F2"].value)).quantize(Decimal("0.00000001")), Decimal("0.59054260"))
+
+    def test_commercial_price_empty_for_zero_net_or_missing_gross(self):
+        from dataclasses import replace
+        result = self._result(net=Decimal("0"))
+        _, zero_net_ws = self._export_and_load(result)
+        self.assertIsNone(zero_net_ws["F2"].value)
+        member = self._result().member_results[0]
+        missing_gross = replace(self._result(), member_results=(replace(member, gross_amount=None),))
+        _, missing_gross_ws = self._export_and_load(missing_gross)
+        self.assertIsNone(missing_gross_ws["F2"].value)
+
+
+def test_calculate_export_commercial_price_uses_decimal_without_rounding():
+    price = calculate_export_commercial_price(Decimal("7324"), Decimal("5342.33"))
+    assert price == Decimal("5342.33") / Decimal("7324")
+    assert isinstance(price, Decimal)
+    assert calculate_export_commercial_price(Decimal("0"), Decimal("1")) is None
+    assert calculate_export_commercial_price(Decimal("1"), None) is None
+    assert calculate_export_commercial_price(1, Decimal("1")) is None
 
 
 if __name__ == "__main__":

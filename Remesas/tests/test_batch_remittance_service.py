@@ -14,7 +14,9 @@ def remittance(remittance_id=2204, name="BLANCA TEMPRANA sem 1"):
 
 
 def calc(remittance_id=2204, member_id=1):
-    member = SimpleNamespace(member_id=member_id, member_name="Socio", variety="NAVEL", net_kg=Decimal("100"), gross_amount=Decimal("50"), commercial_average_price=Decimal("0.5"), collection_amount=Decimal("1"), hectare_fee_amount=Decimal("2"), quality_amount=Decimal("3"), transport_amount=Decimal("4"), globalgap_amount=Decimal("5"), taxable_base=Decimal("35"), final_average_price=Decimal("0.35"), vat_rate=Decimal("12"), vat_amount=Decimal("4.2"), withholding_rate=Decimal("2"), withholding_amount=Decimal("0.7"), total_amount=Decimal("38.5"))
+    # The persisted commercial average is deliberately different: the exporter
+    # must derive P. Comer. from the same gross/net values it writes.
+    member = SimpleNamespace(member_id=member_id, member_name="Socio", variety="NAVEL", net_kg=Decimal("100"), gross_amount=Decimal("50"), commercial_average_price=Decimal("0.7"), collection_amount=Decimal("1"), hectare_fee_amount=Decimal("2"), quality_amount=Decimal("3"), transport_amount=Decimal("4"), globalgap_amount=Decimal("5"), taxable_base=Decimal("35"), final_average_price=Decimal("0.35"), vat_rate=Decimal("12"), vat_amount=Decimal("4.2"), withholding_rate=Decimal("2"), withholding_amount=Decimal("0.7"), total_amount=Decimal("38.5"))
     totals = SimpleNamespace(net_kg=Decimal("100"), commercial_amount=Decimal("50"), collection_amount=Decimal("1"), quality_amount=Decimal("3"), transport_amount=Decimal("4"), globalgap_amount=Decimal("5"), hectare_fee_amount=Decimal("2"), taxable_base=Decimal("35"), vat_amount=Decimal("4.2"), withholding_amount=Decimal("0.7"), total_amount=Decimal("38.5"))
     header = SimpleNamespace(remesa_name=f"Remesa {remittance_id}")
     result = SimpleNamespace(member_results=(member,), totals=totals, header=header, warnings=(), variety_count=1, hectare_fee_master=SimpleNamespace(price_per_hectare=Decimal("195"), eligible_crops=("CITRICOS",)))

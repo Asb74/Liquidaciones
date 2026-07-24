@@ -68,7 +68,9 @@ SUMMARY_HEADERS = [
 
 INTEGER_FORMAT = '#,##0;-#,##0;-'
 MONEY_FORMAT = '#,##0.00;-#,##0.00;-'
-PRICE_FORMAT = '0.00000;-0.00000;-'
+# Keep enough precision for the commercial price to be reconciled with the
+# displayed net kilograms and gross amount.
+PRICE_FORMAT = '0.00000000;-0.00000000;-'
 PTS_KG_FORMAT = '0.00;-0.00;-'
 PERCENT_FORMAT = '0"%"'
 
@@ -107,6 +109,60 @@ def get_liquidation_summary_columns() -> tuple[SummaryColumn, ...]:
     return SUMMARY_COLUMNS
 
 
+def calculate_export_commercial_price(
+    net_kg: Decimal | None,
+    gross_amount: Decimal | None,
+) -> Decimal | None:
+    """Return the commercial price shown in the Excel summary.
+
+    This intentionally does not use ``MemberLiquidation.commercial_average_price``:
+    that value is based on commercial grades and can have a different denominator
+    than the final net kilograms shown in the exported line.
+    """
+    if net_kg is None or gross_amount is None:
+        return None
+    if not isinstance(net_kg, Decimal) or not isinstance(gross_amount, Decimal):
+        logger.error(
+            "No se puede calcular P. Comer.: Neto e I. Bruto deben ser Decimal "
+            "(neto=%r, bruto=%r)", net_kg, gross_amount,
+        )
+        return None
+    if net_kg == Decimal("0"):
+        logger.warning("P. Comer. no exportable: Neto es cero")
+        return None
+    return gross_amount / net_kg
+
+
+def _export_commercial_price(member, row_number: int) -> Decimal | None:
+    """Calculate and reconcile the P. Comer. value for one exported row."""
+    try:
+        net_kg = _number(member.net_kg, "Neto", required=True)
+        gross_amount = _number(member.gross_amount, "I. Bruto")
+    except ValueError:
+        logger.exception(
+            "P. Comer. vacío por valores no convertibles: fila=%s socio=%s",
+            row_number, getattr(member, "member_id", None),
+        )
+        return None
+
+    # Do not turn floats into a price calculation: Decimal arithmetic is required
+    # for a value that can be reconciled against the amounts in the workbook.
+    if isinstance(net_kg, float) or isinstance(gross_amount, float):
+        logger.error(
+            "P. Comer. vacío por valor float: fila=%s socio=%s neto=%r bruto=%r",
+            row_number, getattr(member, "member_id", None), net_kg, gross_amount,
+        )
+        return None
+    price = calculate_export_commercial_price(net_kg, gross_amount)
+    if price is not None and abs((price * net_kg) - gross_amount) > Decimal("0.01"):
+        logger.warning(
+            "P. Comer. no cuadra: fila=%s socio=%s neto=%s bruto=%s precio=%s diferencia=%s",
+            row_number, getattr(member, "member_id", None), net_kg, gross_amount,
+            price, abs((price * net_kg) - gross_amount),
+        )
+    return price
+
+
 def build_liquidation_summary_row(member, result: LiquidationResult, row_number: int) -> list[Any]:
     hectare_excel_value = _hectare_fee_excel_value(member)
     audit = current_audit()
@@ -118,7 +174,7 @@ def build_liquidation_summary_row(member, result: LiquidationResult, row_number:
         member.member_id, member.member_name, member.variety,
         _number(member.net_kg, "Neto", required=True),
         _number(member.gross_amount, "I. Bruto"),
-        _number(member.commercial_average_price, "P. Comer."),
+        _export_commercial_price(member, row_number),
         _number(member.collection_amount, "Recolec."), hectare_excel_value,
         _number(member.quality_amount, "B/P Cal."),
         _number(member.transport_amount, "B. Trans."),
@@ -187,7 +243,7 @@ def _validate_result(result: LiquidationResult) -> None:
             raise ValueError(f"La línea {idx} no tiene Variedad")
         _number(member.net_kg, f"Neto línea {idx}", required=True)
         for field_name in (
-            "gross_amount", "commercial_average_price", "collection_amount", "hectare_fee_amount",
+            "gross_amount", "collection_amount", "hectare_fee_amount",
             "quality_amount", "transport_amount", "globalgap_amount", "taxable_base",
             "final_average_price", "vat_rate", "withholding_rate", "total_amount",
         ):
@@ -207,7 +263,7 @@ def _append_economic_audit_sheet(wb: Workbook, result: LiquidationResult, summar
     tolerance = Decimal("0.01")
     for member in result.member_results:
         exported_base = summary_rows.get(member.member_id)
-        if None in (member.collection_amount, member.hectare_fee_amount, member.quality_amount, member.transport_amount, member.globalgap_amount):
+        if None in (member.gross_amount, member.collection_amount, member.hectare_fee_amount, member.quality_amount, member.transport_amount, member.globalgap_amount):
             expected = None
             diff = None
             expected_price = None
