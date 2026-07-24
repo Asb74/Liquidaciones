@@ -33,6 +33,8 @@ class HectareFeeReportDialog(tk.Toplevel):
         ttk.Button(box, text="Consultar", command=self.refresh).pack(side="left")
         self.export_button = ttk.Button(box, text="Exportar Excel", command=self.export)
         self.export_button.pack(side="left", padx=5)
+        self.active_crops_text = tk.StringVar(value="Cultivos activos: (pendiente de consulta)")
+        ttk.Label(box, textvariable=self.active_crops_text).pack(side="left", padx=(12, 0))
 
         cols = ("Socio", "Agricultor", "Boleta", "Superficie", "Cuota Ha", "Entregas", "Cultivos", "Índice €/kg", "Precio/ha", "Cuota aplicada", "Cuota pendiente", "Estado")
         self.tree = ttk.Treeview(self, columns=cols, show="headings")
@@ -44,6 +46,8 @@ class HectareFeeReportDialog(tk.Toplevel):
     def refresh(self):
         try:
             self.data = self.service.build_report(self.campaign.get(), self.company.get())
+            crops = getattr(self.service, "last_active_fee_crops", ())
+            self.active_crops_text.set("Cultivos activos: " + (", ".join(crops) if crops else "sin entregas en el período"))
             self.tree.delete(*self.tree.get_children())
             for summary in self.data[0]:
                 self.tree.insert("", "end", values=(summary.member_id, summary.member_name, summary.boleta, summary.surface_hectares, summary.annual_fee, summary.total_delivery_kg, " / ".join(summary.delivery_crops) or "Sin entregas", summary.rate_per_kg or "No calculable", summary.price_per_hectare, summary.applied_fee, summary.pending_fee, summary.status))

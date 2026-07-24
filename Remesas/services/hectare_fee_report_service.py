@@ -31,15 +31,22 @@ class HectareFeeReportService:
 
     def build_report(self, campaign, company, **filters):
         master = self.master_repository.load(); summaries = []; crop_details = {}; surface_details = {}; incidents = []
+        active_fee_crops = master.get_active_crops()
+        self.last_active_fee_crops = active_fee_crops
+        if not active_fee_crops:
+            raise ValueError("No hay cultivos activos en el maestro de cuota por hectárea.")
+        self.logger.info("[HectareFeeReportConfig] active_crops=%s", ",".join(active_fee_crops))
         self.logger.info("HECTARE_FEE_REPORT_STARTED campaign=%s company=%s", campaign, company)
         try:
-            keys = self.repository.list_fee_report_boletas(campaign, company, filters.get("member_id"), filters.get("boleta"), filters.get("crop"), filters.get("date_from"), filters.get("date_to"))
+            keys = self.repository.list_fee_report_boletas(campaign, company, filters.get("member_id"), filters.get("boleta"), filters.get("crop"), filters.get("date_from"), filters.get("date_to"), active_fee_crops)
+            counts = getattr(self.repository, "last_fee_report_query_counts", {})
+            self.logger.info("[HectareFeeReportQuery] active_crops=%s rows_read=%s rows_excluded_inactive_crop=%s rows_included=%s", ",".join(active_fee_crops), counts.get("rows_read", 0), counts.get("rows_excluded_inactive_crop", 0), counts.get("rows_included", 0))
             # Add surface-only boletas: DEEPP is the authoritative source for that side.
             for row in keys:
-                summary, crops, surfaces = self._one(row[0], row[1], row[4], campaign, company, master.eligible_crops, master.price_per_hectare, filters)
+                summary, crops, surfaces = self._one(row[0], row[1], row[4], campaign, company, active_fee_crops, master.price_per_hectare, filters)
                 summaries.append(summary); crop_details[self._key(summary)] = crops; surface_details[self._key(summary)] = surfaces
                 if summary.status != "CORRECTO": incidents.append((summary.status, summary.member_id, summary.boleta, "; ".join(summary.warnings)))
-            for r in self.repository.list_deliveries_without_valid_boleta(campaign, company):
+            for r in self.repository.list_deliveries_without_valid_boleta(campaign, company, active_fee_crops):
                 incidents.append(("SIN BOLETA", r[0], "", f"registro={r[2]}; cultivo={r[5]}; kilos={decimal_or_zero(r[6])}; boleta={r[7]!r}")); self.logger.warning("HECTARE_FEE_DELIVERY_WITHOUT_BOLETA member=%s record=%s", r[0], r[2])
             self.logger.info("HECTARE_FEE_REPORT_COMPLETED rows=%s", len(summaries))
             return tuple(summaries), crop_details, surface_details, tuple(incidents)
@@ -50,7 +57,7 @@ class HectareFeeReportService:
         raw_surfaces = self.repository.get_boleta_surface_details(member_id, boleta, campaign, company, eligible)
         surfaces = tuple(HectareFeeSurfaceDetail(str(boleta), str(a.get("Cultivo", "")), str(a.get("Variedad", "")), str(a.get("Polígono", "")), str(a.get("Parcela", "")), str(a.get("Recinto", "")), decimal_or_zero(dp[9]), bool(a.get("CHA activo") == "Sí"), included, reason or "") for a, included, reason, dp in raw_surfaces)
         area = sum((x.surface for x in surfaces if x.included), Decimal("0")); annual = calculate_total_hectare_fee(area, price)
-        deliveries = self.repository.get_boleta_deliveries(member_id, boleta, campaign, company, filters.get("crop"), filters.get("date_from"), filters.get("date_to"))
+        deliveries = self.repository.get_boleta_deliveries(member_id, boleta, campaign, company, filters.get("crop"), filters.get("date_from"), filters.get("date_to"), eligible)
         grouped: dict[str, list[Decimal]] = {}
         for r in deliveries: grouped.setdefault(str(r[1] or "").strip().upper() or "SIN CULTIVO", []).append(decimal_or_zero(r[4]))
         total = sum((sum(v, Decimal("0")) for v in grouped.values()), Decimal("0")); rate = annual / total if annual and total > 0 else None
