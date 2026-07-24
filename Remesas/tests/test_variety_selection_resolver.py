@@ -86,3 +86,51 @@ def test_batch_uses_same_variety_group_service_resolution(tmp_path):
     two = service.resolve_selection('DIRECTO', 'BLANCA TEMPRANA')
     assert one.varieties == ('LANE LATE',)
     assert two.varieties == ('SALUSTIANA',)
+
+
+def test_mixed_output_crops_resolve_varieties_in_their_matching_master(tmp_path):
+    conn = make_conn()
+    conn.executemany('INSERT INTO eepp.MVariedad VALUES(?,?,?,?,?,?,?,?,?)', [
+        (6, 'MANDARINA', 'TANGO', 'MANDARINA', 'MEDIA', None, None, None, None),
+        (7, 'MANDARINA', 'NADORCOTT', 'MANDARINA', 'TARDIA', None, None, None, None),
+    ])
+    selection_resolver = resolver(conn, tmp_path)
+    for crop, variety in [('DIRECTO', 'TANGO'), ('DIRECTOCHF', 'TANGO'), ('INDUSTRIA', 'TANGO'), ('DIRECTO', 'NADORCOTT')]:
+        result = selection_resolver.resolve(crop, variety)
+        assert result.kind == VarietySelectionKind.VARIETY
+        assert result.resolved_master_crop == 'MANDARINA'
+        assert result.candidate_master_crops == ('CITRICOS', 'MANDARINA')
+
+
+def test_citricos_does_not_resolve_mandarin_variety(tmp_path):
+    conn = make_conn()
+    conn.execute('INSERT INTO eepp.MVariedad VALUES(?,?,?,?,?,?,?,?,?)', (6, 'MANDARINA', 'TANGO', 'MANDARINA', 'MEDIA', None, None, None, None))
+    assert resolver(conn, tmp_path).resolve('CITRICOS', 'TANGO').kind == VarietySelectionKind.NOT_FOUND
+
+
+def test_mixed_match_in_multiple_masters_is_ambiguous(tmp_path):
+    conn = make_conn()
+    conn.execute('INSERT INTO eepp.MVariedad VALUES(?,?,?,?,?,?,?,?,?)', (6, 'MANDARINA', 'COMPARTIDA', 'MANDARINA', 'MEDIA', None, None, None, None))
+    conn.execute('INSERT INTO eepp.MVariedad VALUES(?,?,?,?,?,?,?,?,?)', (7, 'CITRICOS', 'COMPARTIDA', 'NAVEL', 'MEDIA', None, None, None, None))
+    result = resolver(conn, tmp_path).resolve('DIRECTO', 'COMPARTIDA')
+    assert result.kind == VarietySelectionKind.AMBIGUOUS
+    assert 'CITRICOS, MANDARINA' in result.warnings[0]
+
+
+def test_mixed_options_are_combined_without_duplicates(tmp_path):
+    conn = make_conn()
+    conn.execute('INSERT INTO eepp.MVariedad VALUES(?,?,?,?,?,?,?,?,?)', (6, 'MANDARINA', 'TANGO', 'MANDARINA', 'MEDIA', None, None, None, None))
+    service = VarietyGroupService(VarietyRepository(conn))
+    options = service.list_selection_options('DIRECTO')
+    assert 'TANGO' in options
+    assert len(options) == len({normalize_variety_token(option) for option in options})
+
+
+def test_resolution_log_records_candidates_and_resolved_master(tmp_path):
+    conn = make_conn()
+    conn.execute('INSERT INTO eepp.MVariedad VALUES(?,?,?,?,?,?,?,?,?)', (6, 'MANDARINA', 'TANGO', 'MANDARINA', 'MEDIA', None, None, None, None))
+    selection_resolver = resolver(conn, tmp_path)
+    selection_resolver.resolve('DIRECTO', 'TANGO')
+    log = (tmp_path / 'variety_resolution.log').read_text(encoding='utf-8')
+    assert 'candidate_master_crops=CITRICOS,MANDARINA' in log
+    assert 'resolved_master_crop=MANDARINA' in log

@@ -18,7 +18,7 @@ from data.group_benchmark_repository import GroupBenchmarkRepository
 from data.remesas_repository import RemesasRepository
 from domain.models import DeliveryFilter, Period, Remesa
 from domain.document_models import LiquidationDocumentMode
-from domain.varieties import STATUS_EMPTY_GROUP, STATUS_GROUP, STATUS_NOT_FOUND, STATUS_VARIETY, normalize_variety_text
+from domain.varieties import STATUS_AMBIGUOUS, STATUS_EMPTY_GROUP, STATUS_GROUP, STATUS_NOT_FOUND, STATUS_VARIETY, normalize_variety_text
 from domain.hectare_fee_master import HectareFeeMasterRepository
 from domain.validators import parse_user_date, validate_context, validate_period
 from domain.utils import format_currency_es, format_decimal_es, format_display_date, format_integer_es, format_percentage_es, format_price_es, parse_yes_no, safe_path_part
@@ -408,7 +408,7 @@ class RemesasFrame(ttk.Frame):
 
     def _add_source_variety(self, value: str, *, show_warning: bool = True):
         ctx=self.context_panel.context(); res=self.variety_service.resolve_selection(ctx.cultivo, value) if self.variety_service else None
-        if res and res.status in {STATUS_NOT_FOUND, STATUS_EMPTY_GROUP}:
+        if res and res.status in {STATUS_NOT_FOUND, STATUS_EMPTY_GROUP, STATUS_AMBIGUOUS}:
             if show_warning:
                 messagebox.showwarning("Variedades", res.warnings[0] if res.warnings else f"No se pudo resolver la variedad o grupo “{value}”.")
             return
@@ -425,9 +425,9 @@ class RemesasFrame(ttk.Frame):
         lines=[]
         for res in getattr(self, "variety_resolutions", []):
             if res.status == STATUS_VARIETY and res.varieties:
-                lines.append(f"variedad concreta → {res.varieties[0]}")
+                lines.append(f"{res.source_value} → variedad concreta ({res.resolved_master_crop or ''})")
             elif res.status == STATUS_GROUP and res.varieties:
-                lines.append(f"{res.source_value} → {', '.join(res.varieties)}")
+                lines.append(f"{res.source_value} → grupo {res.resolved_master_crop or ''} / {res.group or ''} / {res.subgroup or ''}")
             elif res.warnings:
                 lines.append(f"{res.source_value} → {res.status}: {'; '.join(res.warnings)}")
         self.resolved_selection_text.set("Selección resuelta: " + ("\n".join(lines) if lines else ""))
@@ -589,6 +589,7 @@ class RemesasFrame(ttk.Frame):
         for k,v in rem.prices.items(): self.price_vars[k].set(str(v if v is not None else ""))
         self.apply_collection_var.set(parse_yes_no(rem.values.get("AplRec"))); self.apply_transport_var.set(parse_yes_no(rem.values.get("AplTte"))); self.apply_quality_var.set(parse_yes_no(rem.values.get("AplCal"))); self.apply_globalgap_var.set(parse_yes_no(rem.values.get("AplGlobal"))); self.apply_hectare_fee_var.set(parse_yes_no(rem.values.get("AplCHa"))); self.apply_precalibrated_var.set(parse_yes_no(rem.values.get("AplPrecalibrado")))
         self._load_varieties(); self._restore_remesa_varieties(rem)
+        self._validate_resolved_varieties()
         emit("SEARCHING_DELIVERIES", "Buscando entregas")
         rows,summary,elapsed,total=self.deliveries.search(self._filters()); self.current_deliveries=list(rows); self.summary=summary
         emit("CALCULATING", "Calculando liquidación")
@@ -624,6 +625,11 @@ class RemesasFrame(ttk.Frame):
                 unresolved.append(value)
         if unresolved:
             messagebox.showwarning("Variedades", f"No se pudo resolver la variedad o grupo “{', '.join(unresolved)}”.")
+
+    def _validate_resolved_varieties(self) -> None:
+        errors = self.variety_service.validate_resolved_varieties(self.variety_resolutions) if self.variety_service else ()
+        if errors:
+            raise ValueError(" ".join(errors))
     def _clear(self):
         self.current_remesa=None; self.remesa_panel.load({}); self.selected.delete(0,"end"); self.selected_source_items=[]; self.variety_resolutions=[]; self._refresh_resolved_selection_label(); self.deliveries_panel.clear(); self.summary_panel.clear(); self.summary=None; self.current_calculation=None; self.calculation_valid=False; self.current_deliveries=[]; self.status.set("Filtros/resultados limpiados"); self._refresh_action_states()
 
@@ -698,6 +704,7 @@ class RemesasFrame(ttk.Frame):
 
     def _calculate(self):
         try:
+            self._validate_resolved_varieties()
             deliveries = self._deliveries()
             if not deliveries:
                 self._search(); deliveries = self._deliveries()
