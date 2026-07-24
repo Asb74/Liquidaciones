@@ -359,7 +359,12 @@ class LiquidacionCalculator:
         delivery_rows = tuple(getattr(self.hectare_repository, "last_delivery_audit_rows", ()) or ())
         kg_by_crop = tuple((crop, sum((row.get("NetoEfectivo") or Decimal("0") for row in delivery_rows if str(row.get("Cultivo", "")).strip().upper() == crop), Decimal("0"))) for crop in eligible_crops)
         reason = next((str(r.get("Motivo exclusión")) for r in rows if r.get("Motivo exclusión")), "")
-        return HectareFeeAuditData(tuple(eligible_crops), price, hectares, total_fee, total_kg, rate, line_kg, line_fee, status, tuple(warnings), candidate_boletas, active_cha_boletas, candidate_parcels, included_parcels, excluded_parcels, young_parcels, inactive_parcels, kg_by_crop, reason, getattr(balance, "already_applied_fee", Decimal("0")), getattr(balance, "projected_applied_fee", Decimal("0")), getattr(balance, "remaining_fee", Decimal("0")), getattr(balance, "status", "OPEN"))
+        boletas = sorted({str(r.get("Boleta DEEPP")) for r in rows if r.get("Boleta DEEPP")})
+        audit_boleta = getattr(self.hectare_repository, "get_boleta_surface_audit", None)
+        reviewed = tuple(audit_boleta(r.get("IdSocio"), b, next((r.get("Campaña DEEPP") for r in rows if str(r.get("Boleta DEEPP")) == b), ""), next((r.get("Empresa DEEPP") for r in rows if str(r.get("Boleta DEEPP")) == b), ""), eligible_crops) for b in boletas) if callable(audit_boleta) else ()
+        for item in reviewed:
+            self.logger.info("[CuotaHaAudit] member_id=%s boleta=%s estado=%s superficie_total=%s superficie_valida=%s superficie_excluida=%s motivos=%s incidencias=%s", item["parcelas"][0].get("IdSocio") if item["parcelas"] else "", item["boleta"], item["estado_boleta"], item["superficie_total"], item["superficie_valida"], item["superficie_excluida"], ",".join(item["motivos_exclusion"]), ",".join(item["incidencias"]))
+        return HectareFeeAuditData(tuple(eligible_crops), price, hectares, total_fee, total_kg, rate, line_kg, line_fee, status, tuple(warnings), candidate_boletas, active_cha_boletas, candidate_parcels, included_parcels, excluded_parcels, young_parcels, inactive_parcels, kg_by_crop, reason, getattr(balance, "already_applied_fee", Decimal("0")), getattr(balance, "projected_applied_fee", Decimal("0")), getattr(balance, "remaining_fee", Decimal("0")), getattr(balance, "status", "OPEN"), reviewed, tuple(p for item in reviewed for p in item["parcelas"]))
 
     def _audit_hectare_member(self, audit: Any, member: MemberLiquidation, total_fee: Decimal, total_kg: Decimal, rate: Decimal | None) -> None:
         audit.subsection("CuotaHa.Superficie")
