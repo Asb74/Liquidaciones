@@ -725,6 +725,7 @@ class RemesasFrame(ttk.Frame):
             self.status.set(f"Liquidación calculada: {self.current_calculation.member_count} socios, {format_decimal_es(self.current_calculation.net_kg, 3)} kg, importe comercial {format_currency_es(self.current_calculation.commercial_amount)}")
             self._refresh_action_states()
         except Exception as exc:
+            logger.exception("Error al calcular la liquidación individual")
             messagebox.showerror("Error", str(exc))
 
     def _calculation_remesa(self):
