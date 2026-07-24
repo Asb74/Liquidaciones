@@ -9,7 +9,7 @@ from domain.calculation_models import CalculationStatus, FiscalCalculation, Grad
 from domain.financial_rules import applied_amount_or_zero, calculate_quality_adjustment
 from domain.hectare_fee import calculate_line_hectare_fee
 from domain.models import Delivery, Remesa
-from domain.member_rules import is_excluded_member, log_system_member_excluded
+from domain.member_rules import is_excluded_member, log_system_member_excluded, excluded_member_service
 from domain.utils import is_liquidated, parse_yes_no, round_money, round_price, to_decimal
 from services.calibre_master_service import CalibreMasterService
 from domain.audit import current_audit
@@ -130,7 +130,14 @@ class LiquidacionCalculator:
             log_system_member_excluded(self.logger, origin="LiquidacionCalculator.calculate",
                                        count=len(excluded_deliveries), net_kg=excluded_kg,
                                        remesa_id=header.remesa_id)
-            warnings.append(f"[ExcludedSystemMember] member_id=0 deliveries_excluded={len(excluded_deliveries)} net_kg_excluded={excluded_kg}")
+            grouped_exclusions = defaultdict(lambda: [0, Decimal("0")])
+            for delivery in excluded_deliveries:
+                grouped_exclusions[delivery.socio][0] += 1
+                grouped_exclusions[delivery.socio][1] += delivery.effective_net_kg
+            for member_id, (count, kilograms) in grouped_exclusions.items():
+                reason = excluded_member_service.reason_for_exclusion(member_id)
+                self.logger.warning("[ExcludedMember] reason=%s member_id=%s deliveries_excluded=%s kilograms_excluded=%s operation=calculation", reason, member_id, count, kilograms)
+            warnings.append(f"[ExcludedMembers] deliveries_excluded={len(excluded_deliveries)} net_kg_excluded={excluded_kg}")
         liquidated = sum(1 for d in deliveries if is_liquidated(d.liquidado))
         if liquidated:
             warnings.append(f"{liquidated} entregas ya figuran como liquidadas.")

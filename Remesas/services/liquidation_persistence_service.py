@@ -14,7 +14,8 @@ from domain.persistence_models import (BatchPersistenceSaveResult, PendingBatchP
     PersistencePreview, RemittancePersistenceSaveResult)
 from services.liquidation_split_service import LiquidationSplitService
 from domain.member_rules import (SYSTEM_MEMBER_EXCLUDED_MESSAGE, is_excluded_member,
-                                 log_system_member_excluded)
+                                 log_system_member_excluded, configure_excluded_members,
+                                 excluded_member_service)
 import logging
 from collections.abc import Mapping
 
@@ -28,6 +29,7 @@ def _d(value): return format(Decimal(value), "f")
 class LiquidationPersistenceService:
     def __init__(self, database: PersistenceDatabase, legacy_conn, *, crop_aliases: dict[str,str] | None=None) -> None:
         self.database=database; self.database.initialize(); self.legacy=LegacyPersistenceRepository(legacy_conn); self.legacy_conn=legacy_conn; self.aliases=crop_aliases or {}
+        configure_excluded_members(connection=legacy_conn)
 
     def prepare_preview(self, result) -> PersistencePreview:
         if result is None or not result.member_results: raise ValueError("El resultado de liquidación está vacío")
@@ -49,7 +51,7 @@ class LiquidationPersistenceService:
                 if cod is None: raise ValueError(f"No se encontró MVariedad.ARTICULO para {member.variety}")
                 lines.extend(splitter.split(member,h,cod_art=cod))
         if not lines:
-            raise ValueError("No existen liquidaciones válidas para guardar. El socio 0 es un registro técnico excluido.")
+            raise ValueError("No existen agricultores liquidables. Los registros encontrados corresponden a socios excluidos.")
         payload={"header":[remesa_id,h.remesa_name,h.campana,h.empresa,h.cultivo,h.fecha_pago,h.tipo_liquidacion],"lines":[[x.source_member_id,x.recipient_member_id,x.variety,*(_d(getattr(x,n)) for n in ("split_factor","net_kg","gross_amount","taxable_base","total_amount"))] for x in lines]}
         fingerprint=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         return PersistencePreview(h,tuple(lines),fingerprint,len(members),tuple(w for x in lines for w in x.warnings))
@@ -116,7 +118,9 @@ class LiquidationPersistenceService:
         if invalid:
             log_system_member_excluded(logger, origin="LiquidationPersistenceService.save", count=len(invalid),
                                        net_kg=sum((Decimal(x.net_kg) for x in invalid), Decimal("0")))
-            raise ValueError(SYSTEM_MEMBER_EXCLUDED_MESSAGE)
+            member_id = invalid[0].source_member_id if is_excluded_member(invalid[0].source_member_id) else invalid[0].recipient_member_id
+            reason = excluded_member_service.reason_for_exclusion(member_id)
+            raise ValueError(f"El socio {member_id} está excluido porque {reason}.")
         h=preview.header; batch_id=str(uuid.uuid4()); now=_now(); persisted=[]
         conn=self.database.connect()
         try:

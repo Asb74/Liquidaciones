@@ -12,6 +12,7 @@ import time
 from typing import Callable, Sequence
 
 from domain.models import AppConfig
+from domain.member_rules import configure_excluded_members
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,9 @@ class LocalDatabaseSyncService:
         ]
         results = [self.synchronize_database(source, local, name) for name, source, local in pairs]
         self._write_metadata(results)
+        if any(result.database_name == "DBEEPPL" and result.synchronized for result in results):
+            # The file was atomically replaced: reload the cached Tipo=OTROS rule.
+            configure_excluded_members(db_path=self.config.db_eepp)
         return results
 
     def synchronize_database(self, source_path: Path, local_path: Path, database_name: str | None = None) -> DatabaseSyncResult:

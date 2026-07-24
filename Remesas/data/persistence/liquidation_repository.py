@@ -4,7 +4,7 @@ import logging
 
 from data.persistence.database import PersistenceDatabase
 from data.persistence.search_text import normalize_search_text
-from domain.member_rules import SYSTEM_MEMBER_ID, is_excluded_member
+from domain.member_rules import SYSTEM_MEMBER_ID, is_excluded_member, excluded_member_service
 
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,21 @@ class LiquidationRepository:
     def list_batch_liquidations(self, batch_id: str):
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidaciones WHERE batch_id=? AND recipient_member_id<>? AND id_socio<>? ORDER BY recipient_member_id,id", (batch_id, SYSTEM_MEMBER_ID, SYSTEM_MEMBER_ID)).fetchall()
+
+    def list_historical_excluded_member_records(self):
+        """Diagnostic only: legacy records are retained but never made functional."""
+        with self.database.connect() as conn:
+            rows = conn.execute("""SELECT l.batch_id,l.id_liq,l.remesa_id,l.id_socio,l.recipient_member_id,
+                l.fecha,l.importe_total,l.status,b.remesa_name
+                FROM liquidaciones l LEFT JOIN liquidation_batches b ON b.batch_id=l.batch_id
+                ORDER BY l.fecha DESC,l.id DESC""").fetchall()
+        result = []
+        for row in rows:
+            member_id = row["id_socio"] if is_excluded_member(row["id_socio"]) else row["recipient_member_id"]
+            reason = excluded_member_service.reason_for_exclusion(member_id)
+            if reason:
+                result.append({"batch_id": row["batch_id"], "id_liq": row["id_liq"], "remesa": row["remesa_name"] or row["remesa_id"], "socio": member_id, "fecha": row["fecha"], "importe": row["importe_total"], "estado": row["status"], "motivo_exclusion": reason})
+        return tuple(result)
 
     _CSV_COLUMNS = "id,id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo"
 

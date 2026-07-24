@@ -9,6 +9,7 @@ from typing import Any, Sequence
 from domain.audit import current_audit
 from domain.financial_rules import EFFECTIVE_NET_SQL
 from domain.utils import decimal_or_zero, parse_yes_no
+from domain.member_rules import configure_excluded_members
 
 
 def is_active_flag(value: object) -> bool:
@@ -54,6 +55,7 @@ def is_active_baja(value: object) -> bool:
 class HectareRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
+        configure_excluded_members(connection=conn)
         self.logger = logging.getLogger(__name__)
         self.last_surface_audit_rows: tuple[dict[str, Any], ...] = ()
         self.last_surface_filter_counts: dict[str, Any] = {}

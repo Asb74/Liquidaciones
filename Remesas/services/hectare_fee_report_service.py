@@ -9,6 +9,7 @@ from data.hectare_repository import HectareRepository
 from domain.financial_rules import calculate_total_hectare_fee
 from domain.hectare_fee_master import HectareFeeMasterRepository
 from domain.utils import decimal_or_zero, round_money
+from domain.member_rules import is_excluded_member
 
 
 @dataclass(frozen=True)
@@ -43,10 +44,15 @@ class HectareFeeReportService:
             self.logger.info("[HectareFeeReportQuery] active_crops=%s rows_read=%s rows_excluded_inactive_crop=%s rows_included=%s", ",".join(active_fee_crops), counts.get("rows_read", 0), counts.get("rows_excluded_inactive_crop", 0), counts.get("rows_included", 0))
             # Add surface-only boletas: DEEPP is the authoritative source for that side.
             for row in keys:
+                if is_excluded_member(row[0]):
+                    self.logger.info("[EXCLUDED_MEMBER_REPORT_SKIPPED] member_id=%s operation=hectare_fee_report", row[0])
+                    continue
                 summary, crops, surfaces = self._one(row[0], row[1], row[4], campaign, company, active_fee_crops, master.price_per_hectare, filters)
                 summaries.append(summary); crop_details[self._key(summary)] = crops; surface_details[self._key(summary)] = surfaces
                 if summary.status != "CORRECTO": incidents.append((summary.status, summary.member_id, summary.boleta, "; ".join(summary.warnings)))
             for r in self.repository.list_deliveries_without_valid_boleta(campaign, company, active_fee_crops):
+                if is_excluded_member(r[0]):
+                    continue
                 incidents.append(("SIN BOLETA", r[0], "", f"registro={r[2]}; cultivo={r[5]}; kilos={decimal_or_zero(r[6])}; boleta={r[7]!r}")); self.logger.warning("HECTARE_FEE_DELIVERY_WITHOUT_BOLETA member=%s record=%s", r[0], r[2])
             self.logger.info("HECTARE_FEE_REPORT_COMPLETED rows=%s", len(summaries))
             return tuple(summaries), crop_details, surface_details, tuple(incidents)
