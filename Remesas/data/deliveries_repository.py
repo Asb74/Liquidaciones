@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from domain.models import Delivery, DeliveryFilter, Summary
-from domain.member_rules import SYSTEM_MEMBER_ID
+from domain.member_rules import SYSTEM_MEMBER_ID, configure_excluded_members
 from domain.utils import decimal_or_zero, format_display_date, is_liquidated
 
 
@@ -14,12 +14,15 @@ class DeliveriesRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
         self.logger = logging.getLogger(__name__)
+        configure_excluded_members(connection=conn)
 
     def _date_expr(self) -> str:
         return "date(substr(p.Fcarga, 1, 10))"
 
     def _build_where(self, filters: DeliveryFilter) -> tuple[str, list[Any]]:
         clauses = ["p.CAMPAÑA=?", "p.EMPRESA=?", "p.CULTIVO=?", f"{self._date_expr()} BETWEEN date(?) AND date(?)", "CAST(p.IdSocio AS TEXT) <> ?"]
+        if self._has_column("eepp.DSocio", "Tipo"):
+            clauses.append("NOT EXISTS (SELECT 1 FROM eepp.DSocio excluded_ds WHERE excluded_ds.IdSocio=p.IdSocio AND UPPER(TRIM(COALESCE(excluded_ds.Tipo, '')))='OTROS')")
         params: list[Any] = [filters.context.campana, filters.context.empresa, filters.context.cultivo, filters.period.start.isoformat(), filters.period.end.isoformat(), str(SYSTEM_MEMBER_ID)]
         if filters.varieties:
             clauses.append("p.Variedad IN (" + ",".join("?" for _ in filters.varieties) + ")")
@@ -69,4 +72,6 @@ class DeliveriesRepository:
         return deliveries, summary, elapsed, int(stats[0] or 0)
 
     def _has_column(self, table: str, column: str) -> bool:
-        return any(r[1].lower() == column.lower() for r in self.conn.execute(f"PRAGMA table_info({table})"))
+        schema, _, table_name = table.partition(".")
+        pragma = f"PRAGMA {schema}.table_info({table_name})" if table_name else f"PRAGMA table_info({schema})"
+        return any(r[1].lower() == column.lower() for r in self.conn.execute(pragma))

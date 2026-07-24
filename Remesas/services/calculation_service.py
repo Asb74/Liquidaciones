@@ -4,12 +4,14 @@ from domain.liquidacion_calculator import LiquidacionCalculator
 from domain.models import AppConfig, Delivery, Remesa
 from domain.audit import AuditLogger
 from domain.hectare_fee_master import HectareFeeMasterRepository
+from domain.member_rules import configure_excluded_members
 
 
 class CalculationService:
     def __init__(self, conn=None, config: AppConfig | None = None) -> None:
         quality_repository = hectare_repository = globalgap_repository = fiscal_regime_repository = None
         if conn is not None:
+            configure_excluded_members(connection=conn)
             from data.quality_repository import QualityRepository
             from data.hectare_repository import HectareRepository
             from data.globalgap_repository import GlobalGapRepository
