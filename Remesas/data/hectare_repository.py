@@ -165,6 +165,52 @@ class HectareRepository:
             audit.line(f"total_effective_kg={total}")
         return total
 
+    # These report queries deliberately use PesosFres.Boleta.  A delivery is never
+    # associated to a parcel through an inferred field such as Albaran.
+    def list_fee_report_boletas(self, campaign, company, member_id=None, boleta=None, crop=None, date_from=None, date_to=None):
+        where = ["p.IdSocio <> 0", "CAST(p.CAMPAÑA AS TEXT)=CAST(? AS TEXT)", "CAST(p.EMPRESA AS TEXT)=CAST(? AS TEXT)"]
+        params: list[Any] = [str(campaign), str(company)]
+        if member_id is not None: where.append("p.IdSocio=?"); params.append(member_id)
+        if boleta not in (None, ""): where.append("TRIM(CAST(p.Boleta AS TEXT))=TRIM(CAST(? AS TEXT))"); params.append(boleta)
+        if crop: where.append("UPPER(TRIM(p.CULTIVO))=?"); params.append(str(crop).strip().upper())
+        if date_from and self._has_local_column("PesosFres", "Fcarga"): where.append("date(p.Fcarga)>=date(?)"); params.append(str(date_from))
+        if date_to and self._has_local_column("PesosFres", "Fcarga"): where.append("date(p.Fcarga)<=date(?)"); params.append(str(date_to))
+        sql = "SELECT DISTINCT p.IdSocio, COALESCE(" + self._local_col("PesosFres", "Socio").split(" AS ")[0] + ", ''), p.CAMPAÑA, p.EMPRESA, p.Boleta FROM PesosFres p WHERE " + " AND ".join(where) + " AND TRIM(CAST(p.Boleta AS TEXT)) <> '' AND TRIM(CAST(p.Boleta AS TEXT)) <> '0' ORDER BY p.IdSocio, p.Boleta"
+        return self.conn.execute(sql, params).fetchall()
+
+    def get_boleta_deliveries(self, member_id, boleta, campaign, company, crop=None, date_from=None, date_to=None):
+        where = ["p.IdSocio=?", "CAST(p.CAMPAÑA AS TEXT)=CAST(? AS TEXT)", "CAST(p.EMPRESA AS TEXT)=CAST(? AS TEXT)", "TRIM(CAST(p.Boleta AS TEXT))=TRIM(CAST(? AS TEXT))"]
+        params: list[Any] = [member_id, str(campaign), str(company), boleta]
+        if crop: where.append("UPPER(TRIM(p.CULTIVO))=?"); params.append(str(crop).strip().upper())
+        if date_from and self._has_local_column("PesosFres", "Fcarga"): where.append("date(p.Fcarga)>=date(?)"); params.append(str(date_from))
+        if date_to and self._has_local_column("PesosFres", "Fcarga"): where.append("date(p.Fcarga)<=date(?)"); params.append(str(date_to))
+        reg = self._local_col("PesosFres", "Registro").split(" AS ")[0]
+        sql = f"SELECT {reg}, p.CULTIVO, p.Neto, p.NetoPartida, {EFFECTIVE_NET_SQL.format(alias='p')} FROM PesosFres p WHERE " + " AND ".join(where)
+        return self.conn.execute(sql, params).fetchall()
+
+    def list_deliveries_without_valid_boleta(self, campaign, company):
+        reg = self._local_col("PesosFres", "Registro").split(" AS ")[0]; name = self._local_col("PesosFres", "Socio").split(" AS ")[0]
+        sql = f"SELECT p.IdSocio, {name}, {reg}, p.CAMPAÑA, p.EMPRESA, p.CULTIVO, {EFFECTIVE_NET_SQL.format(alias='p')}, p.Boleta FROM PesosFres p WHERE p.IdSocio<>0 AND CAST(p.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(p.EMPRESA AS TEXT)=CAST(? AS TEXT) AND (p.Boleta IS NULL OR TRIM(CAST(p.Boleta AS TEXT)) IN ('', '0') OR TRIM(CAST(p.Boleta AS TEXT)) GLOB '*[^0-9]*')"
+        return self.conn.execute(sql, [str(campaign), str(company)]).fetchall()
+
+    def get_boleta_surface_details(self, member_id, boleta, campaign, company, eligible_crops):
+        """Apply the existing DEEPP/DParcela rules to one boleta, not a member total."""
+        crops = tuple(str(c).strip().upper() for c in eligible_crops)
+        rows = [r for r in self._deepp_candidate_rows(member_id, campaign, company, crops) if str(r[1]).strip() == str(boleta).strip()]
+        details, seen = [], set()
+        for d in rows:
+            if not is_active_cha(d[7]):
+                continue
+            for i, dp in enumerate(self._dparcela_by_boleta(boleta)):
+                audit, included, reason, identity = self._audit_dp_row(member_id, d, dp, campaign, company, crops, i)
+                if identity in seen: included, reason = False, "DUPLICADO_TECNICO_JOIN"
+                seen.add(identity)
+                details.append((audit, included, reason, dp))
+        return details
+
+    def _has_local_column(self, table: str, name: str) -> bool:
+        return name.upper() in {r[1].upper() for r in self.conn.execute(f"PRAGMA table_info('{table}')")}
+
     def _delivery_proration_rows(self, member_id: int, campaign: int | str, company: int | str, eligible_crops: Sequence[str]) -> tuple[dict[str, Any], ...]:
         placeholders = ",".join("?" for _ in eligible_crops)
         sql = f"""
