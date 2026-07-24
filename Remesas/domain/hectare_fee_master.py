@@ -72,6 +72,15 @@ class HectareFeeMaster:
         """Compatibilidad temporal: no es configuración independiente."""
         return self.eligible_crops
 
+    def get_active_crops(self) -> tuple[str, ...]:
+        """Return the normalized, enabled crops from this master snapshot.
+
+        ``eligible_crops`` is deliberately the only persisted crop set in the
+        version-2 master.  Giving it this explicit name prevents consumers
+        from inventing a second list based on UI state.
+        """
+        return normalize_crops(self.eligible_crops)
+
     def stable_payload(self) -> dict[str, Any]:
         return {
             "version": 2,

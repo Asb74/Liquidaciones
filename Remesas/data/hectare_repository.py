@@ -58,6 +58,7 @@ class HectareRepository:
         self.last_surface_audit_rows: tuple[dict[str, Any], ...] = ()
         self.last_surface_filter_counts: dict[str, Any] = {}
         self.last_delivery_audit_rows: tuple[dict[str, Any], ...] = ()
+        self.last_fee_report_query_counts: dict[str, int] = {}
         self.last_deepp_sql = ""
         self.last_deepp_params: list[Any] = []
         self.last_dparcela_sql = ""
@@ -167,7 +168,7 @@ class HectareRepository:
 
     # These report queries deliberately use PesosFres.Boleta.  A delivery is never
     # associated to a parcel through an inferred field such as Albaran.
-    def list_fee_report_boletas(self, campaign, company, member_id=None, boleta=None, crop=None, date_from=None, date_to=None):
+    def list_fee_report_boletas(self, campaign, company, member_id=None, boleta=None, crop=None, date_from=None, date_to=None, active_fee_crops: Sequence[str] | None = None):
         where = ["p.IdSocio <> 0", "CAST(p.CAMPAÑA AS TEXT)=CAST(? AS TEXT)", "CAST(p.EMPRESA AS TEXT)=CAST(? AS TEXT)"]
         params: list[Any] = [str(campaign), str(company)]
         if member_id is not None: where.append("p.IdSocio=?"); params.append(member_id)
@@ -175,23 +176,42 @@ class HectareRepository:
         if crop: where.append("UPPER(TRIM(p.CULTIVO))=?"); params.append(str(crop).strip().upper())
         if date_from and self._has_local_column("PesosFres", "Fcarga"): where.append("date(p.Fcarga)>=date(?)"); params.append(str(date_from))
         if date_to and self._has_local_column("PesosFres", "Fcarga"): where.append("date(p.Fcarga)<=date(?)"); params.append(str(date_to))
-        sql = "SELECT DISTINCT p.IdSocio, COALESCE(" + self._local_col("PesosFres", "Socio").split(" AS ")[0] + ", ''), p.CAMPAÑA, p.EMPRESA, p.Boleta FROM PesosFres p WHERE " + " AND ".join(where) + " AND TRIM(CAST(p.Boleta AS TEXT)) <> '' AND TRIM(CAST(p.Boleta AS TEXT)) <> '0' ORDER BY p.IdSocio, p.Boleta"
-        return self.conn.execute(sql, params).fetchall()
+        return self._fee_report_boletas(where, params, active_fee_crops)
 
-    def get_boleta_deliveries(self, member_id, boleta, campaign, company, crop=None, date_from=None, date_to=None):
+    def get_boleta_deliveries(self, member_id, boleta, campaign, company, crop=None, date_from=None, date_to=None, active_fee_crops: Sequence[str] | None = None):
         where = ["p.IdSocio=?", "CAST(p.CAMPAÑA AS TEXT)=CAST(? AS TEXT)", "CAST(p.EMPRESA AS TEXT)=CAST(? AS TEXT)", "TRIM(CAST(p.Boleta AS TEXT))=TRIM(CAST(? AS TEXT))"]
         params: list[Any] = [member_id, str(campaign), str(company), boleta]
         if crop: where.append("UPPER(TRIM(p.CULTIVO))=?"); params.append(str(crop).strip().upper())
         if date_from and self._has_local_column("PesosFres", "Fcarga"): where.append("date(p.Fcarga)>=date(?)"); params.append(str(date_from))
         if date_to and self._has_local_column("PesosFres", "Fcarga"): where.append("date(p.Fcarga)<=date(?)"); params.append(str(date_to))
+        crops = self._report_crops(active_fee_crops)
+        where.append("UPPER(TRIM(p.CULTIVO)) IN (" + ",".join("?" for _ in crops) + ")"); params.extend(crops)
         reg = self._local_col("PesosFres", "Registro").split(" AS ")[0]
         sql = f"SELECT {reg}, p.CULTIVO, p.Neto, p.NetoPartida, {EFFECTIVE_NET_SQL.format(alias='p')} FROM PesosFres p WHERE " + " AND ".join(where)
         return self.conn.execute(sql, params).fetchall()
 
-    def list_deliveries_without_valid_boleta(self, campaign, company):
+    def list_deliveries_without_valid_boleta(self, campaign, company, active_fee_crops: Sequence[str] | None = None):
         reg = self._local_col("PesosFres", "Registro").split(" AS ")[0]; name = self._local_col("PesosFres", "Socio").split(" AS ")[0]
-        sql = f"SELECT p.IdSocio, {name}, {reg}, p.CAMPAÑA, p.EMPRESA, p.CULTIVO, {EFFECTIVE_NET_SQL.format(alias='p')}, p.Boleta FROM PesosFres p WHERE p.IdSocio<>0 AND CAST(p.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(p.EMPRESA AS TEXT)=CAST(? AS TEXT) AND (p.Boleta IS NULL OR TRIM(CAST(p.Boleta AS TEXT)) IN ('', '0') OR TRIM(CAST(p.Boleta AS TEXT)) GLOB '*[^0-9]*')"
-        return self.conn.execute(sql, [str(campaign), str(company)]).fetchall()
+        crops = self._report_crops(active_fee_crops)
+        sql = f"SELECT p.IdSocio, {name}, {reg}, p.CAMPAÑA, p.EMPRESA, p.CULTIVO, {EFFECTIVE_NET_SQL.format(alias='p')}, p.Boleta FROM PesosFres p WHERE p.IdSocio<>0 AND CAST(p.CAMPAÑA AS TEXT)=CAST(? AS TEXT) AND CAST(p.EMPRESA AS TEXT)=CAST(? AS TEXT) AND UPPER(TRIM(p.CULTIVO)) IN ({','.join('?' for _ in crops)}) AND (p.Boleta IS NULL OR TRIM(CAST(p.Boleta AS TEXT)) IN ('', '0') OR TRIM(CAST(p.Boleta AS TEXT)) GLOB '*[^0-9]*')"
+        return self.conn.execute(sql, [str(campaign), str(company), *crops]).fetchall()
+
+    def _report_crops(self, active_fee_crops: Sequence[str] | None) -> tuple[str, ...]:
+        crops = tuple(dict.fromkeys(str(crop or "").strip().upper() for crop in (active_fee_crops or ()) if str(crop or "").strip()))
+        if not crops:
+            raise ValueError("No hay cultivos activos en el maestro de cuota por hectárea.")
+        return crops
+
+    def _fee_report_boletas(self, where: list[str], params: list[Any], active_fee_crops: Sequence[str] | None):
+        crops = self._report_crops(active_fee_crops)
+        base_where = [*where, "TRIM(CAST(p.Boleta AS TEXT)) <> ''", "TRIM(CAST(p.Boleta AS TEXT)) <> '0'"]
+        base_sql = " AND ".join(base_where)
+        rows_read = self.conn.execute("SELECT COUNT(*) FROM PesosFres p WHERE " + base_sql, params).fetchone()[0]
+        crop_where = base_sql + " AND UPPER(TRIM(p.CULTIVO)) IN (" + ",".join("?" for _ in crops) + ")"
+        rows_included = self.conn.execute("SELECT COUNT(*) FROM PesosFres p WHERE " + crop_where, [*params, *crops]).fetchone()[0]
+        self.last_fee_report_query_counts = {"rows_read": rows_read, "rows_excluded_inactive_crop": rows_read - rows_included, "rows_included": rows_included}
+        sql = "SELECT DISTINCT p.IdSocio, COALESCE(" + self._local_col("PesosFres", "Socio").split(" AS ")[0] + ", ''), p.CAMPAÑA, p.EMPRESA, p.Boleta FROM PesosFres p WHERE " + crop_where + " ORDER BY p.IdSocio, p.Boleta"
+        return self.conn.execute(sql, [*params, *crops]).fetchall()
 
     def get_boleta_surface_details(self, member_id, boleta, campaign, company, eligible_crops):
         """Apply the existing DEEPP/DParcela rules to one boleta, not a member total."""
