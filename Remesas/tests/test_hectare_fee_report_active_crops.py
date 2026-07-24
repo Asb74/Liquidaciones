@@ -1,10 +1,12 @@
 from decimal import Decimal
 import sqlite3
 
+from openpyxl import load_workbook
+
 from data.hectare_repository import HectareRepository
 from domain.hectare_fee_master import HectareFeeMaster
 from exporters.hectare_fee_report_excel_exporter import export_hectare_fee_report
-from services.hectare_fee_report_service import HectareFeeReportService
+from services.hectare_fee_report_service import HectareFeeBoletaSummary, HectareFeeReportService
 
 
 class MasterRepository:
@@ -73,3 +75,52 @@ def test_master_change_is_read_on_each_report_without_a_stale_cache():
     assert [summary.boleta for summary in service.build_report("2026", "1")[0]] == ["100"]
     master.crops = ("KAKIS",)
     assert [summary.boleta for summary in service.build_report("2026", "1")[0]] == ["100", "200"]
+
+
+def test_excel_exports_zero_and_optional_audit_values_without_changing_fee_amounts(tmp_path):
+    normal = HectareFeeBoletaSummary(
+        1, "Ana", "2026", "1", "100", Decimal("2"), Decimal("195"),
+        Decimal("390"), Decimal("50000"), ("CITRICOS",), Decimal("0.0078"),
+        Decimal("390.00"), Decimal("0.00"), "APLICADA",
+    )
+    cha_zero = HectareFeeBoletaSummary(
+        2, "Beto", "2026", "1", "200", Decimal("0"), Decimal("195"),
+        Decimal("0"), Decimal("0"), (), None, Decimal("0"), Decimal("0"),
+        "SIN SUPERFICIE VÁLIDA", audit={
+            "cha": False,
+            "numero_parcelas": "",
+            "superficie_total": None,
+            "superficie_valida": None,
+            "superficie_excluida": None,
+            "anos_detectados": ("2018", None, "2020"),
+            "estado_boleta": None,
+            "motivos_exclusion": (None, "CHA_INACTIVA"),
+            "incidencias": ("PARCELA_SUPERFICIE_CERO",),
+            "parcelas": ({
+                "Pol": None, "Par": None, "Rec": None,
+                "SupCul DParcela": Decimal("0"), "Año": None,
+                "Antigüedad": None, "Incluida": None,
+                "Motivo exclusión": "PARCELA_SUPERFICIE_CERO",
+            },),
+        },
+    )
+
+    path = tmp_path / "cuota_ha.xlsx"
+    export_hectare_fee_report(path, (normal, cha_zero), {}, {}, ())
+
+    workbook = load_workbook(path, data_only=True)
+    reviewed = workbook["Boletas revisadas"]
+    parcels = workbook["Detalle parcelas"]
+    incidents = workbook["Incidencias Cuota Ha"]
+
+    assert reviewed.max_row == 2
+    assert reviewed.cell(2, 4).value == "No"
+    assert [reviewed.cell(2, column).value for column in (5, 6, 7, 8)] == [0, 0, 0, 0]
+    assert reviewed.cell(2, 9).value == "2018, 2020"
+    assert reviewed.cell(2, 10).value is None
+    assert parcels.cell(2, 6).value == 0
+    assert parcels.cell(2, 7).value is None
+    assert parcels.cell(2, 8).value is None
+    assert parcels.cell(2, 11).value == "PARCELA_SUPERFICIE_CERO"
+    assert incidents.cell(2, 5).value == 0
+    assert workbook["Resumen por boleta"].cell(2, 8).value == 390
