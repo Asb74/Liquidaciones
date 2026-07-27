@@ -38,7 +38,7 @@ from ui.hectare_fee_master_dialog import HectareFeeMasterDialog
 from exporters.excel_exporter import export_liquidation_summary
 from exporters.batch_liquidation_excel_exporter import export_batch_liquidation_summary
 from exporters.excel_consolidation_exporter import export_consolidated_liquidation_summary
-from services.batch_remittance_service import BatchProgress, BatchRemittanceService, SelectedRemittance, SingleRemittanceBatchResult
+from services.batch_remittance_service import BatchProgress, BatchRemittanceService, RemittanceProcessingError, SelectedRemittance, SingleRemittanceBatchResult
 from exporters.file_lock import FileLockedError
 from exporters.hectare_fee_auditor import export_hectare_fee_audit
 from presentation.premium_liquidation_view_model import from_member_liquidation
@@ -599,10 +599,18 @@ class RemesasFrame(ttk.Frame):
                 progress_callback(BatchProgress(1, 1, remittance.remittance_id, remittance.name, phase, message=message))
         self.current_remesa=None; self.current_calculation=None; self.current_deliveries=[]; self.summary=None; self.current_group_benchmarks={}; self.calculation_valid=False
         emit("LOADING", "Cargando cabecera")
-        rem=self.remesas.get_remesa(remittance.remittance_id); self.current_remesa=rem; self.remesa_panel.load(rem.values)
+        rem=self.remesas.get_remesa(remittance.remittance_id); self.current_remesa=rem
+        # The batch selection may contain different contexts.  Set the saved
+        # context before loading/resolving its catalogue; never inherit the UI
+        # context left by the preceding remittance.
+        self.context_panel.campana.set(str(rem.values.get("CAMPAÑA") or remittance.campaign))
+        self.context_panel.empresa.set(str(rem.values.get("EMPRESA") or remittance.company))
+        self.context_panel.cultivo.set(str(rem.values.get("CULTIVO") or remittance.crop))
+        self.remesa_panel.load(rem.values)
         for k,v in rem.prices.items(): self.price_vars[k].set(str(v if v is not None else ""))
         self.apply_collection_var.set(parse_yes_no(rem.values.get("AplRec"))); self.apply_transport_var.set(parse_yes_no(rem.values.get("AplTte"))); self.apply_quality_var.set(parse_yes_no(rem.values.get("AplCal"))); self.apply_globalgap_var.set(parse_yes_no(rem.values.get("AplGlobal"))); self.apply_hectare_fee_var.set(parse_yes_no(rem.values.get("AplCHa"))); self.apply_precalibrated_var.set(parse_yes_no(rem.values.get("AplPrecalibrado")))
-        self._load_varieties(); self._restore_remesa_varieties(rem)
+        crop=self.context_panel.context().cultivo
+        self._load_varieties(); self._restore_remesa_varieties(rem, interactive=False, crop=crop)
         self._validate_resolved_varieties()
         emit("SEARCHING_DELIVERIES", "Buscando entregas")
         rows,summary,elapsed,total=self.deliveries.search(self._filters()); self.current_deliveries=list(rows); self.summary=summary
@@ -628,17 +636,23 @@ class RemesasFrame(ttk.Frame):
                 draft_paths=self._export_premium_drafts(members,source="BATCH_DRAFT_EXPORT"); generated.extend(draft_paths)
         return SingleRemittanceBatchResult(remittance, calculation, calculation.member_count, calculation.delivery_count, self._output_dir(), tuple(generated),len(draft_paths) if generate_individual_files and calculation and calculation.result else 0,tuple(self._batch_draft_errors))
 
-    def _restore_remesa_varieties(self, rem: Remesa) -> None:
+    def _restore_remesa_varieties(self, rem: Remesa, *, interactive: bool = True, crop: str | None = None):
         target=str(rem.values.get("VARIEDAD") or "").strip()
         self._clear_selected_varieties(invalidate=False)
         values=[v.strip() for v in target.split(",") if v.strip()]
-        unresolved=[]
-        for value in values:
-            before=len(self.selected.get(0,"end")); self._add_source_variety(value, show_warning=False)
-            if len(self.selected.get(0,"end")) == before:
-                unresolved.append(value)
+        effective_crop=crop or self.context_panel.context().cultivo
+        resolutions, resolved = self.variety_service.resolve_many(effective_crop, values) if self.variety_service else ((), tuple(values))
+        self.selected_source_items=list(values); self.variety_resolutions=list(resolutions)
+        for variety in resolved: self.selected.insert("end", variety)
+        self._refresh_resolved_selection_label()
+        unresolved=[r.source_value for r in resolutions if r.status in {STATUS_NOT_FOUND, STATUS_EMPTY_GROUP, STATUS_AMBIGUOUS}]
         if unresolved:
-            messagebox.showwarning("Variedades", f"No se pudo resolver la variedad o grupo “{', '.join(unresolved)}”.")
+            message=f"No se pudo resolver la variedad o grupo “{', '.join(unresolved)}”."
+            if interactive:
+                messagebox.showwarning("Variedades", message)
+            else:
+                raise RemittanceProcessingError(message, phase="VARIETY_RESOLUTION", error_type="UNRESOLVED_VARIETY_SELECTION")
+        return tuple(resolutions)
 
     def _validate_resolved_varieties(self) -> None:
         errors = self.variety_service.validate_resolved_varieties(self.variety_resolutions) if self.variety_service else ()
