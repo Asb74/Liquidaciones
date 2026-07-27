@@ -37,6 +37,7 @@ from ui.summary_panel import SummaryPanel
 from ui.hectare_fee_master_dialog import HectareFeeMasterDialog
 from exporters.excel_exporter import export_liquidation_summary
 from exporters.batch_liquidation_excel_exporter import export_batch_liquidation_summary
+from exporters.excel_consolidation_exporter import export_consolidated_liquidation_summary
 from services.batch_remittance_service import BatchProgress, BatchRemittanceService, SelectedRemittance, SingleRemittanceBatchResult
 from exporters.file_lock import FileLockedError
 from exporters.hectare_fee_auditor import export_hectare_fee_audit
@@ -56,6 +57,7 @@ from ui.liquidation_history_dialog import LiquidationHistoryDialog
 from ui.batch_persistence_preview_dialog import BatchPersistencePreviewDialog
 from ui.liquidation_prefix_master_dialog import LiquidationPrefixMasterDialog
 from ui.liquidation_split_master_dialog import LiquidationSplitMasterDialog
+from ui.excel_consolidation_dialog import ExcelConsolidationDialog
 import json
 
 logger = logging.getLogger(__name__)
@@ -128,6 +130,21 @@ class RemesasFrame(ttk.Frame):
             messagebox.showwarning("Historial","La persistencia local no está habilitada.")
             return
         LiquidationHistoryDialog(self.winfo_toplevel(),self.history_service)
+
+    def open_excel_consolidation(self):
+        try:
+            if not self.conn:
+                messagebox.showwarning("Montar resúmenes Excel", "Conecte primero las bases de datos.")
+                return
+            ctx = self.context_panel.context()
+            if not (ctx.campana and ctx.empresa and ctx.cultivo):
+                messagebox.showwarning("Montar resúmenes Excel", "Seleccione campaña, empresa y cultivo.")
+                return
+            items = self.remesas.list_remesas(ctx.campana, ctx.empresa, ctx.cultivo)
+            ExcelConsolidationDialog(self.winfo_toplevel(), items, ctx, selection_factory=self._selected_remittance_from_values, on_generate=lambda selected: self._process_selected_remittances(selected, excel_only=True))
+        except Exception:
+            logger.exception("No se ha podido abrir Montar resúmenes Excel")
+            messagebox.showerror("Montar resúmenes Excel", "No se ha podido abrir la herramienta de consolidación.")
 
     def open_liquidation_prefix_master(self):
         try:
@@ -451,9 +468,6 @@ class RemesasFrame(ttk.Frame):
             items=self.remesas.list_remesas(ctx.campana, ctx.empresa, ctx.cultivo)
             selected=self._select_remesa_dialog(items, ctx)
             if not selected: return
-            if isinstance(selected, tuple) and selected[0] == "excel":
-                self._process_selected_remittances(selected[1], excel_only=True)
-                return
             if isinstance(selected, list):
                 if len(selected) > 1:
                     self._process_selected_remittances(selected)
@@ -526,17 +540,11 @@ class RemesasFrame(ttk.Frame):
             if not messagebox.askyesno("Confirmar lote", f"Se van a procesar {len(remittances)} remesas:\n\n{lines}\n\nCada remesa se calculará de forma independiente.\nSe generará un único Excel resumen acumulado.\n\n¿Desea continuar?"):
                 return
             result["items"]=remittances; win.destroy()
-        def export_excel():
-            sel=tree.selection()
-            if not sel:
-                messagebox.showwarning("Seleccionar remesa", "Debe seleccionar al menos una remesa.", parent=win); return
-            result["items"]=("excel", [self._selected_remittance_from_values(tree.item(i,"values"),ctx) for i in sel]); win.destroy()
         query.trace_add("write", lambda *_: fill()); tree.bind("<Double-1>", load); tree.bind("<<TreeviewSelect>>", update_count); win.bind("<Return>", load); win.bind("<Escape>", lambda e: win.destroy())
         bf=ttk.Frame(win); bf.pack(fill="x",padx=8,pady=6)
         ttk.Button(bf,text="Seleccionar todas",command=select_all).pack(side="left",padx=4)
         ttk.Button(bf,text="Limpiar selección",command=clear_selection).pack(side="left",padx=4)
         ttk.Button(bf,text="Procesar seleccionadas",command=load).pack(side="right",padx=4)
-        ttk.Button(bf,text="Exportar resumen conjunto a Excel",command=export_excel).pack(side="right",padx=4)
         ttk.Button(bf,text="Cancelar",command=win.destroy).pack(side="right")
         fill(); win.wait_window(); return result["items"]
 
@@ -578,7 +586,8 @@ class RemesasFrame(ttk.Frame):
         progress_win, update_progress = self._batch_progress_dialog(len(remittances))
         try:
             processor=(lambda rem, callback:self.process_single_remittance(rem,callback,generate_individual_files=False)) if excel_only else self.process_single_remittance
-            service=BatchRemittanceService(single_processor=processor, exporter=export_batch_liquidation_summary, should_cancel=lambda: self.batch_cancel_requested)
+            exporter = export_consolidated_liquidation_summary if excel_only else export_batch_liquidation_summary
+            service=BatchRemittanceService(single_processor=processor, exporter=exporter, should_cancel=lambda: self.batch_cancel_requested)
             result=service.process(remittances, progress_callback=update_progress, aggregate_output_path=Path(destination) if destination else None)
             self.current_batch_result=result
             self.current_batch_preview=self.persistence_service.prepare_batch_preview(result) if getattr(self,"persistence_enabled",False) else None
