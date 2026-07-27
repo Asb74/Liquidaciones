@@ -16,6 +16,25 @@ from services.pdf_merge_service import PdfMergeCancelled
 
 logger=logging.getLogger(__name__)
 
+
+def collect_unique_remittances(selected_documents, resolver):
+    """Resolve real remittance ids, de-duplicating in document display order."""
+    remittances=[]; missing=[]; seen=set()
+    for document in selected_documents:
+        remittance_id=getattr(document, "remittance_id", None)
+        if remittance_id is None:
+            missing.append(document); continue
+        try:
+            remittance=resolver(document)
+        except (KeyError, ValueError, LookupError):
+            missing.append(document); continue
+        real_id=getattr(remittance, "remittance_id", None)
+        if real_id is None:
+            missing.append(document); continue
+        if real_id not in seen:
+            seen.add(real_id); remittances.append(remittance)
+    return remittances, missing
+
 class NullableDatePicker(ttk.Frame):
     """Calendar-backed date field which can genuinely remain empty."""
     def __init__(self, parent, variable):
@@ -35,8 +54,10 @@ class NullableDatePicker(ttk.Frame):
 class PdfMergeToolDialog(tk.Toplevel):
     COLUMNS=("sel","type","campaign","company","crop","remittance","member","name","idliq","date","status","path","pages","size")
     HEADERS=("Seleccionar","Tipo","Campaña","Empresa","Cultivo","Remesa","N.º socio","Socio","IdLiq","Fecha","Estado","Ruta","Páginas","Tamaño")
-    def __init__(self,parent,service,*,output_root=None,regenerate_callback=None):
+    def __init__(self,parent,service,*,output_root=None,regenerate_callback=None,
+                 remittance_resolver=None,excel_callback=None,cancel_excel_callback=None):
         super().__init__(parent); self.service=service; self.regenerate_callback=regenerate_callback
+        self.remittance_resolver=remittance_resolver; self.excel_callback=excel_callback; self.cancel_excel_callback=cancel_excel_callback
         self.output_root=Path(output_root or (r"C:\Liquidaciones\salidas\impresion_masiva" if Path("C:/").exists() else Path.cwd().parent/"salidas"/"impresion_masiva"))
         self.title("Unificar PDFs para impresión"); self.geometry("1400x720"); self.documents=[]; self.selected=set(); self.validation_status={}; self.cancelled=False
         self._build()
@@ -56,7 +77,7 @@ class PdfMergeToolDialog(tk.Toplevel):
         ttk.Combobox(filters,textvariable=self.state,values=("Todos","Generado","Error","Sustituido"),state="readonly",width=12).grid(row=1,column=8,padx=3)
         self.kind_combo.bind("<<ComboboxSelected>>",self._kind_changed); self.campaign_combo.bind("<<ComboboxSelected>>",self._campaign_changed); self.company_combo.bind("<<ComboboxSelected>>",self._company_changed); self.crop_combo.bind("<<ComboboxSelected>>",self._crop_changed)
         self.voided_check=ttk.Checkbutton(filters,text="Incluir liquidaciones anuladas",variable=self.voided); self.voided_check.grid(row=2,column=0,columnspan=2,sticky="w")
-        ttk.Button(filters,text="Buscar documentos",command=self.search).grid(row=1,column=9,padx=8)
+        self.search_button=ttk.Button(filters,text="Buscar documentos",command=self.search); self.search_button.grid(row=1,column=9,padx=8)
         actions=ttk.Frame(self); actions.pack(fill="x",padx=8)
         for text,cmd in (("Seleccionar todos",self.select_all),("Quitar selección",self.clear_selection),("Invertir selección",self.invert_selection),("Seleccionar visibles",self.select_all),("Quitar no disponibles",self.remove_unavailable)):
             ttk.Button(actions,text=text,command=cmd).pack(side="left",padx=2)
@@ -69,8 +90,10 @@ class PdfMergeToolDialog(tk.Toplevel):
         self.tree.pack(fill="both",expand=True,padx=8,pady=8); self.tree.bind("<Button-1>",self.toggle); self.tree.bind("<Double-1>",self.open_individual)
         bottom=ttk.Frame(self); bottom.pack(fill="x",padx=8,pady=(0,8)); self.counters=tk.StringVar(); ttk.Label(bottom,textvariable=self.counters).pack(side="left")
         ttk.Button(bottom,text="Regenerar seleccionado",command=self.regenerate).pack(side="right",padx=3)
-        ttk.Button(bottom,text="Cancelar proceso",command=lambda:setattr(self,"cancelled",True)).pack(side="right",padx=3)
-        ttk.Button(bottom,text="Generar PDF combinado",command=self.merge).pack(side="right",padx=3); ttk.Button(bottom,text="Cerrar",command=self.destroy).pack(side="right",padx=3)
+        ttk.Button(bottom,text="Cancelar proceso",command=self.cancel_process).pack(side="right",padx=3)
+        self.excel_button=ttk.Button(bottom,text="Generar resumen Excel",command=self.generate_excel); self.excel_button.pack(side="right",padx=3)
+        self.pdf_button=ttk.Button(bottom,text="Generar PDF combinado",command=self.merge); self.pdf_button.pack(side="right",padx=3); ttk.Button(bottom,text="Cerrar",command=self.destroy).pack(side="right",padx=3)
+        ttk.Label(bottom,text="El Excel se genera por remesas completas.").pack(side="right",padx=6)
         self.progress=tk.StringVar(); ttk.Label(bottom,textvariable=self.progress).pack(side="right",padx=10)
         self._reload_filters(); self.search()
 
@@ -153,18 +176,48 @@ class PdfMergeToolDialog(tk.Toplevel):
         return folder/f"{label}_{detail}_{stamp}.pdf"
     def merge(self):
         docs=[d for i,d in enumerate(self.documents) if i in self.selected]
-        if not docs: messagebox.showwarning("Unificar","Seleccione al menos un documento.",parent=self); return
+        if not docs: messagebox.showwarning("Unificar","Debe seleccionar al menos un documento.",parent=self); return
         if any(d.batch_status=="VOIDED" for d in docs) and not messagebox.askyesno("Liquidaciones anuladas","La selección contiene liquidaciones anuladas. ¿Desea continuar?",parent=self): return
         proposed=self._proposed(docs); proposed.parent.mkdir(parents=True,exist_ok=True)
         path=filedialog.asksaveasfilename(parent=self,title="Archivo de salida",initialdir=proposed.parent,initialfile=proposed.name,defaultextension=".pdf",filetypes=(("Documento PDF","*.pdf"),))
         if not path:return
         self.cancelled=False
+        self._set_generating(True)
         try:
             result=self.service.merge_documents(docs,path,progress_callback=self._progress,should_cancel=lambda:self.cancelled)
             messagebox.showinfo("PDF combinado",f"PDF combinado generado correctamente.\n\nTipo: {self.kind.get()}\nDocumentos seleccionados: {len(docs)}\nDocumentos incluidos: {result.documents_included}\nDocumentos excluidos: {result.documents_excluded}\nPáginas totales: {result.page_count}\nRuta:\n{result.output_path}",parent=self)
             if messagebox.askyesno("Abrir PDF","¿Desea abrir el PDF combinado?",parent=self): open_path(result.output_path)
         except PdfMergeCancelled: messagebox.showinfo("Unificar","Operación cancelada.",parent=self)
         except Exception as exc: logger.exception("Unificación PDF"); messagebox.showerror("Unificar",str(exc),parent=self)
+        finally: self._set_generating(False)
+    def _set_generating(self, running):
+        state="disabled" if running else "normal"
+        self.pdf_button.configure(state=state); self.excel_button.configure(state=state); self.search_button.configure(state=state)
+    def cancel_process(self):
+        self.cancelled=True
+        if self.cancel_excel_callback: self.cancel_excel_callback()
+    def generate_excel(self):
+        docs=[d for i,d in enumerate(self.documents) if i in self.selected]
+        if not docs:
+            messagebox.showwarning("Resumen Excel","Debe seleccionar al menos un documento.",parent=self); return
+        if not self.remittance_resolver or not self.excel_callback:
+            messagebox.showerror("Resumen Excel","La generación Excel no está disponible.",parent=self); return
+        remittances,missing=collect_unique_remittances(docs,self.remittance_resolver)
+        if missing:
+            labels="\n".join(f"- documento {d.document_id or d.file_path.name}" for d in missing)
+            messagebox.showwarning("Documentos sin remesa",f"Los siguientes documentos no tienen una remesa asociada válida:\n{labels}",parent=self)
+        if not remittances:
+            messagebox.showwarning("Resumen Excel","Los documentos seleccionados no contienen ninguna remesa válida\npara generar el resumen Excel.",parent=self); return
+        if not messagebox.askyesno("Generar resumen Excel",f"Se han seleccionado {len(docs)} documentos correspondientes a {len(remittances)} remesas.\n\nEl Excel incluirá las liquidaciones completas de esas {len(remittances)} remesas,\nno solamente los socios seleccionados.\n\n¿Desea continuar?",parent=self): return
+        self.cancelled=False; self._set_generating(True)
+        try:
+            self.progress.set(f"Procesando remesa 0 de {len(remittances)}")
+            self.excel_callback(remittances)
+        except Exception:
+            logger.exception("Error al generar resumen Excel desde la ventana de unificación",extra={"selected_document_count":len(docs),"unique_remittance_count":len(remittances),"remittance_ids":[r.remittance_id for r in remittances],"campaign":self.campaign.get(),"company":self.company.get(),"crop":self.crop.get(),"destination_path":None})
+            messagebox.showerror("Resumen Excel","No se pudo generar el resumen Excel.",parent=self)
+        finally:
+            self._set_generating(False); self.progress.set("")
     def _progress(self,phase,current,total,pages): self.progress.set(f"{phase.capitalize()} documento {current} de {total}. Páginas procesadas: {pages}"); self.update()
     def regenerate(self):
         if self.kind.get()=="Borradores": messagebox.showinfo("Regenerar","Los borradores no pueden regenerarse automáticamente.",parent=self); return

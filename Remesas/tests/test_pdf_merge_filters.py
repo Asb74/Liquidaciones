@@ -14,6 +14,39 @@ def test_member_and_date_filter_validation():
     assert PdfMergeToolDialog.parse_date("17/07/2026") == "2026-07-17"
 
 
+def test_unique_remittances_use_real_id_and_preserve_first_appearance():
+    pytest.importorskip("pypdf")
+    from types import SimpleNamespace
+    from ui.pdf_merge_tool_dialog import collect_unique_remittances
+
+    documents = [
+        SimpleNamespace(remittance_id=2, document_id=20),
+        SimpleNamespace(remittance_id=1, document_id=10),
+        SimpleNamespace(remittance_id=2, document_id=21),
+        SimpleNamespace(remittance_id=3, document_id=30),
+    ]
+    resolved, missing = collect_unique_remittances(
+        documents, lambda document: SimpleNamespace(remittance_id=document.remittance_id),
+    )
+    assert [item.remittance_id for item in resolved] == [2, 1, 3]
+    assert missing == []
+
+
+def test_unique_remittances_reports_documents_without_valid_remittance():
+    pytest.importorskip("pypdf")
+    from types import SimpleNamespace
+    from ui.pdf_merge_tool_dialog import collect_unique_remittances
+
+    no_id = SimpleNamespace(remittance_id=None, document_id=40)
+    missing_in_repository = SimpleNamespace(remittance_id=99, document_id=41)
+    resolved, missing = collect_unique_remittances(
+        [no_id, missing_in_repository],
+        lambda _document: (_ for _ in ()).throw(ValueError("No existe")),
+    )
+    assert resolved == []
+    assert missing == [no_id, missing_in_repository]
+
+
 def test_draft_filter_options_are_dependent_and_real(tmp_path: Path):
     db=PersistenceDatabase(str(tmp_path/"liquidaciones.sqlite")); db.initialize()
     repository=LiquidationRepository(db)

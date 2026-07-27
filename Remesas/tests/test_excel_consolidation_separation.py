@@ -18,8 +18,10 @@ def test_consolidation_dialog_has_exact_empty_selection_message():
 
 def test_pdf_and_excel_reuse_the_same_selector():
     root = Path(__file__).resolve().parents[1]
-    frame = (root / "ui" / "remesas_frame.py").read_text(encoding="utf-8")
-    excel_dialog = (root / "ui" / "excel_consolidation_dialog.py").read_text(encoding="utf-8")
-    assert "MultiRemittanceSelectionDialog(" in frame
-    assert "class ExcelConsolidationDialog(MultiRemittanceSelectionDialog)" in excel_dialog
-    assert frame.count("list_remittances_for_campaign(ctx.campana, ctx.empresa, ctx.cultivo)") >= 2
+    dialog = (root / "ui" / "pdf_merge_tool_dialog.py").read_text(encoding="utf-8")
+    app = (root / "app.py").read_text(encoding="utf-8")
+    assert 'text="Generar PDF combinado"' in dialog
+    assert 'text="Generar resumen Excel"' in dialog
+    assert "docs=[d for i,d in enumerate(self.documents) if i in self.selected]" in dialog
+    assert "excel_callback=lambda selected" in app
+    assert "open_excel_consolidation=" not in app
