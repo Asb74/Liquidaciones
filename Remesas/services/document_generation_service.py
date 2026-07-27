@@ -40,7 +40,7 @@ class DocumentGenerationService:
         if callback: callback({"phase":phase,**data})
     def _vm(self,batch,rows):
         d=lambda v: Decimal(str(v or 0)); optional=lambda v: None if v in (None,"") else d(v)
-        lines=tuple(PersistedLiquidationPdfLine(str(r["id_liq"]),str(r["variedad"]),r["cod_art"],d(r["neto"]),d(r["imp_bruto"]),optional(r["precio_comer"]),d(r["recoleccion"]),d(r["cuota_ha"]),d(r["bp_calidad"]),d(r["b_transporte"]),d(r["b_global"]),d(r["base_i"]),d(r["iva"]),d(r["retencion"]),d(r["importe_total"]),optional(r["precio_medio"])) for r in rows)
+        lines=tuple(PersistedLiquidationPdfLine(str(r["id_liq"]),str(r["variedad"]),None if r["cod_art"] is None else str(r["cod_art"]),d(r["neto"]),d(r["imp_bruto"]),optional(r["precio_comer"]),d(r["recoleccion"]),d(r["cuota_ha"]),d(r["bp_calidad"]),d(r["b_transporte"]),d(r["b_global"]),d(r["base_i"]),d(r["iva"]),d(r["retencion"]),d(r["importe_total"]),optional(r["precio_medio"])) for r in rows)
         total=lambda field: sum((getattr(x,field) for x in lines),Decimal(0))
         raw=str(batch["payment_date"] or "")[:10]
         try: payment=date.fromisoformat(raw)
