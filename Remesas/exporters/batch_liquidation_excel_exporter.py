@@ -1,124 +1,237 @@
-"""Excel consolidado de remesas.
-
-El módulo sólo presenta resultados ya calculados: ninguna regla económica vive aquí.
-"""
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from exporters.excel_exporter import MONEY_FORMAT, INTEGER_FORMAT, PERCENT_FORMAT, PRICE_FORMAT
+from exporters.excel_exporter import (
+    MONEY_FORMAT as SUMMARY_MONEY_FORMAT,
+    INTEGER_FORMAT as SUMMARY_INTEGER_FORMAT,
+    PERCENT_FORMAT as SUMMARY_PERCENT_FORMAT,
+    PRICE_FORMAT,
+    PTS_KG_FORMAT,
+    SUMMARY_HEADERS,
+    build_liquidation_summary_rows,
+    get_liquidation_summary_columns,
+)
 
-DATE_FORMAT = "DD/MM/YYYY"
+MONEY_FORMAT = '#,##0.00;-#,##0.00;-'
+INTEGER_FORMAT = '#,##0;-#,##0;-'
+PERCENT_FORMAT = '0"%"'
+DATE_FORMAT = 'DD/MM/YYYY'
 
 
-def _calculation(item):
-    value = item.calculation_result
-    return value.result if hasattr(value, "result") else value
-
-
-def _value(obj, *names):
-    for name in names:
-        if hasattr(obj, name):
-            return getattr(obj, name)
-    return None
-
-
-def _valid_sum(values: Iterable):
-    """Do not turn an incomplete business total into an apparently valid zero."""
-    values = list(values)
-    if not values or any(value is None for value in values):
+def _n(value):
+    if value is None:
         return None
-    return sum(values, Decimal("0"))
+    if isinstance(value, Decimal):
+        return value
+    return value
 
 
-def _status(values, warnings=()):
-    return "Pendiente" if any(value is None for value in values) else ("Con incidencias" if warnings else "Correcto")
+def _sum_members(result, attr):
+    total = Decimal("0")
+    seen = False
+    for member in getattr(result, "member_results", ()):
+        value = getattr(member, attr, None)
+        if value is not None:
+            total += value
+            seen = True
+    return total if seen else None
 
 
-def _style(ws, *, money=(), integer=(), percent=(), price=(), dates=(), total_row=None):
-    border = Border(*(Side(style="thin", color="D9D9D9") for _ in range(4)))
+def _style_sheet(ws, *, money_cols=(), integer_cols=(), percent_cols=(), date_cols=()):
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    thin = Side(style="thin", color="D9D9D9")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
     for cell in ws[1]:
-        cell.font = Font(bold=True); cell.fill = PatternFill("solid", fgColor="D9EAF7")
-        cell.alignment = Alignment(wrap_text=True, vertical="center"); cell.border = border
-    for row in ws.iter_rows(min_row=2):
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+        cell.border = border
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    for row in ws.iter_rows():
         for cell in row:
-            cell.border = border; cell.alignment = Alignment(wrap_text=True, vertical="top")
-            if cell.column in money: cell.number_format = MONEY_FORMAT
-            elif cell.column in integer: cell.number_format = INTEGER_FORMAT
-            elif cell.column in percent: cell.number_format = PERCENT_FORMAT
-            elif cell.column in price: cell.number_format = PRICE_FORMAT
-            elif cell.column in dates: cell.number_format = DATE_FORMAT
-    if total_row:
-        for cell in ws[total_row]:
-            cell.font = Font(bold=True); cell.fill = PatternFill("solid", fgColor="C6E0B4")
-    ws.freeze_panes = "A2"; ws.auto_filter.ref = ws.dimensions
-    for cells in ws.columns:
-        ws.column_dimensions[get_column_letter(cells[0].column)].width = min(45, max(12, max(len(str(c.value or "")) for c in cells) + 2))
+            cell.border = border
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+            if cell.column in money_cols:
+                cell.number_format = MONEY_FORMAT
+            elif cell.column in integer_cols:
+                cell.number_format = INTEGER_FORMAT
+            elif cell.column in percent_cols:
+                cell.number_format = PERCENT_FORMAT
+            elif cell.column in date_cols:
+                cell.number_format = DATE_FORMAT
+    for column_cells in ws.columns:
+        width = min(max(len(str(cell.value or "")) for cell in column_cells) + 2, 45)
+        ws.column_dimensions[get_column_letter(column_cells[0].column)].width = max(width, 12)
 
 
-GENERAL_HEADERS = ["Orden", "Id remesa", "Nombre remesa", "Campaña", "Empresa", "Cultivo", "Tipo de liquidación", "Condición/Categoría", "Periodo desde", "Periodo hasta", "Fecha de pago", "Nº socios", "Nº entregas", "Nº variedades", "Kilos netos", "Importe comercial", "Destrío", "Destrío mesa", "Podrido", "Importe bruto", "Recolección detectada", "Recolección aplicada", "Transporte detectado", "Transporte aplicado", "Calidad", "GlobalGAP", "Cuota Ha", "Base imponible", "IVA", "Retención", "Total liquidación", "Estado", "Nº advertencias"]
-MEMBER_HEADERS = ["Orden", "Id remesa", "Nombre remesa", "Campaña", "Empresa", "Cultivo", "Socio", "Agricultor", "Variedad", "Nº entregas", "Kilos netos", "Kilos comerciales", "Kilos destrío", "Kilos podrido", "Importe comercial", "Importe destrío", "Importe destrío mesa", "Importe podrido", "Importe bruto", "Recolección detectada", "Recolección aplicada", "Transporte detectado", "Transporte aplicado", "Calidad", "GlobalGAP", "Cuota Ha", "Base imponible", "Régimen fiscal", "% IVA", "Importe IVA", "% retención", "Importe retención", "Total", "Precio medio comercial", "Precio medio final", "Estado", "Advertencias"]
-GRADE_HEADERS = ["Orden", "Id remesa", "Nombre remesa", "Campaña", "Empresa", "Cultivo", "Socio", "Agricultor", "Variedad", "Código calibre", "Etiqueta calibre", "Kilos", "Precio €/kg", "Importe"]
-WARNING_HEADERS = ["Orden", "Id remesa", "Nombre remesa", "Socio", "Agricultor", "Variedad", "Tipo o categoría", "Descripción", "Severidad", "Origen"]
+def _mark_total_row(ws, row: int, color: str):
+    for cell in ws[row]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor=color)
 
 
-def export_batch_liquidation_summary(results: Sequence, failed_results: Sequence, output_path: Path, **metadata) -> Path:
-    wb = Workbook(); general = wb.active; general.title = "Resumen general"; general.append(GENERAL_HEADERS)
-    numeric_rows = []
-    for order, item in enumerate(results, 1):
-        rem, calc = item.remittance, _calculation(item); t = calc.totals; warnings = tuple(getattr(calc, "warnings", ()) or ())
-        amounts = [_value(t, n) for n in ("net_kg", "commercial_amount", "gross_amount", "detected_collection_amount", "collection_amount", "detected_transport_amount", "transport_amount", "quality_amount", "globalgap_amount", "hectare_fee_amount", "taxable_base", "vat_amount", "withholding_amount", "total_amount")]
-        destruction = _valid_sum(_value(m, "destruction_amount") for m in calc.member_results)
-        table_destruction = _valid_sum(_value(m, "table_destruction_amount") for m in calc.member_results)
-        rotten = _valid_sum(_value(m, "rotten_amount") for m in calc.member_results)
-        row = [order, rem.remittance_id, rem.name, rem.campaign, rem.company, rem.crop, rem.liquidation_type, rem.category, rem.period_from, rem.period_to, rem.payment_date, item.member_count, item.delivery_count, getattr(calc, "variety_count", None), amounts[0], amounts[1], destruction, table_destruction, rotten, *amounts[2:], _status(amounts, warnings), len(warnings)]
-        general.append(row); numeric_rows.append(row)
-    if failed_results:
-        for offset, fail in enumerate(failed_results, len(results) + 1):
-            r=fail.remittance; general.append([offset,r.remittance_id,r.name,r.campaign,r.company,r.crop,r.liquidation_type,r.category,r.period_from,r.period_to,r.payment_date,None,None,None,*([None]*17),"Error",1])
-    if results or failed_results:
-        total=[None]*len(GENERAL_HEADERS); total[0]="TOTAL GENERAL"
-        for index in range(11,31): total[index]=_valid_sum(row[index] for row in numeric_rows) if not failed_results else None
-        total[31]="Parcial" if failed_results or any(row[31] != "Correcto" for row in numeric_rows) else "Correcto"
-        general.append(total)
-    _style(general, money=range(16,32), integer=(1,2,12,13,14,15,33), dates=(9,10,11), total_row=general.max_row if results or failed_results else None)
+def _decimal(value) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
 
-    detail=wb.create_sheet("Detalle por socio"); detail.append(MEMBER_HEADERS)
-    grades=wb.create_sheet("Detalle calibres"); grades.append(GRADE_HEADERS)
-    warnings_ws=wb.create_sheet("Advertencias"); warnings_ws.append(WARNING_HEADERS); seen=set()
-    warning_order=0
-    def warning(rem, member, description, origin, severity="Advertencia"):
-        nonlocal warning_order
-        key=(rem.remittance_id, _value(member,"member_id") if member else None, _value(member,"variety") if member else None, str(description), origin)
-        if key in seen:return
-        seen.add(key); warning_order += 1
-        warnings_ws.append([warning_order,rem.remittance_id,rem.name,_value(member,"member_id") if member else None,_value(member,"member_name") if member else None,_value(member,"variety") if member else None,rem.category,str(description),severity,origin])
-    row_order=grade_order=0
+
+def _shift_excel_formula(formula: str, row_number: int) -> str:
+    replacements = {
+        f"G{row_number}": f"I{row_number}",
+        f"D{row_number}": f"F{row_number}",
+        f"K{row_number}": f"M{row_number}",
+        f"J{row_number}": f"L{row_number}",
+    }
+    shifted = formula
+    for old, new in replacements.items():
+        shifted = shifted.replace(old, new)
+    return shifted
+
+
+def _append_batch_detail_table(detail, results: Sequence) -> int | None:
+    headers = ["Id Remesa", "Remesa", *SUMMARY_HEADERS]
+    detail.append(headers)
+    columns = get_liquidation_summary_columns()
+    totals = {column.key: Decimal("0") for column in columns if column.accumulable}
+    has_rows = False
+
     for item in results:
-        rem, calc = item.remittance, _calculation(item)
-        for text in getattr(calc,"warnings",()) or (): warning(rem,None,text,"Remesa")
-        for member in calc.member_results:
-            row_order += 1; member_warnings=tuple(getattr(member,"warnings",()) or ())
-            values=[_value(member,n) for n in ("collection_amount","transport_amount","quality_amount","globalgap_amount","hectare_fee_amount","taxable_base","vat_amount","withholding_amount","total_amount")]
-            detail.append([row_order,rem.remittance_id,rem.name,rem.campaign,rem.company,rem.crop,member.member_id,member.member_name,member.variety,_value(member,"delivery_count"),_value(member,"net_kg"),_value(member,"commercial_kg","net_commercial"),_value(member,"destruction_kg","net_waste"),_value(member,"rotten_kg","net_rotten"),_value(member,"commercial_amount"),_value(member,"destruction_amount"),_value(member,"table_destruction_amount"),_value(member,"rotten_amount"),_value(member,"gross_amount"),_value(member,"detected_collection_amount"),_value(member,"collection_amount"),_value(member,"detected_transport_amount"),_value(member,"transport_amount"),_value(member,"quality_amount"),_value(member,"globalgap_amount"),_value(member,"hectare_fee_amount"),_value(member,"taxable_base"),_value(member,"fiscal_regime_name"),_value(member,"vat_rate"),_value(member,"vat_amount"),_value(member,"withholding_rate"),_value(member,"withholding_amount"),_value(member,"total_amount"),_value(member,"commercial_average_price"),_value(member,"final_average_price"),_status(values,member_warnings),"; ".join(map(str,member_warnings))])
-            for text in member_warnings: warning(rem,member,text,"Socio")
-            for grade in getattr(member,"grades",()) or ():
-                grade_order += 1; grades.append([grade_order,rem.remittance_id,rem.name,rem.campaign,rem.company,rem.crop,member.member_id,member.member_name,member.variety,grade.code,grade.label,grade.kilograms,grade.price,grade.amount])
-    _style(detail,money=range(15,28),integer=(1,2,7,10,11,12,13,14),percent=(29,31),price=(34,35))
-    _style(grades,money=(14,),integer=(1,2,7,12),price=(13,))
-    for fail in failed_results: warning(fail.remittance,None,fail.error_message,"Cálculo","Error")
-    _style(warnings_ws,integer=(1,2,4))
-    if failed_results:
-        failed=wb.create_sheet("Remesas fallidas"); failed.append(["Orden","Id remesa","Nombre remesa","Error","Detalle técnico","Estado"])
-        for order,item in enumerate(failed_results,1): failed.append([order,item.remittance.remittance_id,item.remittance.name,item.error_type,item.error_message,"Error"])
-        _style(failed,integer=(1,2))
-    output_path=Path(output_path)
-    if output_path.suffix.lower() != ".xlsx": output_path=output_path.with_suffix(".xlsx")
-    output_path.parent.mkdir(parents=True,exist_ok=True); wb.save(output_path); return output_path
+        rem = item.remittance
+        calc = item.calculation_result.result if hasattr(item.calculation_result, "result") else item.calculation_result
+        start_row = detail.max_row + 1
+        member_results = tuple(getattr(calc, "member_results", ()) or ())
+        for offset, row_values in enumerate(build_liquidation_summary_rows(calc, start_row=start_row), start=0):
+            excel_row = start_row + offset
+            shifted_values = [
+                _shift_excel_formula(value, excel_row) if isinstance(value, str) and value.startswith("=") else value
+                for value in row_values
+            ]
+            detail.append([rem.remittance_id, rem.name, *shifted_values])
+            has_rows = True
+        for column in columns:
+            if column.accumulable:
+                totals[column.key] += sum((_decimal(getattr(member, column.key, None)) for member in member_results), Decimal("0"))
+
+    if not has_rows:
+        return None
+
+    total_row = detail.max_row + 1
+    detail.cell(total_row, 4, "TOTAL GENERAL")
+    for col_idx, column in enumerate(columns, start=3):
+        if column.key in totals:
+            detail.cell(total_row, col_idx, totals[column.key])
+    total_amount = totals.get("total_amount", Decimal("0"))
+    total_net = totals.get("net_kg", Decimal("0"))
+    detail.cell(total_row, 15, (total_amount / total_net) if total_net else Decimal("0"))
+    _mark_total_row(detail, total_row, "C6E0B4")
+    return total_row
+
+
+def _style_batch_detail_table(ws, total_row: int | None) -> None:
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+    for row in ws.iter_rows(min_row=2, max_row=total_row or ws.max_row):
+        for cell in row:
+            cell.alignment = Alignment(vertical="center")
+            if total_row and cell.row == total_row:
+                cell.font = Font(bold=True)
+                cell.border = border
+    formats = {
+        "C": SUMMARY_INTEGER_FORMAT, "F": SUMMARY_INTEGER_FORMAT,
+        "G": SUMMARY_MONEY_FORMAT, "I": SUMMARY_MONEY_FORMAT, "J": SUMMARY_MONEY_FORMAT, "K": SUMMARY_MONEY_FORMAT,
+        "L": SUMMARY_MONEY_FORMAT, "M": SUMMARY_MONEY_FORMAT, "N": SUMMARY_MONEY_FORMAT, "R": SUMMARY_MONEY_FORMAT,
+        "H": PRICE_FORMAT, "O": PRICE_FORMAT,
+        "P": SUMMARY_PERCENT_FORMAT, "Q": SUMMARY_PERCENT_FORMAT,
+        "U": PTS_KG_FORMAT, "V": PTS_KG_FORMAT, "W": PTS_KG_FORMAT,
+    }
+    for column_letter, number_format in formats.items():
+        for cell in ws[column_letter][1:]:
+            cell.number_format = number_format
+    widths = {"A": 12, "B": 35, "C": 12, "D": 35, "E": 18, "F": 14, "G": 15, "H": 12, "I": 14, "J": 14, "K": 14, "L": 14, "M": 14, "N": 17, "O": 12, "P": 10, "Q": 10, "R": 17, "S": 32, "T": 16, "U": 24, "V": 23, "W": 24}
+    for column_letter, width in widths.items():
+        ws.column_dimensions[column_letter].width = width
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+def export_batch_liquidation_summary(results: Sequence, failed_results: Sequence, output_path: Path, *, campaign: str, company: str, crop: str, execution_started_at: datetime, execution_finished_at: datetime) -> Path:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Resumen por remesa"
+    headers = ["Id Remesa", "Remesa", "Fecha de pago", "Periodo desde", "Periodo hasta", "Categoría", "Tipo liquidación", "Nº entregas", "Nº socios", "Nº variedades", "Kilos netos", "Importe comercial", "Recolección", "Calidad", "Transporte", "GlobalGAP", "Cuota Ha", "Base imponible", "Importe IVA", "Importe retención", "Importe total", "Estado", "Carpeta de salida"]
+    ws.append(headers)
+    totals = {h: Decimal("0") for h in headers[10:21]}
+    for item in results:
+        rem = item.remittance
+        calc = item.calculation_result.result if hasattr(item.calculation_result, "result") else item.calculation_result
+        t = calc.totals
+        row = [rem.remittance_id, rem.name, rem.payment_date, rem.period_from, rem.period_to, rem.category, rem.liquidation_type, item.delivery_count, item.member_count, getattr(calc, "variety_count", ""), _n(t.net_kg), _n(t.commercial_amount), _n(t.collection_amount), _n(t.quality_amount), _n(t.transport_amount), _n(t.globalgap_amount), _n(t.hectare_fee_amount), _n(t.taxable_base), _n(t.vat_amount), _n(t.withholding_amount), _n(t.total_amount), "SUCCESS", str(item.output_directory)]
+        ws.append(row)
+        for idx, h in enumerate(headers[10:21], start=11):
+            if row[idx - 1] is not None:
+                totals[h] += row[idx - 1]
+    if results:
+        ws.append(["TOTAL GENERAL", "", "", "", "", "", "", sum(r.delivery_count for r in results), sum(r.member_count for r in results), "", *[totals[h] for h in headers[10:21]], "", ""])
+        _mark_total_row(ws, ws.max_row, "C6E0B4")
+    _style_sheet(ws, money_cols=range(12, 22), integer_cols=(8, 9, 10, 11), date_cols=(3, 4, 5))
+
+    detail = wb.create_sheet("Detalle acumulado")
+    detail_total_row = _append_batch_detail_table(detail, results)
+    _style_batch_detail_table(detail, detail_total_row)
+    detail.page_setup.orientation = "landscape"
+    detail.page_setup.fitToWidth = 1
+    detail.page_setup.fitToHeight = 0
+    detail.sheet_properties.pageSetUpPr.fitToPage = True
+    detail.page_margins.left = 0.25
+    detail.page_margins.right = 0.25
+    detail.page_margins.top = 0.5
+    detail.page_margins.bottom = 0.5
+
+    inc = wb.create_sheet("Incidencias")
+    inc.append(["Id Remesa", "Remesa", "Fase", "Tipo de error", "Mensaje", "Fecha y hora", "Estado"])
+    for fail in failed_results:
+        inc.append([fail.remittance.remittance_id, fail.remittance.name, fail.phase, fail.error_type, fail.error_message, execution_finished_at, "ERROR"])
+    for item in results:
+        calc = item.calculation_result.result if hasattr(item.calculation_result, "result") else item.calculation_result
+        for warning in getattr(calc, "warnings", ()):
+            inc.append([item.remittance.remittance_id, item.remittance.name, "WARNING", "Warning", warning, execution_finished_at, "WARNING"])
+    _style_sheet(inc, date_cols=(6,))
+
+    params = wb.create_sheet("Parámetros")
+    first_calc = None
+    if results:
+        first_calc = results[0].calculation_result.result if hasattr(results[0].calculation_result, "result") else results[0].calculation_result
+    master = getattr(first_calc, "hectare_fee_master", None)
+    params_rows = [("Fecha y hora de inicio", execution_started_at), ("Fecha y hora de fin", execution_finished_at), ("Campaña", campaign), ("Empresa", company), ("Cultivo", crop), ("Usuario", ""), ("Número de remesas seleccionadas", len(results) + len(failed_results)), ("Número correctas", len(results)), ("Número con error", len(failed_results)), ("IDs seleccionados", ", ".join(str(r.remittance.remittance_id) for r in results) + (", " if results and failed_results else "") + ", ".join(str(f.remittance.remittance_id) for f in failed_results)), ("Nombres de las remesas", ", ".join(r.remittance.name for r in results) + (", " if results and failed_results else "") + ", ".join(f.remittance.name for f in failed_results)), ("Tarifa Cuota Ha", getattr(master, "price_per_hectare", "")), ("Cultivos sujetos a Cuota Ha", ", ".join(getattr(master, "eligible_crops", ()))), ("Versión de la aplicación", "Remesas"), ("Ruta base de salida", str(output_path.parent))]
+    for row in params_rows:
+        params.append(row)
+    # Parameters share a value column, so formatting the complete column as a
+    # date makes counters and the hectare tariff appear as Excel dates.
+    _style_sheet(params)
+    params["B1"].number_format = DATE_FORMAT
+    params["B2"].number_format = DATE_FORMAT
+    for row_number in (7, 8, 9):
+        params.cell(row_number, 2).number_format = INTEGER_FORMAT
+    params["B12"].number_format = MONEY_FORMAT
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        wb.save(output_path)
+    except PermissionError:
+        raise PermissionError("No se ha podido guardar el resumen acumulado porque el archivo está abierto en Excel. Cierre el archivo y pulse Reintentar.")
+    return output_path

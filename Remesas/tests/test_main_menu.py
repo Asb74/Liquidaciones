@@ -20,6 +20,9 @@ class MainMenuTests(unittest.TestCase):
             self.assertEqual(labels, ["Archivo", "Maestros", "Herramientas", "Ayuda"])
             masters = menu.nametowidget(menu.entrycget(1, "menu"))
             self.assertEqual(masters.entrycget(0, "label"), "Cuota por hectárea")
+            tools = menu.nametowidget(menu.entrycget(2, "menu"))
+            tool_labels = [tools.entrycget(i, "label") for i in range(tools.index("end") + 1)]
+            self.assertIn("Montar resúmenes Excel", tool_labels)
         finally:
             root.destroy()
 
