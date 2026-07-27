@@ -41,12 +41,18 @@ class LegacyPersistenceRepository:
             return False
         return str(row[0] or "").strip().upper() == "SI"
 
-    def article_code(self, crop: str, variety: str, aliases: dict[str,str] | None=None) -> int | None:
-        compatible=(aliases or {}).get(crop.upper(),crop).upper()
+    def article_code(self, crop: str, variety: str, aliases: dict[str,str] | None=None) -> str | None:
+        normalized_crop=crop.strip().upper()
+        compatible=(aliases or {}).get(normalized_crop,normalized_crop).strip().upper()
         sql=f"SELECT ARTICULO FROM {self.schema}.MVariedad WHERE UPPER(TRIM(CULTIVO))=? AND UPPER(TRIM(Variedad))=?"
         try: row=self.conn.execute(sql,(compatible,variety.strip().upper())).fetchone()
         except sqlite3.OperationalError: row=self.conn.execute(sql.replace(f"{self.schema}.",""),(compatible,variety.strip().upper())).fetchone()
-        return int(row[0]) if row and row[0] is not None else None
+        if not row or row[0] is None:
+            return None
+        # ARTICULO is a business identifier, not a quantity: legacy data contains
+        # both numeric codes (for example 3984) and alphanumeric ones (B391).
+        code = str(row[0]).strip()
+        return code or None
 
     def historical_split_rows(self):
         sql=f"SELECT * FROM {self.schema}.DDividirLiq"

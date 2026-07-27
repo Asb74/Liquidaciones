@@ -69,7 +69,7 @@ class LiquidationSplitService:
         parts[residual_index]+=total-sum(parts,Decimal(0))
         return parts
 
-    def split(self, member, header, *, cod_art: int | None=None) -> tuple[SplitPreviewLine,...]:
+    def split(self, member, header, *, cod_art: str | None=None) -> tuple[SplitPreviewLine,...]:
         if is_excluded_member(member.member_id):
             log_system_member_excluded(self.logger, origin="LiquidationSplitService.split", count=1,
                                        net_kg=getattr(member, "net_kg", 0), remesa_id=header.remesa_id)
