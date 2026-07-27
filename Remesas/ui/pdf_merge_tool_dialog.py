@@ -13,6 +13,7 @@ except ImportError:
 from domain.document_models import DocumentType
 from services.path_opener import open_path
 from services.pdf_merge_service import PdfMergeCancelled
+from services.liquidation_csv_export_service import CsvExportCancelled
 
 logger=logging.getLogger(__name__)
 
@@ -35,6 +36,19 @@ def collect_unique_remittances(selected_documents, resolver):
             seen.add(real_id); remittances.append(remittance)
     return remittances, missing
 
+
+def collect_unique_batch_ids(selected_documents):
+    """Return persisted batch ids once, preserving the visible selection order."""
+    batch_ids=[]; missing=[]; seen=set()
+    for document in selected_documents:
+        batch_id=getattr(document, "batch_id", None)
+        if not batch_id:
+            missing.append(document); continue
+        batch_id=str(batch_id)
+        if batch_id not in seen:
+            seen.add(batch_id); batch_ids.append(batch_id)
+    return batch_ids, missing
+
 class NullableDatePicker(ttk.Frame):
     """Calendar-backed date field which can genuinely remain empty."""
     def __init__(self, parent, variable):
@@ -55,11 +69,13 @@ class PdfMergeToolDialog(tk.Toplevel):
     COLUMNS=("sel","type","campaign","company","crop","remittance","member","name","idliq","date","status","path","pages","size")
     HEADERS=("Seleccionar","Tipo","Campaña","Empresa","Cultivo","Remesa","N.º socio","Socio","IdLiq","Fecha","Estado","Ruta","Páginas","Tamaño")
     def __init__(self,parent,service,*,output_root=None,regenerate_callback=None,
-                 remittance_resolver=None,excel_callback=None,cancel_excel_callback=None):
+                 remittance_resolver=None,excel_callback=None,cancel_excel_callback=None,
+                 csv_export_service=None):
         super().__init__(parent); self.service=service; self.regenerate_callback=regenerate_callback
         self.remittance_resolver=remittance_resolver; self.excel_callback=excel_callback; self.cancel_excel_callback=cancel_excel_callback
+        self.csv_export_service=csv_export_service
         self.output_root=Path(output_root or (r"C:\Liquidaciones\salidas\impresion_masiva" if Path("C:/").exists() else Path.cwd().parent/"salidas"/"impresion_masiva"))
-        self.title("Unificar PDFs para impresión"); self.geometry("1400x720"); self.documents=[]; self.selected=set(); self.validation_status={}; self.cancelled=False
+        self.title("Generación masiva de documentos"); self.geometry("1400x720"); self.documents=[]; self.selected=set(); self.validation_status={}; self.cancelled=False
         self._build()
 
     def _build(self):
@@ -92,8 +108,9 @@ class PdfMergeToolDialog(tk.Toplevel):
         ttk.Button(bottom,text="Regenerar seleccionado",command=self.regenerate).pack(side="right",padx=3)
         ttk.Button(bottom,text="Cancelar proceso",command=self.cancel_process).pack(side="right",padx=3)
         self.excel_button=ttk.Button(bottom,text="Generar resumen Excel",command=self.generate_excel); self.excel_button.pack(side="right",padx=3)
+        self.csv_button=ttk.Button(bottom,text="Generar CSV contable",command=self.generate_csv); self.csv_button.pack(side="right",padx=3)
         self.pdf_button=ttk.Button(bottom,text="Generar PDF combinado",command=self.merge); self.pdf_button.pack(side="right",padx=3); ttk.Button(bottom,text="Cerrar",command=self.destroy).pack(side="right",padx=3)
-        ttk.Label(bottom,text="El Excel se genera por remesas completas.").pack(side="right",padx=6)
+        ttk.Label(bottom,text="El Excel y el CSV se generan por remesas completas.").pack(side="right",padx=6)
         self.progress=tk.StringVar(); ttk.Label(bottom,textvariable=self.progress).pack(side="right",padx=10)
         self._reload_filters(); self.search()
 
@@ -192,7 +209,7 @@ class PdfMergeToolDialog(tk.Toplevel):
         finally: self._set_generating(False)
     def _set_generating(self, running):
         state="disabled" if running else "normal"
-        self.pdf_button.configure(state=state); self.excel_button.configure(state=state); self.search_button.configure(state=state)
+        self.pdf_button.configure(state=state); self.excel_button.configure(state=state); self.csv_button.configure(state=state); self.search_button.configure(state=state)
     def cancel_process(self):
         self.cancelled=True
         if self.cancel_excel_callback: self.cancel_excel_callback()
@@ -218,6 +235,39 @@ class PdfMergeToolDialog(tk.Toplevel):
             messagebox.showerror("Resumen Excel","No se pudo generar el resumen Excel.",parent=self)
         finally:
             self._set_generating(False); self.progress.set("")
+    def generate_csv(self):
+        docs=[d for i,d in enumerate(self.documents) if i in self.selected]
+        if not docs:
+            messagebox.showwarning("CSV contable","Debe seleccionar al menos un documento.",parent=self); return
+        if not self.csv_export_service:
+            messagebox.showerror("CSV contable","La exportación CSV no está disponible.",parent=self); return
+        batch_ids,missing=collect_unique_batch_ids(docs)
+        if missing:
+            labels="\n".join(f"- documento {d.document_id or d.file_path.name}" for d in missing)
+            messagebox.showwarning("Documentos sin liquidación",f"Los siguientes documentos no tienen una liquidación guardada asociada:\n{labels}",parent=self)
+        if not batch_ids:
+            messagebox.showwarning("CSV contable","Los documentos seleccionados no contienen liquidaciones exportables.",parent=self); return
+        if any(d.batch_status=="VOIDED" for d in docs):
+            messagebox.showerror("CSV contable","Las liquidaciones anuladas no se pueden exportar a contabilidad.",parent=self); return
+        if not messagebox.askyesno("Generar CSV contable",f"Se han seleccionado {len(docs)} documentos correspondientes a {len(batch_ids)} remesas.\n\nEl CSV incluirá las liquidaciones completas de esas remesas y aplicará las mismas validaciones contables que la exportación individual.\n\n¿Desea continuar?",parent=self): return
+        self.cancelled=False; self._set_generating(True)
+        try:
+            result=self.csv_export_service.export_batches(batch_ids, progress_callback=self._csv_progress, should_cancel=lambda:self.cancelled)
+            if result.already_existed:
+                messagebox.showinfo("CSV contable","Esta selección ya fue exportada a contabilidad.",parent=self); return
+            if not result.success:
+                messagebox.showerror("CSV contable",result.error_message or "No se pudo generar el CSV contable.",parent=self); return
+            messagebox.showinfo("CSV contable",f"CSV generado correctamente.\n\nRemesas: {len(batch_ids)}\nLíneas: {result.line_count}\nLíneas excluidas: {result.excluded_line_count}\nNeto: {result.net_total}\nImporte total: {result.amount_total}\nRuta:\n{result.csv_path}",parent=self)
+            if messagebox.askyesno("Abrir CSV","¿Desea abrir el CSV contable?",parent=self): open_path(result.csv_path)
+        except CsvExportCancelled:
+            messagebox.showinfo("CSV contable","Operación cancelada.",parent=self)
+        except Exception as exc:
+            logger.exception("Exportación CSV contable masiva")
+            messagebox.showerror("CSV contable",str(exc),parent=self)
+        finally:
+            self._set_generating(False); self.progress.set("")
+    def _csv_progress(self,phase,current,total):
+        self.progress.set(f"{phase.capitalize()} CSV: {current} de {total}"); self.update()
     def _progress(self,phase,current,total,pages): self.progress.set(f"{phase.capitalize()} documento {current} de {total}. Páginas procesadas: {pages}"); self.update()
     def regenerate(self):
         if self.kind.get()=="Borradores": messagebox.showinfo("Regenerar","Los borradores no pueden regenerarse automáticamente.",parent=self); return

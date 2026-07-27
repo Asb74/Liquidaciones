@@ -85,6 +85,7 @@ def main() -> None:
             remittance_resolver=frame.resolve_document_remittance,
             excel_callback=lambda selected: frame._process_selected_remittances(selected, excel_only=True),
             cancel_excel_callback=lambda: setattr(frame, "batch_cancel_requested", True),
+            csv_export_service=getattr(frame, "csv_export_service", None),
         )
     root.config(menu=build_main_menu(root, MainMenuHandlers(close=frame.close_application, open_hectare_fee_master=frame.open_hectare_fee_master, open_calibre_master=lambda: CalibreMasterDialog(root), open_production_destination_master=lambda: ProductionDestinationMasterDialog(root), open_liquidation_prefix_master=frame.open_liquidation_prefix_master, open_liquidation_split_master=frame.open_liquidation_split_master, show_about=frame.show_about, refresh_local_databases=lambda: frame.synchronize_local_databases(manual=True), open_data_folder=frame.open_data_folder, open_liquidation_history=frame.open_liquidation_history, open_pdf_merge_tool=open_mass_documents, open_hectare_fee_report=open_fee_report)))
     root.mainloop()

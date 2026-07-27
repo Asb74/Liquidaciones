@@ -42,7 +42,7 @@ def build_main_menu(root: tk.Misc, handlers: MainMenuHandlers) -> tk.Menu:
 
     tools_menu = tk.Menu(menu_bar, tearoff=False)
     tools_menu.add_command(label="Informe de cuota por hectárea", command=handlers.open_hectare_fee_report)
-    tools_menu.add_command(label="Unificar PDFs para impresión", command=handlers.open_pdf_merge_tool)
+    tools_menu.add_command(label="Generación masiva de documentos", command=handlers.open_pdf_merge_tool)
     menu_bar.add_cascade(label="Herramientas", menu=tools_menu)
 
     help_menu = tk.Menu(menu_bar, tearoff=False)
