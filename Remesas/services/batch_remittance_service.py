@@ -76,6 +76,40 @@ class BatchRemittanceResult:
     def draft_errors(self): return sum(len(x.draft_document_errors) for x in self.successful_results)
 
 
+@dataclass(frozen=True)
+class BatchLiquidationExcelResult:
+    """Lossless view of a batch used by consolidated exporters."""
+    selected_remittances: tuple[SelectedRemittance, ...]
+    successful_results: tuple[SingleRemittanceBatchResult, ...]
+    failed_results: tuple[FailedRemittanceResult, ...]
+
+    @property
+    def total_remittances(self): return len(self.selected_remittances)
+    @property
+    def total_members(self): return sum(item.member_count for item in self.successful_results)
+    @property
+    def total_deliveries(self): return sum(item.delivery_count for item in self.successful_results)
+
+    def _total(self, name):
+        values=[]
+        for item in self.successful_results:
+            result=item.calculation_result.result if hasattr(item.calculation_result,"result") else item.calculation_result
+            values.append(getattr(result.totals,name,None))
+        return None if self.failed_results or not values or any(v is None for v in values) else sum(values, start=__import__("decimal").Decimal("0"))
+
+    total_net_kg=property(lambda self:self._total("net_kg"))
+    total_commercial_amount=property(lambda self:self._total("commercial_amount"))
+    total_collection_amount=property(lambda self:self._total("collection_amount"))
+    total_transport_amount=property(lambda self:self._total("transport_amount"))
+    total_quality_amount=property(lambda self:self._total("quality_amount"))
+    total_globalgap_amount=property(lambda self:self._total("globalgap_amount"))
+    total_hectare_fee_amount=property(lambda self:self._total("hectare_fee_amount"))
+    total_taxable_base=property(lambda self:self._total("taxable_base"))
+    total_vat_amount=property(lambda self:self._total("vat_amount"))
+    total_withholding_amount=property(lambda self:self._total("withholding_amount"))
+    total_amount=property(lambda self:self._total("total_amount"))
+
+
 class BatchRemittanceService:
     def __init__(self, *, single_processor: Callable[[SelectedRemittance, Callable[[BatchProgress], None] | None], SingleRemittanceBatchResult], output_base: Path | None = None, exporter: Callable[..., Path] | None = None, should_cancel: Callable[[], bool] | None = None, log_dir: Path | None = None) -> None:
         self.single_processor = single_processor
@@ -84,7 +118,7 @@ class BatchRemittanceService:
         self.should_cancel = should_cancel or (lambda: False)
         self.log_dir = log_dir or Path.cwd() / "logs"
 
-    def process(self, remittances: Sequence[SelectedRemittance], *, progress_callback: Callable[[BatchProgress], None] | None = None) -> BatchRemittanceResult:
+    def process(self, remittances: Sequence[SelectedRemittance], *, progress_callback: Callable[[BatchProgress], None] | None = None, aggregate_output_path: Path | None = None) -> BatchRemittanceResult:
         started_at = datetime.now()
         total = len(remittances)
         successful: list[SingleRemittanceBatchResult] = []
@@ -93,6 +127,7 @@ class BatchRemittanceService:
         log_path = self.log_dir / f"batch_remittance_{started_at:%Y%m%d_%H%M%S}.log"
         aggregate_path: Path | None = None
         cancelled = False
+        logger.info("[BatchExcel] operation=start selected_count=%s remittance_ids=%s", total, [r.remittance_id for r in remittances])
         self._emit(progress_callback, total, 0, None, "PREPARING", "Preparando lote")
         with log_path.open("w", encoding="utf-8") as log:
             if remittances:
@@ -109,6 +144,8 @@ class BatchRemittanceService:
                     self._emit(progress_callback, total, index, remittance, "LOADING", "Cargando remesa")
                     result = self.single_processor(remittance, self._child_callback(progress_callback, total, index, remittance))
                     successful.append(result)
+                    calculated=result.calculation_result.result if hasattr(result.calculation_result,"result") else result.calculation_result
+                    logger.info("[BatchExcelRemittance] remittance_id=%s member_count=%s delivery_count=%s net_kg=%s total_amount=%s status=success", remittance.remittance_id, result.member_count, result.delivery_count, getattr(calculated.totals,"net_kg",None), getattr(calculated.totals,"total_amount",None))
                     duration = (datetime.now() - item_started).total_seconds()
                     log.write("[BatchRemittance]\n")
                     log.write(f"index={index}\ntotal={total}\nid={remittance.remittance_id}\nname={remittance.name}\nstatus=SUCCESS\ndeliveries={result.delivery_count}\nmembers={result.member_count}\noutput_dir={result.output_directory}\ngenerated_files={[str(p) for p in result.generated_files]}\nduration_seconds={duration:.2f}\n")
@@ -124,11 +161,12 @@ class BatchRemittanceService:
                 folder = self.output_base / safe_path_part(first.campaign) / safe_path_part(first.crop)
                 folder.mkdir(parents=True, exist_ok=True)
                 filename = f"Resumen_liquidaciones_{safe_path_part(first.crop)}_{safe_path_part(first.campaign)}_{finished_at:%Y%m%d_%H%M%S}.xlsx"
-                aggregate_path = folder / filename
+                aggregate_path = Path(aggregate_output_path) if aggregate_output_path else folder / filename
                 self._emit(progress_callback, total, len(successful), None, "BUILDING_AGGREGATE_EXCEL", "Generando Excel acumulado")
                 aggregate_path = self.exporter(successful, failed, aggregate_path, campaign=first.campaign, company=first.company, crop=first.crop, execution_started_at=started_at, execution_finished_at=finished_at)
             log.write(f"fin={finished_at.isoformat()}\nduracion_segundos={(finished_at-started_at).total_seconds():.2f}\nexcel_acumulado={aggregate_path}\n")
         self._emit(progress_callback, total, len(successful), None, "FINISHED", "Lote finalizado")
+        logger.info("[BatchExcel] operation=finish successful_count=%s failed_count=%s output_path=%s",len(successful),len(failed),aggregate_path)
         return BatchRemittanceResult(total, len(successful), len(failed), tuple(successful), tuple(failed), aggregate_path, started_at, finished_at, cancelled, log_path)
 
     def _emit(self, callback, total, index, remittance, phase, message):

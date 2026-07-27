@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from data.db_connection import ReadOnlyDatabase, load_config, setup_logging
 from data.deliveries_repository import DeliveriesRepository
@@ -451,6 +451,9 @@ class RemesasFrame(ttk.Frame):
             items=self.remesas.list_remesas(ctx.campana, ctx.empresa, ctx.cultivo)
             selected=self._select_remesa_dialog(items, ctx)
             if not selected: return
+            if isinstance(selected, tuple) and selected[0] == "excel":
+                self._process_selected_remittances(selected[1], excel_only=True)
+                return
             if isinstance(selected, list):
                 if len(selected) > 1:
                     self._process_selected_remittances(selected)
@@ -523,11 +526,17 @@ class RemesasFrame(ttk.Frame):
             if not messagebox.askyesno("Confirmar lote", f"Se van a procesar {len(remittances)} remesas:\n\n{lines}\n\nCada remesa se calculará de forma independiente.\nSe generará un único Excel resumen acumulado.\n\n¿Desea continuar?"):
                 return
             result["items"]=remittances; win.destroy()
+        def export_excel():
+            sel=tree.selection()
+            if not sel:
+                messagebox.showwarning("Seleccionar remesa", "Debe seleccionar al menos una remesa.", parent=win); return
+            result["items"]=("excel", [self._selected_remittance_from_values(tree.item(i,"values"),ctx) for i in sel]); win.destroy()
         query.trace_add("write", lambda *_: fill()); tree.bind("<Double-1>", load); tree.bind("<<TreeviewSelect>>", update_count); win.bind("<Return>", load); win.bind("<Escape>", lambda e: win.destroy())
         bf=ttk.Frame(win); bf.pack(fill="x",padx=8,pady=6)
         ttk.Button(bf,text="Seleccionar todas",command=select_all).pack(side="left",padx=4)
         ttk.Button(bf,text="Limpiar selección",command=clear_selection).pack(side="left",padx=4)
         ttk.Button(bf,text="Procesar seleccionadas",command=load).pack(side="right",padx=4)
+        ttk.Button(bf,text="Exportar resumen conjunto a Excel",command=export_excel).pack(side="right",padx=4)
         ttk.Button(bf,text="Cancelar",command=win.destroy).pack(side="right")
         fill(); win.wait_window(); return result["items"]
 
@@ -554,20 +563,34 @@ class RemesasFrame(ttk.Frame):
             win.update_idletasks()
         return win, update
 
-    def _process_selected_remittances(self, remittances: list[SelectedRemittance]) -> None:
+    def _process_selected_remittances(self, remittances: list[SelectedRemittance], *, excel_only: bool = False) -> None:
         if self.batch_running:
             messagebox.showwarning("Lote en curso", "Ya hay un lote de remesas en ejecución."); return
         self.batch_running=True; self.batch_cancel_requested=False
+        destination=None
+        if excel_only:
+            campaigns={r.campaign for r in remittances}
+            campaign=next(iter(campaigns)) if len(campaigns)==1 else "varias_campanas"
+            initial=f"Resumen_liquidaciones_{campaign}_{len(remittances)}_remesas.xlsx"
+            destination=filedialog.asksaveasfilename(parent=self,title="Guardar Excel conjunto",initialfile=initial,defaultextension=".xlsx",filetypes=(("Libro Excel","*.xlsx"),))
+            if not destination:
+                self.batch_running=False; return
         progress_win, update_progress = self._batch_progress_dialog(len(remittances))
         try:
-            service=BatchRemittanceService(single_processor=self.process_single_remittance, exporter=export_batch_liquidation_summary, should_cancel=lambda: self.batch_cancel_requested)
-            result=service.process(remittances, progress_callback=update_progress)
+            processor=(lambda rem, callback:self.process_single_remittance(rem,callback,generate_individual_files=False)) if excel_only else self.process_single_remittance
+            service=BatchRemittanceService(single_processor=processor, exporter=export_batch_liquidation_summary, should_cancel=lambda: self.batch_cancel_requested)
+            result=service.process(remittances, progress_callback=update_progress, aggregate_output_path=Path(destination) if destination else None)
             self.current_batch_result=result
             self.current_batch_preview=self.persistence_service.prepare_batch_preview(result) if getattr(self,"persistence_enabled",False) else None
             self.current_batch_persisted=False; self.current_batch_save_result=None
             logger.info("[BatchPendingPersistence]\nexecution_id=%s\nremittances=%s\nvalid_remittances=%s\npending=true",getattr(self.current_batch_preview,"batch_execution_id",result.started_at.isoformat()),result.remittances_requested,result.remittances_completed)
             msg=(f"Las remesas se han calculado y quedan pendientes de guardar.\n\nRemesas procesadas: {result.remittances_requested}\nRemesas calculadas correctamente: {result.remittances_completed}\nRemesas con error de cálculo: {result.remittances_failed}\nBorradores generados: {result.drafts_generated}\nBorradores con error: {result.draft_errors}\n\nExcel acumulado:\n{result.aggregate_excel_path or 'No generado'}")
             messagebox.showinfo("Proceso terminado", msg)
+            if excel_only and result.aggregate_excel_path and messagebox.askyesno("Excel generado","El Excel se ha generado correctamente.\n\n¿Desea abrirlo ahora?",parent=self):
+                try: open_path(result.aggregate_excel_path)
+                except Exception as exc:
+                    logger.exception("El Excel se guardó pero no pudo abrirse")
+                    messagebox.showwarning("Abrir Excel",f"El archivo se ha creado correctamente en:\n{result.aggregate_excel_path}\n\nNo se pudo abrir:\n{exc}",parent=self)
             self.status.set(f"Lote terminado: {result.remittances_completed} correctas, {result.remittances_failed} con errores. Excel: {result.aggregate_excel_path or 'no generado'}")
             self._refresh_action_states()
         except PermissionError as exc:
