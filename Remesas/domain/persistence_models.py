@@ -59,7 +59,7 @@ class SplitPreviewLine:
     total_amount: Decimal
     commercial_price: Decimal | None
     final_average_price: Decimal | None
-    cod_art: int | None = None
+    cod_art: str | None = None
     split_rule_id: int | None = None
     split_type: str | None = None
     warnings: tuple[str, ...] = ()

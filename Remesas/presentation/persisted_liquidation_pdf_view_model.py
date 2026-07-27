@@ -5,7 +5,7 @@ from decimal import Decimal
 
 @dataclass(frozen=True)
 class PersistedLiquidationPdfLine:
-    id_liq: str; variedad: str; cod_art: int | None; neto: Decimal; imp_bruto: Decimal
+    id_liq: str; variedad: str; cod_art: str | None; neto: Decimal; imp_bruto: Decimal
     precio_comer: Decimal | None; recoleccion: Decimal; cuota_ha: Decimal; bp_calidad: Decimal
     b_transporte: Decimal; b_global: Decimal; base_i: Decimal; iva: Decimal; retencion: Decimal
     importe_total: Decimal; precio_medio: Decimal | None
