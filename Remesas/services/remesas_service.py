@@ -5,4 +5,6 @@ class RemesasService:
     def __init__(self, repo: RemesasRepository) -> None:
         self.repo = repo
     def list_remesas(self, campana: str, empresa: str, cultivo: str): return self.repo.list_remesas(campana, empresa, cultivo)
+    def list_remittances_for_campaign(self, campana: str, empresa: str | None = None, cultivo: str | None = None):
+        return self.repo.list_remittances_for_campaign(campana, empresa, cultivo)
     def get_remesa(self, remesa_id): return self.repo.get_remesa(remesa_id)

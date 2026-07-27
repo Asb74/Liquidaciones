@@ -52,17 +52,37 @@ from services.liquidation_history_service import LiquidationHistoryService
 from services.liquidation_modification_service import LiquidationModificationService
 from services.liquidation_csv_export_service import LiquidationCsvExportService
 from services.pdf_preview_service import PdfPreviewService
+from services.path_opener import open_path
 from ui.persistence_result_dialog import PersistenceResultDialog
 from ui.liquidation_history_dialog import LiquidationHistoryDialog
 from ui.batch_persistence_preview_dialog import BatchPersistencePreviewDialog
 from ui.liquidation_prefix_master_dialog import LiquidationPrefixMasterDialog
 from ui.liquidation_split_master_dialog import LiquidationSplitMasterDialog
 from ui.excel_consolidation_dialog import ExcelConsolidationDialog
+from ui.multi_remittance_selection_dialog import MultiRemittanceSelectionDialog
 import json
 
 logger = logging.getLogger(__name__)
 from exporters.pdf_exporter import export_member_pdf
 from exporters.premium_pdf_exporter import LOCKED_PDF_MESSAGE, generate_liquidation_pdf, premium_member_filename
+
+
+def offer_open_generated_excel(path, *, ask=messagebox.askyesno, opener=open_path, warn=messagebox.showwarning, parent=None):
+    """Offer to open an already-created workbook; opening is not export success."""
+    if not ask("Excel generado", "El Excel se ha generado correctamente.\n\n¿Desea abrirlo ahora?", parent=parent):
+        return False
+    try:
+        opener(path)
+        return True
+    except Exception as exc:
+        logger.exception("El Excel se guardó pero no pudo abrirse")
+        warn(
+            "Abrir Excel",
+            f"El archivo se ha creado correctamente en:\n\n{path}\n\n"
+            f"No se pudo abrir automáticamente.\n\nDetalle:\n{exc}",
+            parent=parent,
+        )
+        return False
 
 class RemesasFrame(ttk.Frame):
     def __init__(self, master, config_path: str | None = None):
@@ -140,11 +160,31 @@ class RemesasFrame(ttk.Frame):
             if not (ctx.campana and ctx.empresa and ctx.cultivo):
                 messagebox.showwarning("Montar resúmenes Excel", "Seleccione campaña, empresa y cultivo.")
                 return
-            items = self.remesas.list_remesas(ctx.campana, ctx.empresa, ctx.cultivo)
+            items = self.remesas.list_remittances_for_campaign(ctx.campana, ctx.empresa, ctx.cultivo)
             ExcelConsolidationDialog(self.winfo_toplevel(), items, ctx, selection_factory=self._selected_remittance_from_values, on_generate=lambda selected: self._process_selected_remittances(selected, excel_only=True))
         except Exception:
             logger.exception("No se ha podido abrir Montar resúmenes Excel")
             messagebox.showerror("Montar resúmenes Excel", "No se ha podido abrir la herramienta de consolidación.")
+
+    def open_mass_pdf_generation(self):
+        """Open the same repository-backed selector used by massive Excel."""
+        try:
+            if not self.conn:
+                messagebox.showwarning("Generar PDF de varias remesas", "Conecte primero las bases de datos.")
+                return
+            ctx = self.context_panel.context()
+            if not (ctx.campana and ctx.empresa and ctx.cultivo):
+                messagebox.showwarning("Generar PDF de varias remesas", "Seleccione campaña, empresa y cultivo.")
+                return
+            items = self.remesas.list_remittances_for_campaign(ctx.campana, ctx.empresa, ctx.cultivo)
+            MultiRemittanceSelectionDialog(
+                self.winfo_toplevel(), items, ctx,
+                selection_factory=self._selected_remittance_from_values,
+                purpose="pdf", on_generate=self._process_selected_remittances,
+            )
+        except Exception:
+            logger.exception("No se pudo abrir el selector de PDF masivo")
+            messagebox.showerror("Generar PDF de varias remesas", "No se pudo abrir el selector de remesas.")
 
     def open_liquidation_prefix_master(self):
         try:
@@ -465,7 +505,7 @@ class RemesasFrame(ttk.Frame):
         if not (ctx.campana and ctx.empresa and ctx.cultivo):
             messagebox.showwarning("Contexto obligatorio", "Seleccione campaña, empresa y cultivo antes de cargar una remesa."); return
         try:
-            items=self.remesas.list_remesas(ctx.campana, ctx.empresa, ctx.cultivo)
+            items=self.remesas.list_remittances_for_campaign(ctx.campana, ctx.empresa, ctx.cultivo)
             selected=self._select_remesa_dialog(items, ctx)
             if not selected: return
             if isinstance(selected, list):
@@ -496,57 +536,27 @@ class RemesasFrame(ttk.Frame):
                 return parse_user_date(value) if value else None
             except Exception:
                 return None
+        row = values if isinstance(values, dict) else dict(zip(("IdREMESA", "REMESA", "FECHARE", "PERIODO1", "PERIODO2", "CATEGORIA", "TipoLiq"), values))
         return SelectedRemittance(
-            remittance_id=int(values[0]),
-            name=str(values[1] or ""),
-            payment_date=parse_or_none(values[2]),
-            period_from=parse_or_none(values[3]),
-            period_to=parse_or_none(values[4]),
-            category=str(values[5] or ""),
-            liquidation_type=str(values[6] or ""),
-            campaign=str(ctx.campana),
-            company=str(ctx.empresa),
-            crop=str(ctx.cultivo),
+            remittance_id=int(row["IdREMESA"]),
+            name=str(row.get("REMESA") or ""),
+            payment_date=parse_or_none(row.get("FECHARE")),
+            period_from=parse_or_none(row.get("PERIODO1")),
+            period_to=parse_or_none(row.get("PERIODO2")),
+            category=str(row.get("CATEGORIA") or ""),
+            liquidation_type=str(row.get("TipoLiq") or ""),
+            campaign=str(row.get("CAMPAÑA") or ctx.campana),
+            company=str(row.get("EMPRESA") or ctx.empresa),
+            crop=str(row.get("CULTIVO") or ctx.cultivo),
         )
 
     def _select_remesa_dialog(self, items, ctx):
-        win=tk.Toplevel(self); win.title("Seleccionar remesa"); win.transient(self.winfo_toplevel()); win.grab_set(); win.geometry("980x500")
-        ttk.Label(win,text=f"Campaña: {ctx.campana} | Empresa: {ctx.empresa} | Cultivo: {ctx.cultivo}").pack(anchor="w",padx=8,pady=4)
-        query=tk.StringVar(); ttk.Entry(win,textvariable=query).pack(fill="x",padx=8,pady=4)
-        selected_text=tk.StringVar(value="Remesas seleccionadas: 0")
-        ttk.Label(win,textvariable=selected_text).pack(anchor="w",padx=8,pady=(0,4))
-        cols=("IdREMESA","REMESA","FECHARE","PERIODO1","PERIODO2","CATEGORIA","TipoLiq")
-        tree=ttk.Treeview(win,columns=cols,show="headings",selectmode="extended")
-        [tree.heading(c,text=c) for c in cols]; [tree.column(c,width=130,anchor="w") for c in cols]; tree.pack(fill="both",expand=True,padx=8,pady=4)
-        result={"items":None}
-        def update_count(_=None):
-            selected_text.set(f"Remesas seleccionadas: {len(tree.selection())}")
-        def fill():
-            tree.delete(*tree.get_children()); q=query.get().strip().upper()
-            for row in items:
-                hay=" ".join(str(row.get(k) or "") for k in ("IdREMESA","REMESA","CATEGORIA","TipoLiq")).upper()
-                if not q or q in hay: tree.insert("","end",values=[row.get(c) or "" for c in cols])
-            update_count()
-        def select_all():
-            tree.selection_set(tree.get_children()); update_count()
-        def clear_selection():
-            tree.selection_remove(tree.selection()); update_count()
-        def load(_=None):
-            sel=tree.selection()
-            if not sel:
-                messagebox.showwarning("Seleccionar remesa", "Seleccione al menos una remesa."); return
-            remittances=[self._selected_remittance_from_values(tree.item(i,"values"), ctx) for i in sel]
-            lines="\n".join(f"{r.remittance_id} - {r.name}" for r in remittances)
-            if not messagebox.askyesno("Confirmar lote", f"Se van a procesar {len(remittances)} remesas:\n\n{lines}\n\nCada remesa se calculará de forma independiente.\nSe generará un único Excel resumen acumulado.\n\n¿Desea continuar?"):
-                return
-            result["items"]=remittances; win.destroy()
-        query.trace_add("write", lambda *_: fill()); tree.bind("<Double-1>", load); tree.bind("<<TreeviewSelect>>", update_count); win.bind("<Return>", load); win.bind("<Escape>", lambda e: win.destroy())
-        bf=ttk.Frame(win); bf.pack(fill="x",padx=8,pady=6)
-        ttk.Button(bf,text="Seleccionar todas",command=select_all).pack(side="left",padx=4)
-        ttk.Button(bf,text="Limpiar selección",command=clear_selection).pack(side="left",padx=4)
-        ttk.Button(bf,text="Procesar seleccionadas",command=load).pack(side="right",padx=4)
-        ttk.Button(bf,text="Cancelar",command=win.destroy).pack(side="right")
-        fill(); win.wait_window(); return result["items"]
+        win = MultiRemittanceSelectionDialog(
+            self, items, ctx, selection_factory=self._selected_remittance_from_values,
+            purpose="pdf", modal=True,
+        )
+        win.wait_window()
+        return win.result
 
     def _batch_progress_dialog(self, total: int):
         win=tk.Toplevel(self); win.title("Procesando remesas"); win.transient(self.winfo_toplevel()); win.grab_set(); win.geometry("520x230"); win.resizable(False, False)
@@ -575,6 +585,7 @@ class RemesasFrame(ttk.Frame):
         if self.batch_running:
             messagebox.showwarning("Lote en curso", "Ya hay un lote de remesas en ejecución."); return
         self.batch_running=True; self.batch_cancel_requested=False
+        self.configure(cursor="watch")
         destination=None
         if excel_only:
             campaigns={r.campaign for r in remittances}
@@ -582,11 +593,11 @@ class RemesasFrame(ttk.Frame):
             initial=f"Resumen_liquidaciones_{campaign}_{len(remittances)}_remesas.xlsx"
             destination=filedialog.asksaveasfilename(parent=self,title="Guardar Excel conjunto",initialfile=initial,defaultextension=".xlsx",filetypes=(("Libro Excel","*.xlsx"),))
             if not destination:
-                self.batch_running=False; return
+                self.batch_running=False; self.configure(cursor=""); self._refresh_action_states(); return
         progress_win, update_progress = self._batch_progress_dialog(len(remittances))
         try:
             processor=(lambda rem, callback:self.process_single_remittance(rem,callback,generate_individual_files=False)) if excel_only else self.process_single_remittance
-            exporter = export_consolidated_liquidation_summary if excel_only else export_batch_liquidation_summary
+            exporter = export_batch_liquidation_summary
             service=BatchRemittanceService(single_processor=processor, exporter=exporter, should_cancel=lambda: self.batch_cancel_requested)
             result=service.process(remittances, progress_callback=update_progress, aggregate_output_path=Path(destination) if destination else None)
             self.current_batch_result=result
@@ -594,12 +605,10 @@ class RemesasFrame(ttk.Frame):
             self.current_batch_persisted=False; self.current_batch_save_result=None
             logger.info("[BatchPendingPersistence]\nexecution_id=%s\nremittances=%s\nvalid_remittances=%s\npending=true",getattr(self.current_batch_preview,"batch_execution_id",result.started_at.isoformat()),result.remittances_requested,result.remittances_completed)
             msg=(f"Las remesas se han calculado y quedan pendientes de guardar.\n\nRemesas procesadas: {result.remittances_requested}\nRemesas calculadas correctamente: {result.remittances_completed}\nRemesas con error de cálculo: {result.remittances_failed}\nBorradores generados: {result.drafts_generated}\nBorradores con error: {result.draft_errors}\n\nExcel acumulado:\n{result.aggregate_excel_path or 'No generado'}")
+            if progress_win.winfo_exists(): progress_win.destroy()
             messagebox.showinfo("Proceso terminado", msg)
-            if excel_only and result.aggregate_excel_path and messagebox.askyesno("Excel generado","El Excel se ha generado correctamente.\n\n¿Desea abrirlo ahora?",parent=self):
-                try: open_path(result.aggregate_excel_path)
-                except Exception as exc:
-                    logger.exception("El Excel se guardó pero no pudo abrirse")
-                    messagebox.showwarning("Abrir Excel",f"El archivo se ha creado correctamente en:\n{result.aggregate_excel_path}\n\nNo se pudo abrir:\n{exc}",parent=self)
+            if excel_only and result.aggregate_excel_path:
+                offer_open_generated_excel(result.aggregate_excel_path, parent=self)
             self.status.set(f"Lote terminado: {result.remittances_completed} correctas, {result.remittances_failed} con errores. Excel: {result.aggregate_excel_path or 'no generado'}")
             self._refresh_action_states()
         except PermissionError as exc:
@@ -609,7 +618,9 @@ class RemesasFrame(ttk.Frame):
             messagebox.showerror("Procesando remesas", f"No se ha podido procesar el lote:\n{exc}")
         finally:
             self.batch_running=False
+            self.configure(cursor="")
             if progress_win.winfo_exists(): progress_win.destroy()
+            self._refresh_action_states()
 
     def process_single_remittance(self, remittance: SelectedRemittance, progress_callback=None, *, generate_individual_files: bool = True) -> SingleRemittanceBatchResult:
         def emit(phase, message):
