@@ -2,12 +2,13 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from openpyxl import load_workbook
 
 from exporters.batch_liquidation_excel_exporter import export_batch_liquidation_summary
 from exporters.excel_consolidation_exporter import export_consolidated_liquidation_summary
-from services.batch_remittance_service import BatchRemittanceService, FailedRemittanceResult, SelectedRemittance, SingleRemittanceBatchResult
+from services.batch_remittance_service import BatchRemittanceService, FailedRemittanceResult, RemittanceProcessingError, SelectedRemittance, SingleRemittanceBatchResult
 
 
 def remittance(remittance_id=2204, name="BLANCA TEMPRANA sem 1"):
@@ -39,6 +40,45 @@ def test_batch_continues_after_single_remittance_failure(tmp_path):
     assert result.remittances_completed == 2
     assert result.remittances_failed == 1
     assert [r.remittance.remittance_id for r in result.successful_results] == [1, 3]
+
+
+def test_variety_resolution_failure_is_structured_and_does_not_stop_batch(tmp_path):
+    rems = [remittance(1), remittance(2), remittance(3)]
+    def processor(r, cb):
+        if r.remittance_id == 2:
+            raise RemittanceProcessingError('No se pudo resolver "DESCONOCIDA"', phase="VARIETY_RESOLUTION", error_type="UNRESOLVED_VARIETY_SELECTION")
+        return batch_result(r)
+    progress = []
+    result = BatchRemittanceService(single_processor=processor, output_base=tmp_path, exporter=lambda *args, **kwargs: args[2], log_dir=tmp_path / "logs").process(rems, progress_callback=progress.append)
+    assert [item.remittance.remittance_id for item in result.successful_results] == [1, 3]
+    assert result.failed_results[0].phase == "VARIETY_RESOLUTION"
+    assert result.failed_results[0].error_type == "UNRESOLVED_VARIETY_SELECTION"
+    assert any(item.phase == "CONFIGURATION_ERROR" for item in progress)
+    assert result.aggregate_excel_path is not None
+
+
+def test_batch_variety_restore_never_opens_a_messagebox(monkeypatch):
+    from domain.varieties import STATUS_NOT_FOUND, VarietySelectionResolution
+    from ui import remesas_frame
+
+    warning = Mock(side_effect=AssertionError("batch must not open a modal dialog"))
+    monkeypatch.setattr(remesas_frame.messagebox, "showwarning", warning)
+    resolution = VarietySelectionResolution("DESCONOCIDA", "DESCONOCIDA", False, None, None, (), STATUS_NOT_FOUND, ("No encontrada",))
+    fake = SimpleNamespace(
+        variety_service=SimpleNamespace(resolve_many=lambda crop, values: ((resolution,), ())),
+        context_panel=SimpleNamespace(context=lambda: SimpleNamespace(cultivo="CITRICOS")),
+        selected=SimpleNamespace(insert=lambda *args: None),
+        _clear_selected_varieties=lambda **kwargs: None,
+        _refresh_resolved_selection_label=lambda: None,
+    )
+    rem = SimpleNamespace(values={"VARIEDAD": "DESCONOCIDA"})
+    try:
+        remesas_frame.RemesasFrame._restore_remesa_varieties(fake, rem, interactive=False, crop="CITRICOS")
+    except RemittanceProcessingError as exc:
+        assert exc.error_type == "UNRESOLVED_VARIETY_SELECTION"
+    else:
+        raise AssertionError("the unresolved selection must fail its remittance")
+    warning.assert_not_called()
 
 
 def test_batch_cancellation_stops_before_next_and_exports_partial(tmp_path):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -18,7 +19,9 @@ class VarietySelectionKind(str, Enum):
 
 
 def normalize_variety_token(value: str) -> str:
-    return re.sub(r"\s+", " ", "" if value is None else str(value).strip()).upper()
+    text = unicodedata.normalize("NFKD", "" if value is None else str(value).replace("\xa0", " "))
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", text.strip()).upper()
 
 
 @dataclass(frozen=True)
@@ -52,16 +55,12 @@ class VarietySelectionResolver:
         candidates = self.candidate_master_crops(source_crop)
         source = str(value or "").strip()
         normalized = normalize_variety_token(source)
-        exact_matches = self.repository.find_exact_varieties(candidates, normalized)
-        group_matches = () if exact_matches else self.repository.find_groups_by_label(candidates, normalized)
+        # Group labels are checked first.  Historic remittances only persisted
+        # their display text and a label can also exist as a variety name.
+        group_matches = self.repository.find_groups_by_label(candidates, normalized)
+        exact_matches = () if group_matches else self.repository.find_exact_varieties(candidates, normalized)
 
-        if len(exact_matches) == 1:
-            exact = exact_matches[0]
-            warnings = ("Ambiguous value resolved as exact variety.",) if self.repository.find_groups_by_label(candidates, normalized) else ()
-            result = ResolvedVarietySelection(source, normalized, VarietySelectionKind.VARIETY, (exact.variety,), label=exact.variety, warnings=warnings, source_crop=source_crop, resolved_master_crop=exact.crop, candidate_master_crops=candidates)
-        elif len(exact_matches) > 1:
-            result = self._ambiguous(source_crop, source, normalized, candidates, tuple(match.crop for match in exact_matches))
-        elif len(group_matches) == 1:
+        if len(group_matches) == 1:
             group = group_matches[0]
             varieties = self.repository.list_group_varieties(group.crop, group.group, group.subgroup)
             if varieties:
@@ -71,6 +70,11 @@ class VarietySelectionResolver:
                 result = ResolvedVarietySelection(source, normalized, VarietySelectionKind.NOT_FOUND, (), group.group, group.subgroup, group.label, (warning,), source_crop, group.crop, candidates)
         elif len(group_matches) > 1:
             result = self._ambiguous(source_crop, source, normalized, candidates, tuple(group.crop for group in group_matches))
+        elif len(exact_matches) == 1:
+            exact = exact_matches[0]
+            result = ResolvedVarietySelection(source, normalized, VarietySelectionKind.VARIETY, (exact.variety,), label=exact.variety, source_crop=source_crop, resolved_master_crop=exact.crop, candidate_master_crops=candidates)
+        elif len(exact_matches) > 1:
+            result = self._ambiguous(source_crop, source, normalized, candidates, tuple(match.crop for match in exact_matches))
         else:
             warning = f"No se pudo resolver la variedad o grupo “{source}”."
             result = ResolvedVarietySelection(source, normalized, VarietySelectionKind.NOT_FOUND, (), warnings=(warning,), source_crop=source_crop, candidate_master_crops=candidates)

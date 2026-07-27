@@ -31,6 +31,7 @@ def resolver(conn, tmp_path):
 
 def test_normalize_variety_token_collapses_case_and_spaces():
     assert normalize_variety_token(' lane  late ') == 'LANE LATE'
+    assert normalize_variety_token(' blánca\xa0 temprána ') == 'BLANCA TEMPRANA'
 
 
 def test_lane_late_directo_resolves_as_exact_variety_not_group(tmp_path):
@@ -46,9 +47,8 @@ def test_lane_late_directo_resolves_as_exact_variety_not_group(tmp_path):
 def test_group_resolves_all_group_varieties(tmp_path):
     conn = make_conn()
     res = resolver(conn, tmp_path).resolve('CITRICOS', 'BLANCA TEMPRANA')
-    assert res.kind == VarietySelectionKind.VARIETY  # exact variety priority on ambiguity
-    assert res.selected_varieties == ('BLANCA TEMPRANA',)
-    assert 'Ambiguous value resolved as exact variety.' in res.warnings
+    assert res.kind == VarietySelectionKind.GROUP
+    assert res.selected_varieties == ('BLANCA TEMPRANA', 'SALUSTIANA')
 
 
 def test_group_when_no_exact_variety(tmp_path):

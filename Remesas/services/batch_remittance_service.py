@@ -57,6 +57,15 @@ class FailedRemittanceResult:
     error_message: str
 
 
+class RemittanceProcessingError(ValueError):
+    """A controlled, reportable configuration error for one remittance."""
+
+    def __init__(self, message: str, *, phase: str, error_type: str) -> None:
+        super().__init__(message)
+        self.phase = phase
+        self.error_type = error_type
+
+
 @dataclass(frozen=True)
 class BatchRemittanceResult:
     remittances_requested: int
@@ -151,10 +160,12 @@ class BatchRemittanceService:
                     log.write(f"index={index}\ntotal={total}\nid={remittance.remittance_id}\nname={remittance.name}\nstatus=SUCCESS\ndeliveries={result.delivery_count}\nmembers={result.member_count}\noutput_dir={result.output_directory}\ngenerated_files={[str(p) for p in result.generated_files]}\nduration_seconds={duration:.2f}\n")
                 except Exception as exc:
                     logger.exception("Error procesando remesa %s", remittance.remittance_id)
-                    failed.append(FailedRemittanceResult(remittance, "ERROR", type(exc).__name__, str(exc)))
-                    self._emit(progress_callback, total, index, remittance, "ERROR", str(exc))
+                    phase = getattr(exc, "phase", "ERROR")
+                    error_type = getattr(exc, "error_type", type(exc).__name__)
+                    failed.append(FailedRemittanceResult(remittance, phase, error_type, str(exc)))
+                    self._emit(progress_callback, total, index, remittance, "CONFIGURATION_ERROR" if phase == "VARIETY_RESOLUTION" else "ERROR", str(exc))
                     log.write("[BatchRemittance]\n")
-                    log.write(f"index={index}\ntotal={total}\nid={remittance.remittance_id}\nname={remittance.name}\nstatus=ERROR\nerror_type={type(exc).__name__}\nerror_message={exc}\n")
+                    log.write(f"index={index}\ntotal={total}\nid={remittance.remittance_id}\nname={remittance.name}\nstatus=ERROR\nphase={phase}\nerror_type={error_type}\nerror_message={exc}\n")
             finished_at = datetime.now()
             if successful and self.exporter:
                 first = remittances[0]
