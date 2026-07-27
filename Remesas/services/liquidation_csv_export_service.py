@@ -22,6 +22,10 @@ DECIMAL_FIELDS = frozenset(("neto", "imp_bruto", "precio_comer", "recoleccion", 
 TEXT_FIELDS = frozenset(set(CSV_FIELDS) - DECIMAL_FIELDS - {"id", "id_socio", "id_concepto_liq", "fecha"})
 
 
+class CsvExportCancelled(Exception):
+    """Raised when a massive accounting export is cancelled by its caller."""
+
+
 @dataclass(frozen=True)
 class CsvExportResult:
     success: bool
@@ -111,19 +115,34 @@ class LiquidationCsvExportService:
         rows=self.repository.list_csv_rows_for_batch(batch_id, member_id)
         return self._export(rows, batch, "MEMBER" if member_id is not None else "FULL_BATCH", batch_id=batch_id, member_id=member_id, output_directory=output_directory, user=user, force=force)
 
-    def export_batches(self, batch_ids, output_directory: Path | None = None, user: str | None = None, force: bool = False) -> CsvExportResult:
+    def export_batches(self, batch_ids, output_directory: Path | None = None, user: str | None = None, force: bool = False,
+                       progress_callback=None, should_cancel=None) -> CsvExportResult:
         """Build one CSV directly from SQLite rows for all selected batches."""
         batch_ids = tuple(dict.fromkeys(str(batch_id) for batch_id in batch_ids))
+        if should_cancel and should_cancel():
+            raise CsvExportCancelled()
+        if progress_callback:
+            progress_callback("validando", 0, len(batch_ids))
         if len(batch_ids) == 1:
-            return self.export_batch(batch_ids[0], output_directory=output_directory, user=user, force=force)
+            result = self.export_batch(batch_ids[0], output_directory=output_directory, user=user, force=force)
+            if progress_callback:
+                progress_callback("generando", 1, 1)
+            return result
         batches = tuple(self.repository.get_batch(batch_id) for batch_id in batch_ids)
         if not batches or any(batch is None for batch in batches):
             return self._failure("MASS", "Uno de los lotes seleccionados no existe.", user=user)
         if any(batch["status"] not in ("ACTIVE", "PARTIAL") for batch in batches):
             return self._failure("MASS", "El estado de uno de los lotes no permite exportarlo.", user=user)
+        if should_cancel and should_cancel():
+            raise CsvExportCancelled()
+        if progress_callback:
+            progress_callback("validando", len(batch_ids), len(batch_ids))
         rows = self.repository.export_batches(batch_ids)
+        if should_cancel and should_cancel():
+            raise CsvExportCancelled()
         return self._export(rows, batches[0], "MASS", batch_ids=batch_ids,
-                            output_directory=output_directory, user=user, force=force)
+                            output_directory=output_directory, user=user, force=force,
+                            progress_callback=progress_callback, should_cancel=should_cancel)
 
     def export_modification(self, modification_group_id: str, output_directory: Path | None = None, user: str | None = None, force: bool = False) -> CsvExportResult:
         rows=self.repository.list_csv_rows_for_modification(modification_group_id)
@@ -141,16 +160,23 @@ class LiquidationCsvExportService:
         if old["modification_group_id"]: return self.export_modification(old["modification_group_id"], Path(old["file_path"]).parent, user, force=True)
         return self.export_batch(old["batch_id"], Path(old["file_path"]).parent, old["member_id"], user, force=True)
 
-    def _export(self, rows, batch, export_type, *, batch_id=None, batch_ids=(), modification_group_id=None, member_id=None, output_directory=None, user=None, force=False):
+    def _export(self, rows, batch, export_type, *, batch_id=None, batch_ids=(), modification_group_id=None, member_id=None, output_directory=None, user=None, force=False,
+                progress_callback=None, should_cancel=None):
         if not rows: return self._failure(export_type, "El lote no contiene liquidaciones exportables.", batch_id=batch_id, modification_group_id=modification_group_id, user=user)
         if self.legacy_repository is None: return self._failure(export_type, "No se puede consultar FacSoc en la base legacy.", batch_id=batch_id, modification_group_id=modification_group_id, user=user)
         system_rows=[row for row in rows if is_excluded_member(row["id_socio"]) or ("recipient_member_id" in row.keys() and is_excluded_member(row["recipient_member_id"]))]
         rows=[row for row in rows if row not in system_rows]
         included=[]; excluded=len(system_rows)
         try:
-            for row in rows:
+            for index, row in enumerate(rows, 1):
+                if should_cancel and should_cancel():
+                    raise CsvExportCancelled()
                 if self.legacy_repository.member_is_self_billed(int(row["id_socio"])): excluded += 1
                 else: included.append(row)
+                if progress_callback:
+                    progress_callback("validando", index, len(rows))
+        except CsvExportCancelled:
+            raise
         except Exception as exc: return self._failure(export_type, f"No se puede consultar FacSoc: {exc}", batch_id=batch_id, modification_group_id=modification_group_id, user=user)
         if not included:
             message = "No existen liquidaciones exportables. El socio 0 es un registro técnico excluido." if system_rows else "No existen liquidaciones exportables. Todos los socios seleccionados están excluidos por FacSoc = SI."
@@ -163,6 +189,10 @@ class LiquidationCsvExportService:
             return CsvExportResult(False, duplicate["id"], Path(duplicate["file_path"]), Path(duplicate["info_file_path"]) if duplicate["info_file_path"] else None, export_type, already_existed=True, error_message="Esta liquidación ya fue exportada a contabilidad.")
         directory = Path(output_directory) if output_directory else self._output_directory(batch, export_type)
         try:
+            if should_cancel and should_cancel():
+                raise CsvExportCancelled()
+            if progress_callback:
+                progress_callback("generando", 0, len(included))
             directory.mkdir(parents=True, exist_ok=True)
             if not os.access(directory, os.W_OK): raise OSError("La carpeta no permite escritura")
             # Massive filenames use the required second precision.
@@ -185,10 +215,15 @@ class LiquidationCsvExportService:
             file_hash=hashlib.sha256(csv_path.read_bytes()).hexdigest()
             net=sum((Decimal(str(r["neto"])) for r in included), Decimal("0")); amount=sum((Decimal(str(r["importe_total"])) for r in included), Decimal("0"))
             self._atomic_write(info_path, self._info_content(batch, included, export_type, batch_id, batch_ids, modification_group_id, excluded, csv_path, file_hash, net, amount, user))
+            if should_cancel and should_cancel():
+                csv_path.unlink(missing_ok=True); info_path.unlink(missing_ok=True)
+                raise CsvExportCancelled()
             export_id=self.repository.record_csv_export(batch_id=batch_id, modification_group_id=modification_group_id, remittance_id=batch["remesa_id"], member_id=member_id, export_type=export_type, batch_ids_json=json.dumps(batch_ids) if export_type == "MASS" else None, file_path=str(csv_path), info_file_path=str(info_path), status="GENERATED", line_count=len(included), excluded_line_count=excluded, net_total=str(net), amount_total=str(amount), file_hash=file_hash, source_fingerprint=fingerprint, generated_at=datetime.now().isoformat(), created_by=user)
             self.repository.audit(batch_id or "", "CSV_MASS_EXPORT" if export_type == "MASS" else "CSV_BATCH_EXPORT", json.dumps({"batch_ids":batch_ids,"modification_group_id":modification_group_id,"export_type":export_type,"batch_count":len(batch_ids) or 1,"rows_exported":len(included),"rows_excluded":excluded,"file_path":str(csv_path),"hash":file_hash}), user)
             logger.info("[AccountingCsvExport] batch_id=%s modification_group_id=%s export_type=%s selected_rows=%d exported_rows=%d excluded_rows=%d net_total=%s amount_total=%s path=%s hash=%s status=GENERATED", batch_id, modification_group_id, export_type, len(rows), len(included), excluded, net, amount, csv_path, file_hash)
             return CsvExportResult(True, export_id, csv_path, info_path, export_type, len(included), excluded, net, amount, file_hash)
+        except CsvExportCancelled:
+            raise
         except Exception as exc:
             return self._failure(export_type, str(exc), batch_id=batch_id, modification_group_id=modification_group_id, user=user, excluded=excluded)
 

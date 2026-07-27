@@ -47,6 +47,19 @@ def test_unique_remittances_reports_documents_without_valid_remittance():
     assert missing == [no_id, missing_in_repository]
 
 
+def test_unique_batch_ids_preserve_order_and_report_missing():
+    pytest.importorskip("pypdf")
+    from types import SimpleNamespace
+    from ui.pdf_merge_tool_dialog import collect_unique_batch_ids
+
+    documents = [SimpleNamespace(batch_id="batch-2"), SimpleNamespace(batch_id="batch-1"),
+                 SimpleNamespace(batch_id="batch-2"), SimpleNamespace(batch_id=None)]
+    batch_ids, missing = collect_unique_batch_ids(documents)
+
+    assert batch_ids == ["batch-2", "batch-1"]
+    assert missing == [documents[-1]]
+
+
 def test_draft_filter_options_are_dependent_and_real(tmp_path: Path):
     db=PersistenceDatabase(str(tmp_path/"liquidaciones.sqlite")); db.initialize()
     repository=LiquidationRepository(db)

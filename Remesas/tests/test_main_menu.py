@@ -22,7 +22,7 @@ class MainMenuTests(unittest.TestCase):
             self.assertEqual(masters.entrycget(0, "label"), "Cuota por hectárea")
             tools = menu.nametowidget(menu.entrycget(2, "menu"))
             tool_labels = [tools.entrycget(i, "label") for i in range(tools.index("end") + 1)]
-            self.assertEqual(tool_labels, ["Informe de cuota por hectárea", "Unificar PDFs para impresión"])
+            self.assertEqual(tool_labels, ["Informe de cuota por hectárea", "Generación masiva de documentos"])
         finally:
             root.destroy()
 
