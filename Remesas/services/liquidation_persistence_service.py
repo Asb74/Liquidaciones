@@ -8,11 +8,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from data.legacy_persistence_repository import LegacyPersistenceRepository
+from data.variety_repository import VarietyRepository
 from data.persistence.database import PersistenceDatabase
 from domain.persistence_models import (BatchPersistenceSaveResult, PendingBatchPersistence,
     PendingRemittancePersistence, PersistedLiquidation, PersistenceBatch,
     PersistencePreview, RemittancePersistenceSaveResult)
 from services.liquidation_split_service import LiquidationSplitService
+from services.variety_selection_resolver import VarietySelectionKind, VarietySelectionResolver
 from domain.member_rules import (SYSTEM_MEMBER_EXCLUDED_MESSAGE, is_excluded_member,
                                  log_system_member_excluded, configure_excluded_members,
                                  excluded_member_service)
@@ -29,7 +31,29 @@ def _d(value): return format(Decimal(value), "f")
 class LiquidationPersistenceService:
     def __init__(self, database: PersistenceDatabase, legacy_conn, *, crop_aliases: dict[str,str] | None=None) -> None:
         self.database=database; self.database.initialize(); self.legacy=LegacyPersistenceRepository(legacy_conn); self.legacy_conn=legacy_conn; self.aliases=crop_aliases or {}
+        self.variety_resolver = VarietySelectionResolver(VarietyRepository(legacy_conn))
         configure_excluded_members(connection=legacy_conn)
+
+    def _article_code(self, source_crop: str, variety: str) -> str | None:
+        """Resolve ARTICULO against the master crop selected for this variety.
+
+        Output crops such as DIRECTO can contain varieties from more than one
+        master crop.  A crop-wide alias is therefore insufficient: the exact
+        variety resolution determines which MVariedad.CULTIVO must be queried.
+        """
+        resolution = self.variety_resolver.resolve(source_crop, variety)
+        if resolution.kind in {VarietySelectionKind.VARIETY, VarietySelectionKind.GROUP} and resolution.resolved_master_crop:
+            return self.legacy.article_code(resolution.resolved_master_crop, variety)
+        if resolution.kind == VarietySelectionKind.AMBIGUOUS:
+            logger.warning(
+                "[MVariedadArticulo]\ncrop=%s\nvariety=%s\narticle=\nstatus=ambiguous",
+                source_crop,
+                variety,
+            )
+            return None
+        # Preserve compatibility for installations with additional aliases not
+        # yet represented in the shared crop-resolution configuration.
+        return self.legacy.article_code(source_crop, variety, self.aliases)
 
     def prepare_preview(self, result) -> PersistencePreview:
         if result is None or not result.member_results: raise ValueError("El resultado de liquidación está vacío")
@@ -47,7 +71,7 @@ class LiquidationPersistenceService:
                                            count=len(excluded), net_kg=sum((Decimal(x.net_kg) for x in excluded), Decimal("0")), remesa_id=remesa_id)
             for member in members:
                 if Decimal(member.net_kg)<0: raise ValueError(f"Neto negativo para socio {member.member_id}")
-                cod=self.legacy.article_code(str(h.cultivo),member.variety,self.aliases)
+                cod=self._article_code(str(h.cultivo),member.variety)
                 if cod is None: raise ValueError(f"No se encontró MVariedad.ARTICULO para {member.variety}")
                 lines.extend(splitter.split(member,h,cod_art=cod))
         if not lines:
