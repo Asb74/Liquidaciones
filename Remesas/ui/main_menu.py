@@ -19,8 +19,6 @@ class MainMenuHandlers:
     open_liquidation_history: Callable[[], None] = lambda: None
     open_pdf_merge_tool: Callable[[], None] = lambda: None
     open_hectare_fee_report: Callable[[], None] = lambda: None
-    open_excel_consolidation: Callable[[], None] = lambda: None
-    open_mass_pdf_generation: Callable[[], None] = lambda: None
 
 
 def build_main_menu(root: tk.Misc, handlers: MainMenuHandlers) -> tk.Menu:
@@ -45,8 +43,6 @@ def build_main_menu(root: tk.Misc, handlers: MainMenuHandlers) -> tk.Menu:
     tools_menu = tk.Menu(menu_bar, tearoff=False)
     tools_menu.add_command(label="Informe de cuota por hectárea", command=handlers.open_hectare_fee_report)
     tools_menu.add_command(label="Unificar PDFs para impresión", command=handlers.open_pdf_merge_tool)
-    tools_menu.add_command(label="Generar PDF de varias remesas", command=handlers.open_mass_pdf_generation)
-    tools_menu.add_command(label="Generar resumen Excel de varias remesas", command=handlers.open_excel_consolidation)
     menu_bar.add_cascade(label="Herramientas", menu=tools_menu)
 
     help_menu = tk.Menu(menu_bar, tearoff=False)

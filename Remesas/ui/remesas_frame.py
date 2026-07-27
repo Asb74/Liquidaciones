@@ -58,7 +58,6 @@ from ui.liquidation_history_dialog import LiquidationHistoryDialog
 from ui.batch_persistence_preview_dialog import BatchPersistencePreviewDialog
 from ui.liquidation_prefix_master_dialog import LiquidationPrefixMasterDialog
 from ui.liquidation_split_master_dialog import LiquidationSplitMasterDialog
-from ui.excel_consolidation_dialog import ExcelConsolidationDialog
 from ui.multi_remittance_selection_dialog import MultiRemittanceSelectionDialog
 import json
 
@@ -69,7 +68,7 @@ from exporters.premium_pdf_exporter import LOCKED_PDF_MESSAGE, generate_liquidat
 
 def offer_open_generated_excel(path, *, ask=messagebox.askyesno, opener=open_path, warn=messagebox.showwarning, parent=None):
     """Offer to open an already-created workbook; opening is not export success."""
-    if not ask("Excel generado", "El Excel se ha generado correctamente.\n\n¿Desea abrirlo ahora?", parent=parent):
+    if not ask("Excel generado", f"El archivo se ha creado correctamente en:\n{path}\n\n¿Desea abrirlo ahora?", parent=parent):
         return False
     try:
         opener(path)
@@ -150,41 +149,6 @@ class RemesasFrame(ttk.Frame):
             messagebox.showwarning("Historial","La persistencia local no está habilitada.")
             return
         LiquidationHistoryDialog(self.winfo_toplevel(),self.history_service)
-
-    def open_excel_consolidation(self):
-        try:
-            if not self.conn:
-                messagebox.showwarning("Montar resúmenes Excel", "Conecte primero las bases de datos.")
-                return
-            ctx = self.context_panel.context()
-            if not (ctx.campana and ctx.empresa and ctx.cultivo):
-                messagebox.showwarning("Montar resúmenes Excel", "Seleccione campaña, empresa y cultivo.")
-                return
-            items = self.remesas.list_remittances_for_campaign(ctx.campana, ctx.empresa, ctx.cultivo)
-            ExcelConsolidationDialog(self.winfo_toplevel(), items, ctx, selection_factory=self._selected_remittance_from_values, on_generate=lambda selected: self._process_selected_remittances(selected, excel_only=True))
-        except Exception:
-            logger.exception("No se ha podido abrir Montar resúmenes Excel")
-            messagebox.showerror("Montar resúmenes Excel", "No se ha podido abrir la herramienta de consolidación.")
-
-    def open_mass_pdf_generation(self):
-        """Open the same repository-backed selector used by massive Excel."""
-        try:
-            if not self.conn:
-                messagebox.showwarning("Generar PDF de varias remesas", "Conecte primero las bases de datos.")
-                return
-            ctx = self.context_panel.context()
-            if not (ctx.campana and ctx.empresa and ctx.cultivo):
-                messagebox.showwarning("Generar PDF de varias remesas", "Seleccione campaña, empresa y cultivo.")
-                return
-            items = self.remesas.list_remittances_for_campaign(ctx.campana, ctx.empresa, ctx.cultivo)
-            MultiRemittanceSelectionDialog(
-                self.winfo_toplevel(), items, ctx,
-                selection_factory=self._selected_remittance_from_values,
-                purpose="pdf", on_generate=self._process_selected_remittances,
-            )
-        except Exception:
-            logger.exception("No se pudo abrir el selector de PDF masivo")
-            messagebox.showerror("Generar PDF de varias remesas", "No se pudo abrir el selector de remesas.")
 
     def open_liquidation_prefix_master(self):
         try:
@@ -549,6 +513,13 @@ class RemesasFrame(ttk.Frame):
             company=str(row.get("EMPRESA") or ctx.empresa),
             crop=str(row.get("CULTIVO") or ctx.cultivo),
         )
+
+    def resolve_document_remittance(self, document) -> SelectedRemittance:
+        """Load the complete remittance represented by a persisted document."""
+        if not self.conn:
+            raise ValueError("Conecte primero las bases de datos.")
+        remittance=self.remesas.get_remesa(document.remittance_id)
+        return self._selected_remittance_from_values(remittance.values, self.context_panel.context())
 
     def _select_remesa_dialog(self, items, ctx):
         win = MultiRemittanceSelectionDialog(
