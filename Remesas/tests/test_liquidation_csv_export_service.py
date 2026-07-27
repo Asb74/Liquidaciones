@@ -11,11 +11,11 @@ class Legacy:
     def member_is_self_billed(self, member_id): return member_id in self.excluded
 
 
-def _save(db, *, batch_id="batch-1", member=42, operation="ORIGINAL", group=None, net="31577.1200", total="406.4344"):
+def _save(db, *, batch_id="batch-1", member=42, operation="ORIGINAL", group=None, net="31577.1200", total="406.4344", cod_art="3983"):
     db.initialize()
     with db.connect() as c:
         c.execute("INSERT OR IGNORE INTO liquidation_batches(batch_id,remesa_id,remesa_name,campaign,company,crop,calculation_fingerprint,original_line_count,final_line_count,status,created_at,operation_type,modification_group_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (batch_id,7,"BLANCA TEMPRANA", "2025", "ACME", "CITRICOS",batch_id,1,1,"ACTIVE","2025-01-01T00:00:00",operation,group))
-        c.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,source_member_id,recipient_member_id,source_liquidation_key,batch_id,status,created_at,operation_type,modification_group_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (f"CI{batch_id}{member}","2025-09-11","CITRICOS","2025","ACME",member,"CRUZ RUIZ,JESÚS",3983,"BLANCA",net,"12.0000","0.2679115","-2500.00","0","0","0","0","12","0.1","2","-1",total,8,"SEMANA PENULTIMA","TIPO",member,member,"key"+batch_id,batch_id,"ACTIVE","2025-01-01",operation,group))
+        c.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,source_member_id,recipient_member_id,source_liquidation_key,batch_id,status,created_at,operation_type,modification_group_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (f"CI{batch_id}{member}","2025-09-11","CITRICOS","2025","ACME",member,"CRUZ RUIZ,JESÚS",cod_art,"BLANCA",net,"12.0000","0.2679115","-2500.00","0","0","0","0","12","0.1","2","-1",total,8,"SEMANA PENULTIMA","TIPO",member,member,"key"+batch_id,batch_id,"ACTIVE","2025-01-01",operation,group))
 
 
 def test_full_export_historical_format_and_duplicate(tmp_path):
@@ -86,3 +86,18 @@ def test_individual_export_is_saved_with_remittance_documents(tmp_path):
     result=LiquidationCsvExportService(LiquidationRepository(db), Legacy(), tmp_path).export_batch("batch-1")
     assert result.success
     assert result.csv_path.parent == tmp_path / "2025" / "CITRICOS" / "BLANCA TEMPRANA" / "Exportaciones"
+
+
+def test_alphanumeric_and_leading_zero_article_codes_survive_storage_and_csv(tmp_path):
+    db=PersistenceDatabase(str(tmp_path/"db.sqlite"))
+    _save(db, batch_id="tango", cod_art="B391")
+    _save(db, batch_id="zeros", cod_art="0012")
+    service=LiquidationCsvExportService(LiquidationRepository(db), Legacy(), tmp_path)
+
+    tango=service.export_batch("tango", output_directory=tmp_path/"tango-export")
+    zeros=service.export_batch("zeros", output_directory=tmp_path/"zeros-export")
+
+    assert tango.success and ";B391;" in tango.csv_path.read_text(encoding="cp1252")
+    assert zeros.success and ";0012;" in zeros.csv_path.read_text(encoding="cp1252")
+    with db.connect() as connection:
+        assert connection.execute("SELECT cod_art FROM liquidaciones WHERE batch_id='zeros'").fetchone()[0] == "0012"

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 CSV_HEADERS = ("Id", "IdLiq", "Fecha", "Cultivo", "Campaña", "Empresa", "IdSocio", "Socio", "CodArt", "Variedad", "Neto", "ImpBruto", "PrecioComer", "Recoleccion", "CuotaHa", "BPCalidad", "BTransporte", "BGlobal", "BaseI", "PrecioMedio", "IVA", "Retencion", "ImporteTotal", "IdConceptoLiq", "ConceptoLiq", "Tipo")
 CSV_FIELDS = ("id", "id_liq", "fecha", "cultivo", "campana", "empresa", "id_socio", "socio", "cod_art", "variedad", "neto", "imp_bruto", "precio_comer", "recoleccion", "cuota_ha", "bp_calidad", "b_transporte", "b_global", "base_i", "precio_medio", "iva", "retencion", "importe_total", "id_concepto_liq", "concepto_liq", "tipo")
 DECIMAL_FIELDS = frozenset(("neto", "imp_bruto", "precio_comer", "recoleccion", "cuota_ha", "bp_calidad", "b_transporte", "b_global", "base_i", "precio_medio", "iva", "retencion", "importe_total"))
-TEXT_FIELDS = frozenset(set(CSV_FIELDS) - DECIMAL_FIELDS - {"id", "id_socio", "cod_art", "id_concepto_liq", "fecha"})
+TEXT_FIELDS = frozenset(set(CSV_FIELDS) - DECIMAL_FIELDS - {"id", "id_socio", "id_concepto_liq", "fecha"})
 
 
 @dataclass(frozen=True)

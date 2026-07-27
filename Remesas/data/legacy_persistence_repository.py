@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class LegacyPersistenceRepository:
@@ -43,16 +47,24 @@ class LegacyPersistenceRepository:
 
     def article_code(self, crop: str, variety: str, aliases: dict[str,str] | None=None) -> str | None:
         normalized_crop=crop.strip().upper()
-        compatible=(aliases or {}).get(normalized_crop,normalized_crop).strip().upper()
+        normalized_aliases = {str(key).strip().upper(): str(value).strip().upper()
+                              for key, value in (aliases or {}).items()}
+        compatible=normalized_aliases.get(normalized_crop,normalized_crop)
+        normalized_variety=variety.strip().upper()
         sql=f"SELECT ARTICULO FROM {self.schema}.MVariedad WHERE UPPER(TRIM(CULTIVO))=? AND UPPER(TRIM(Variedad))=?"
-        try: row=self.conn.execute(sql,(compatible,variety.strip().upper())).fetchone()
-        except sqlite3.OperationalError: row=self.conn.execute(sql.replace(f"{self.schema}.",""),(compatible,variety.strip().upper())).fetchone()
+        try: row=self.conn.execute(sql,(compatible,normalized_variety)).fetchone()
+        except sqlite3.OperationalError: row=self.conn.execute(sql.replace(f"{self.schema}.",""),(compatible,normalized_variety)).fetchone()
         if not row or row[0] is None:
+            logger.warning("[MVariedadArticulo]\ncrop=%s\nvariety=%s\narticle=\nstatus=not_found", compatible, normalized_variety)
             return None
         # ARTICULO is a business identifier, not a quantity: legacy data contains
         # both numeric codes (for example 3984) and alphanumeric ones (B391).
         code = str(row[0]).strip()
-        return code or None
+        if not code:
+            logger.warning("[MVariedadArticulo]\ncrop=%s\nvariety=%s\narticle=\nsource=MVariedades\nstatus=not_found", compatible, normalized_variety)
+            return None
+        logger.info("[MVariedadArticulo]\ncrop=%s\nvariety=%s\narticle=%s\nsource=MVariedades\nstatus=resolved", compatible, normalized_variety, code)
+        return code
 
     def historical_split_rows(self):
         sql=f"SELECT * FROM {self.schema}.DDividirLiq"
