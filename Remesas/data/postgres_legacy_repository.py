@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-import sqlite3
+from data.repository import IDataRepository
 import logging
 import threading
 from contextlib import contextmanager
@@ -11,27 +11,27 @@ from collections.abc import Callable
 logger = logging.getLogger(__name__)
 
 
-class LegacyPersistenceRepository:
-    """Consultas exclusivamente SELECT sobre las copias de Perceco."""
-    def __init__(self, conn: sqlite3.Connection | Callable[[], sqlite3.Connection], schema: str = "eepp") -> None:
+class PostgresLegacyRepository:
+    """Consultas exclusivamente SELECT sobre las esquemas legacy de PostgreSQL."""
+    def __init__(self, conn: IDataRepository | Callable[[], IDataRepository], schema: str = "eepp") -> None:
         self._connection_source, self.schema = conn, schema
 
     @contextmanager
     def _connect(self):
         """Use a fresh connection for factory-backed (cross-thread) repositories."""
-        if not isinstance(self._connection_source, sqlite3.Connection):
+        if not isinstance(self._connection_source, IDataRepository):
             connection = self._connection_source()
             database = "legacy"
             try:
                 database = connection.execute("PRAGMA database_list").fetchone()[2] or database
-            except sqlite3.Error:
+            except Exception:
                 pass
-            logger.info("[SQLiteConnection] database=%s thread_id=%s action=OPENED", database, threading.get_ident())
+            logger.info("[PostgreSQLConnection] database=%s thread_id=%s action=OPENED", database, threading.get_ident())
             try:
                 yield connection
             finally:
                 connection.close()
-                logger.info("[SQLiteConnection] database=%s thread_id=%s action=CLOSED", database, threading.get_ident())
+                logger.info("[PostgreSQLConnection] database=%s thread_id=%s action=CLOSED", database, threading.get_ident())
         else:
             # Backwards compatibility for short-lived, same-thread persistence jobs.
             yield self._connection_source
@@ -41,7 +41,7 @@ class LegacyPersistenceRepository:
         sql=f"SELECT IdLiq FROM {self.schema}.DLiquidaciones WHERE IdLiq LIKE ?"
         with self._connect() as conn:
             try: rows=conn.execute(sql,(pattern_prefix+"%",)).fetchall()
-            except sqlite3.OperationalError: rows=conn.execute(sql.replace(f"{self.schema}.",""),(pattern_prefix+"%",)).fetchall()
+            except Exception: rows=conn.execute(sql.replace(f"{self.schema}.",""),(pattern_prefix+"%",)).fetchall()
         rx=re.compile(re.escape(pattern_prefix)+r"\d{4}$")
         valid=[str(r[0]) for r in rows if r[0] is not None and rx.fullmatch(str(r[0]))]
         return max(valid, key=lambda value:int(value[-4:]), default=None)
@@ -52,7 +52,7 @@ class LegacyPersistenceRepository:
                 try:
                     row=conn.execute(f"SELECT {name_col} FROM {self.schema}.DSocio WHERE IdSocio=?",(member_id,)).fetchone()
                     if row: return str(row[0] or "").strip()
-                except sqlite3.OperationalError: continue
+                except Exception: continue
         return None
 
     def member_is_self_billed(self, member_id: int) -> bool:
@@ -66,7 +66,7 @@ class LegacyPersistenceRepository:
             with self._connect() as conn:
                 try:
                     row = conn.execute(sql, (member_id,)).fetchone()
-                except sqlite3.OperationalError:
+                except Exception:
                     row = conn.execute(sql.replace(f"{self.schema}.", ""), (member_id,)).fetchone()
             logger.info("[FacSocCheck] member_id=%s thread_id=%s status=OK", member_id, threading.get_ident())
         except Exception:
@@ -85,7 +85,7 @@ class LegacyPersistenceRepository:
         sql=f"SELECT ARTICULO FROM {self.schema}.MVariedad WHERE UPPER(TRIM(CULTIVO))=? AND UPPER(TRIM(Variedad))=?"
         with self._connect() as conn:
             try: row=conn.execute(sql,(compatible,normalized_variety)).fetchone()
-            except sqlite3.OperationalError: row=conn.execute(sql.replace(f"{self.schema}.",""),(compatible,normalized_variety)).fetchone()
+            except Exception: row=conn.execute(sql.replace(f"{self.schema}.",""),(compatible,normalized_variety)).fetchone()
         if not row or row[0] is None:
             logger.warning("[MVariedadArticulo]\ncrop=%s\nvariety=%s\narticle=\nstatus=not_found", compatible, normalized_variety)
             return None
@@ -102,4 +102,4 @@ class LegacyPersistenceRepository:
         sql=f"SELECT * FROM {self.schema}.DDividirLiq"
         with self._connect() as conn:
             try: return conn.execute(sql).fetchall()
-            except sqlite3.OperationalError: return conn.execute(sql.replace(f"{self.schema}.","")).fetchall()
+            except Exception: return conn.execute(sql.replace(f"{self.schema}.","")).fetchall()

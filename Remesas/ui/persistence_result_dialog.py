@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class PersistenceResultDialog(tk.Toplevel):
-    """Post-commit actions backed exclusively by the SQLite document registry."""
+    """Post-commit actions backed exclusively by the PostgreSQL document registry."""
     def __init__(self,parent,history,batch_ids,documents,lines):
         super().__init__(parent); self.history=history; self.batch_ids=tuple(batch_ids); self.lines=lines
         self.title("Liquidaciones guardadas"); self.geometry("720x360"); self.transient(parent)

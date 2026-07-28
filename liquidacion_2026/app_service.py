@@ -14,7 +14,7 @@ from .calculador import ResultadoCalculo, calcular_modelo_final
 from .config import CALIBRES, DESTRIOS, DBPaths, LiquidacionConfig
 from .correspondencia_calibres import build_calibre_mapping
 from .exportador import exportar_todo
-from .extractor_sqlite import SQLiteExtractor
+from .extractor_postgres import PostgresExtractor
 from .globalgap import calcular_fondo_globalgap
 from .normalizador_anecop import cargar_anecop
 from .utils import parse_decimal
@@ -135,7 +135,7 @@ def run(config: LiquidacionConfig) -> RunOutput:
         config.otros_fondos,
         config.ratio_categoria_ii,
     )
-    extractor = SQLiteExtractor(str(config.db_paths.fruta), str(config.db_paths.calidad), str(config.db_paths.eeppl))
+    extractor = PostgresExtractor(str(config.db_paths.fruta), str(config.db_paths.calidad), str(config.db_paths.eeppl))
 
     anecop_df = cargar_anecop(config.anecop_path)
     anecop_df["precio_base"] = anecop_df["precio_base"].apply(parse_decimal)
