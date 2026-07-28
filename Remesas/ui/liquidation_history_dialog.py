@@ -297,6 +297,7 @@ class LiquidationHistoryDialog(tk.Toplevel):
             if not messagebox.askyesno("Confirmar exportación",text,parent=self): return
         self._last_export_batch_ids=tuple(batch_ids); self.export_button.configure(state='disabled'); self.regenerate_csv_button.configure(state='disabled')
         def work():
+            logger.info("[CsvExportWorker] thread_id=%s status=STARTED",threading.get_ident())
             try: result=self.history.export_csv(batch_ids[0]) if len(batch_ids)==1 else self.history.export_csv_batches(batch_ids)
             except Exception as exc: self.after(0,lambda: done(None,exc)); return
             self.after(0,lambda: done(result,None))
@@ -315,11 +316,18 @@ class LiquidationHistoryDialog(tk.Toplevel):
     def regenerate_csv(self):
         batch_ids=self.selected_batch_ids(); generated=self.history.last_csv_export(batch_ids) if batch_ids else None
         if not generated: messagebox.showinfo("Regenerar CSV","No existe una exportación CSV generada para este lote.",parent=self); return
-        try:
-            result=self.history.regenerate_csv_export(generated['id'])
-            if not result.success: raise ValueError(result.error_message)
+        self.export_button.configure(state='disabled'); self.regenerate_csv_button.configure(state='disabled')
+        def work():
+            logger.info("[CsvExportWorker] thread_id=%s status=STARTED",threading.get_ident())
+            try: result=self.history.regenerate_csv_export(generated['id'])
+            except Exception as exc: self.after(0,lambda: done(None,exc)); return
+            self.after(0,lambda: done(result,None))
+        def done(result,error):
+            self.export_button.configure(state='normal'); self.regenerate_csv_button.configure(state='normal')
+            if error: messagebox.showerror("Regenerar CSV",str(error),parent=self); return
+            if not result.success: messagebox.showerror("Regenerar CSV",result.error_message,parent=self); return
             messagebox.showinfo("Regenerar CSV",f"CSV regenerado correctamente:\n{result.csv_path}",parent=self)
-        except Exception as exc: messagebox.showerror("Regenerar CSV",str(exc),parent=self)
+        threading.Thread(target=work,daemon=True).start()
     def void(self):
         bid=self.batch_id(); batch=self.history.get_batch_detail(bid)['batch'] if bid else None
         if not batch or batch['status']!='ACTIVE': self._update_actions(); return

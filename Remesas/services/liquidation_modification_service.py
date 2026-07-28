@@ -32,7 +32,7 @@ class LiquidationModificationService:
 
     def _create_reversal(self, original_batch_id, group_id, user, *, replacement_batch_id=None):
         """Copy the stored records, changing only amount fields and identity."""
-        conn = self.database.connect(); reversal_id = str(uuid.uuid4()); now = self._now()
+        conn = self.database.open_connection(); reversal_id = str(uuid.uuid4()); now = self._now()
         try:
             conn.execute("BEGIN IMMEDIATE")
             original = conn.execute("SELECT * FROM liquidation_batches WHERE batch_id=?", (original_batch_id,)).fetchone()
@@ -61,7 +61,7 @@ class LiquidationModificationService:
         except Exception:
             conn.rollback(); raise
         finally:
-            conn.close()
+            self.database.close_connection(conn)
         return reversal_id
 
     def modify(self, original_batch_id, replacement_preview, *, user=None):

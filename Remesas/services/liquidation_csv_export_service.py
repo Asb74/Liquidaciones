@@ -177,7 +177,10 @@ class LiquidationCsvExportService:
                     progress_callback("validando", index, len(rows))
         except CsvExportCancelled:
             raise
-        except Exception as exc: return self._failure(export_type, f"No se puede consultar FacSoc: {exc}", batch_id=batch_id, modification_group_id=modification_group_id, user=user)
+        except Exception as exc:
+            message = ("No se pudo consultar la condición de facturación del socio.\n\n"
+                       "La exportación no se ha generado.\n\nDetalle técnico:\n" + str(exc))
+            return self._failure(export_type, message, batch_id=batch_id, modification_group_id=modification_group_id, user=user)
         if not included:
             message = "No existen liquidaciones exportables. El socio 0 es un registro técnico excluido." if system_rows else "No existen liquidaciones exportables. Todos los socios seleccionados están excluidos por FacSoc = SI."
             return self._failure(export_type, message, batch_id=batch_id, modification_group_id=modification_group_id, user=user, excluded=excluded)
