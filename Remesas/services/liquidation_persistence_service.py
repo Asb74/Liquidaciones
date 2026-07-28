@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -15,6 +16,10 @@ from domain.persistence_models import (BatchPersistenceSaveResult, PendingBatchP
     PersistencePreview, RemittancePersistenceSaveResult)
 from services.liquidation_split_service import LiquidationSplitService
 from services.variety_selection_resolver import VarietySelectionKind, VarietySelectionResolver
+from services.variety_group_service import VarietyGroupService
+from services.persisted_variety_benchmark_service import variety_group_code
+from presentation.liquidation_document_snapshot import dump as dump_snapshot, load as load_snapshot, SCHEMA_VERSION
+from services.variety_group_migration_service import migrate_persisted_variety_groups
 from domain.member_rules import (SYSTEM_MEMBER_EXCLUDED_MESSAGE, is_excluded_member,
                                  log_system_member_excluded, configure_excluded_members,
                                  excluded_member_service)
@@ -32,7 +37,14 @@ class LiquidationPersistenceService:
     def __init__(self, database: PersistenceDatabase, legacy_conn, *, crop_aliases: dict[str,str] | None=None) -> None:
         self.database=database; self.database.initialize(); self.legacy=LegacyPersistenceRepository(legacy_conn); self.legacy_conn=legacy_conn; self.aliases=crop_aliases or {}
         self.variety_resolver = VarietySelectionResolver(VarietyRepository(legacy_conn))
+        self.variety_groups = VarietyGroupService(VarietyRepository(legacy_conn))
+        self.variety_group_migration_report = migrate_persisted_variety_groups(self.legacy_repository_adapter(), self.variety_groups)
         configure_excluded_members(connection=legacy_conn)
+
+    def legacy_repository_adapter(self):
+        """Expose the local repository used by the idempotent startup backfill."""
+        from data.persistence.liquidation_repository import LiquidationRepository
+        return LiquidationRepository(self.database)
 
     def _article_code(self, source_crop: str, variety: str) -> str | None:
         """Resolve ARTICULO against the master crop selected for this variety.
@@ -155,17 +167,36 @@ class LiquidationPersistenceService:
               (batch_id,remesa_id,remesa_name,campaign,company,crop,payment_date,calculation_fingerprint,
                original_line_count,final_line_count,status,created_at,created_by,operation_type)
               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(batch_id,int(h.remesa_id),h.remesa_name,str(h.campana),str(h.empresa),str(h.cultivo),str(h.fecha_pago),preview.fingerprint,preview.original_line_count,len(preview.lines),"ACTIVE",now,user,"ORIGINAL"))
+            member_groups = {}
             for line in preview.lines:
                 id_liq=self._next_id(conn,str(h.cultivo),str(h.campana),str(h.empresa),user,batch_id)
+                group, resolution = self.variety_groups.resolve_variety_group(str(h.cultivo), line.variety)
+                group_code = variety_group_code(group.group, group.subgroup)
+                group_name = group.label
+                variety_name = resolution.selected_varieties[0]
+                variety_code = resolution.normalized_value
+                member_groups.setdefault(int(line.recipient_member_id), set()).add((variety_code,variety_name,group_code,group_name))
+                logger.info("[VarietyGroupResolution]\nbatch_id=%s\nrecipient_member_id=%s\nid_liq=%s\nvariety=%s\nnormalized_variety=%s\ngroup_code=%s\ngroup_name=%s\nsource=liquidation\nstatus=RESOLVED",
+                    batch_id,line.recipient_member_id,id_liq,line.variety,variety_code,group_code,group_name)
                 key="|".join(map(str,(h.campana,h.empresa,h.cultivo,h.remesa_id,line.source_member_id,line.variety)))
                 values=(id_liq,str(h.fecha_pago),str(h.cultivo),str(h.campana),str(h.empresa),line.recipient_member_id,line.recipient_name,line.cod_art,line.variety,_d(line.net_kg),_d(line.gross_amount),_d(line.commercial_price) if line.commercial_price is not None else None,_d(line.collection_amount),_d(line.hectare_fee_amount),_d(line.quality_amount),_d(line.transport_amount),_d(line.globalgap_amount),_d(line.taxable_base),_d(line.final_average_price) if line.final_average_price is not None else None,_d(line.vat_rate),_d(line.withholding_rate),_d(line.total_amount),int(h.remesa_id),h.remesa_name,h.tipo_liquidacion,int(h.remesa_id),line.source_member_id,line.recipient_member_id,line.source_member_name,line.variety,key,line.split_rule_id,line.split_type,_d(line.split_factor),int(line.split_factor!=1),batch_id,"ACTIVE",now,user,preview.fingerprint,"ORIGINAL")
-                conn.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,remesa_id,source_member_id,recipient_member_id,source_member_name,source_variety,source_liquidation_key,split_rule_id,split_type,split_factor,is_split,batch_id,status,created_at,created_by,calculation_fingerprint,operation_type) VALUES("+",".join("?" for _ in values)+")",values)
+                columns="id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,remesa_id,source_member_id,recipient_member_id,source_member_name,source_variety,source_liquidation_key,split_rule_id,split_type,split_factor,is_split,batch_id,status,created_at,created_by,calculation_fingerprint,operation_type,variety_code,variety_name,variety_group_code,variety_group_name"
+                values=values+(variety_code,variety_name,group_code,group_name)
+                conn.execute("INSERT INTO liquidaciones("+columns+") VALUES("+",".join("?" for _ in values)+")",values)
                 persisted.append(PersistedLiquidation(id_liq,line.recipient_member_id,line.total_amount))
             for recipient_member_id, payload_json in (document_snapshots or {}).items():
-                logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=1\nstatus=STARTED", batch_id, recipient_member_id)
-                conn.execute("INSERT OR REPLACE INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, int(recipient_member_id), payload_json, 1, preview.fingerprint, now, user))
-                conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, "DOCUMENT_SNAPSHOT_SAVED", "DOCUMENT", str(recipient_member_id), json.dumps({"recipient_member_id": recipient_member_id, "schema_version": 1, "calculation_fingerprint": preview.fingerprint}), now, user))
-                logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=1\nstatus=SAVED", batch_id, recipient_member_id)
+                identities = member_groups.get(int(recipient_member_id), set())
+                if len({item[2] for item in identities}) > 1:
+                    raise ValueError("El documento contiene liquidaciones de más de un grupo varietal y no puede generar una comparativa única.")
+                if identities:
+                    variety_code_value,variety_name_value,group_code_value,group_name_value = next(iter(identities))
+                    vm=load_snapshot(payload_json)
+                    payload_json=dump_snapshot(replace(vm,variety_code=variety_code_value,variety_name=variety_name_value,
+                        variety_group_code=group_code_value,variety_group_name=group_name_value))
+                logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=%s\nstatus=STARTED", batch_id, recipient_member_id, SCHEMA_VERSION)
+                conn.execute("INSERT OR REPLACE INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, int(recipient_member_id), payload_json, SCHEMA_VERSION, preview.fingerprint, now, user))
+                conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, "DOCUMENT_SNAPSHOT_SAVED", "DOCUMENT", str(recipient_member_id), json.dumps({"recipient_member_id": recipient_member_id, "schema_version": SCHEMA_VERSION, "calculation_fingerprint": preview.fingerprint}), now, user))
+                logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=%s\nstatus=SAVED", batch_id, recipient_member_id, SCHEMA_VERSION)
             conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)",(batch_id,"SAVE","BATCH",batch_id,json.dumps({"lines":len(persisted)}),_now(),user)); conn.commit()
             logger.info("[PersistenceTransaction]\nbatch_id=%s\nstatus=COMMITTED", batch_id)
         except Exception as exc:

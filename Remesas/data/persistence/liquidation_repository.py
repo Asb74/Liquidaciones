@@ -32,7 +32,8 @@ class LiquidationRepository:
         """Return active persisted economics and their persisted group snapshot."""
         with self.database.connect() as conn:
             return conn.execute("""SELECT l.id,l.id_liq,l.recipient_member_id,l.id_socio,l.socio,
-              l.campana,l.empresa,l.cultivo,l.variedad,l.neto,l.precio_medio,l.importe_total,
+              l.campana,l.empresa,l.cultivo,l.variedad,l.variety_code,l.variety_name,
+              l.variety_group_code,l.variety_group_name,l.neto,l.precio_medio,l.importe_total,
               l.status,l.operation_type,l.batch_id,b.status AS batch_status,s.payload_json
               FROM liquidaciones l JOIN liquidation_batches b ON b.batch_id=l.batch_id
               LEFT JOIN liquidation_document_snapshots s ON s.batch_id=l.batch_id
@@ -42,6 +43,29 @@ class LiquidationRepository:
                 AND l.recipient_member_id<>0 AND l.id_socio<>0
                 AND TRIM(COALESCE(l.neto,''))<>'' AND TRIM(COALESCE(l.importe_total,''))<>''
               ORDER BY l.recipient_member_id,l.batch_id,l.id""", (str(campaign),str(company))).fetchall()
+
+    def list_document_variety_lines(self, batch_id: str, recipient_member_id: int):
+        """Explicit persisted inputs used to classify one individual PDF."""
+        with self.database.connect() as conn:
+            return conn.execute("""SELECT l.batch_id,l.recipient_member_id,l.id_liq,
+              l.campana AS campaign,l.empresa AS company,l.cultivo AS crop,
+              l.variedad AS variety,l.variety_code,l.variety_name,
+              l.variety_group_code,l.variety_group_name,l.operation_type,l.status,
+              l.neto AS commercial_kg,l.importe_total AS final_amount
+              FROM liquidaciones l JOIN liquidation_batches b ON b.batch_id=l.batch_id
+              WHERE l.batch_id=? AND l.recipient_member_id=?
+                AND l.recipient_member_id<>0 AND l.id_socio<>0
+                AND l.status NOT IN ('VOIDED','SUPERSEDED')
+                AND l.operation_type<>'REVERSAL'
+                AND b.status IN ('ACTIVE','PARTIAL') ORDER BY l.id""",
+                (batch_id, int(recipient_member_id))).fetchall()
+
+    def update_liquidation_variety_group(self, row_id: int, *, variety_code: str, variety_name: str,
+                                         group_code: str, group_name: str) -> None:
+        with self.database.connect() as conn:
+            conn.execute("""UPDATE liquidaciones SET variety_code=?,variety_name=?,
+              variety_group_code=?,variety_group_name=? WHERE id=?""",
+              (variety_code,variety_name,group_code,group_name,row_id))
 
     def supersede_member_document(self, batch_id: str, recipient_member_id: int) -> None:
         with self.database.connect() as conn:

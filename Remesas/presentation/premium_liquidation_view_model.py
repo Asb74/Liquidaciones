@@ -100,6 +100,10 @@ class PremiumLiquidationViewModel:
     price_min_reference: Decimal | None = None
     group_benchmark: PremiumGroupBenchmark | None = None
     id_liqs: tuple[str, ...] = ()
+    variety_code: str | None = None
+    variety_name: str | None = None
+    variety_group_code: str | None = None
+    variety_group_name: str | None = None
 
     @property
     def variety_text(self) -> str:

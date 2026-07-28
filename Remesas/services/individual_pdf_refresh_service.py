@@ -23,6 +23,21 @@ class IndividualPdfRefreshResult:
     items: tuple[IndividualPdfRefreshItem,...]; cancelled: bool=False
     @property
     def failed(self): return tuple(x for x in self.items if not x.success)
+    @property
+    def unresolved(self): return tuple(x for x in self.failed if x.error and "resolver el grupo" in x.error)
+    @property
+    def multiple_groups(self): return tuple(x for x in self.failed if x.error and "más de un grupo" in x.error)
+
+
+def _document_group(lines):
+    groups={(str(row["variety_group_code"]),str(row["variety_group_name"] or row["variety_group_code"]))
+            for row in lines if row["variety_group_code"]}
+    if len(groups)>1:
+        raise ValueError("El documento contiene liquidaciones de más de un grupo varietal y no puede generar una comparativa única.")
+    if not groups:
+        variety=next((str(row["variety_name"] or row["variety"] or "").strip() for row in lines if row["variety_name"] or row["variety"]), "—")
+        raise ValueError(f"No se ha podido resolver el grupo varietal de la variedad {variety}.")
+    return next(iter(groups))
 
 class IndividualPdfRefreshService:
     def __init__(self, repository, benchmark_service, *, exporter=export_persisted_liquidation_pdf, user=None):
@@ -30,10 +45,11 @@ class IndividualPdfRefreshService:
     def scopes_for_documents(self, documents):
         scopes=[]
         for doc in documents:
-            snapshot=self.repository.get_document_snapshot(doc.batch_id,doc.member_id)
-            if not snapshot: continue
-            vm=load_snapshot(snapshot["payload_json"]); group=vm.group_benchmark
-            if group: scopes.append(BenchmarkScope(str(doc.campaign),str(doc.company),variety_group_code(group.group,group.subgroup)))
+            try:
+                code,_name=_document_group(self.repository.list_document_variety_lines(doc.batch_id,doc.member_id))
+                scopes.append(BenchmarkScope(str(doc.campaign),str(doc.company),code))
+            except ValueError:
+                continue
         return tuple(dict.fromkeys(scopes))
     def refresh_documents(self, documents, *, progress_callback=None, should_cancel=None, user=None):
         docs=tuple(documents); scopes=self.scopes_for_documents(docs)
@@ -47,9 +63,14 @@ class IndividualPdfRefreshService:
                 snapshot=self.repository.get_document_snapshot(doc.batch_id,doc.member_id)
                 if not snapshot: raise ValueError("El documento no tiene snapshot económico persistido.")
                 vm=load_snapshot(snapshot["payload_json"])
-                if not vm.group_benchmark: raise ValueError("Comparativa con el grupo varietal no disponible.")
-                scope=BenchmarkScope(str(doc.campaign),str(doc.company),variety_group_code(vm.group_benchmark.group,vm.group_benchmark.subgroup))
+                code,name=_document_group(self.repository.list_document_variety_lines(doc.batch_id,doc.member_id))
+                logger.info("[VarietyGroupResolution]\nbatch_id=%s\nrecipient_member_id=%s\nid_liq=%s\nvariety=%s\nnormalized_variety=%s\ngroup_code=%s\ngroup_name=%s\nsource=liquidation\nstatus=RESOLVED",
+                    doc.batch_id,doc.member_id,",".join(vm.id_liqs),vm.variety_name or vm.variety_text,
+                    vm.variety_code or "",code,name)
+                scope=BenchmarkScope(str(doc.campaign),str(doc.company),code)
                 benchmark=benchmarks[scope]
+                if not vm.group_benchmark:
+                    raise ValueError(f"No se ha podido actualizar la comparativa del grupo varietal {name}: el snapshot no contiene la plantilla de comparativa.")
                 vm=replace(vm,group_benchmark=self.benchmarks.for_member(benchmark,doc.member_id,vm.group_benchmark))
                 self.repository.audit(doc.batch_id,"INDIVIDUAL_PDF_REFRESH_STARTED",json.dumps({"document_id":doc.document_id,"recipient_member_id":doc.member_id,"source_fingerprint":benchmark.source_fingerprint}),user or self.user)
                 self.exporter(vm,temp); digest=sha256(temp.read_bytes()).hexdigest(); path.parent.mkdir(parents=True,exist_ok=True); os.replace(temp,path)

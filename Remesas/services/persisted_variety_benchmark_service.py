@@ -27,13 +27,18 @@ class PersistedVarietyBenchmarkService:
         for row in self.repository.list_persisted_benchmark_rows(scope.campaign,scope.company):
             try:
                 frozen=load_snapshot(row["payload_json"]).group_benchmark if row["payload_json"] else None
-                if not frozen or globals()["variety_group_code"](frozen.group,frozen.subgroup)!=scope.variety_group_code: continue
+                persisted_code = row["variety_group_code"] if "variety_group_code" in row.keys() else None
+                # Compatibility is deliberately limited to pre-migration row
+                # shapes. Real migrated rows are always classified by their
+                # persisted liquidation variety, never by remittance metadata.
+                effective_code = str(persisted_code or (globals()["variety_group_code"](frozen.group,frozen.subgroup) if frozen else ""))
+                if effective_code != scope.variety_group_code: continue
                 kg=Decimal(str(row["neto"])); amount=Decimal(str(row["importe_total"]))
             except (ValueError,TypeError,KeyError,InvalidOperation): continue
             if not kg.is_finite() or not amount.is_finite() or kg<0: continue
             mid=int(row["recipient_member_id"]); x=members.setdefault(mid,{"name":str(row["socio"]),"kg":Decimal(0),"commercial":Decimal(0),"amount":Decimal(0),"batch_kg":{},"batch_own":{}})
             x["kg"]+=kg; x["amount"]+=amount; x["batch_kg"][row["batch_id"]]=x["batch_kg"].get(row["batch_id"],Decimal(0))+kg
-            own=frozen.kilograms_per_hectare.own_value; x["batch_own"][row["batch_id"]]=own
+            own=frozen.kilograms_per_hectare.own_value if frozen else None; x["batch_own"][row["batch_id"]]=own
             price=Decimal(str(row["precio_medio"])) if row["precio_medio"] not in (None,"") else None
             x["commercial"] += amount/price if price and price>0 else kg
             sources.append((int(row["id"]),row["status"],row["batch_status"],str(kg),str(amount),scope.variety_group_code))
