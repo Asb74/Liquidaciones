@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import services.persisted_variety_benchmark_service as module
 from domain.benchmark_models import BenchmarkScope, PersistedBenchmarkMetric, PersistedMemberBenchmark, VarietyGroupBenchmark
-from presentation.liquidation_document_snapshot import dump
+from presentation.liquidation_document_snapshot import dump, load
 from services.group_benchmark_service import PremiumGroupBenchmark
 from services.individual_pdf_refresh_service import IndividualPdfRefreshService
 from services.persisted_variety_benchmark_service import PersistedVarietyBenchmarkService
@@ -15,15 +15,15 @@ class Repository:
     def __init__(self, rows): self.rows=rows; self.calls=0
     def list_persisted_benchmark_rows(self,campaign,company): self.calls+=1; return self.rows
 
-def row(identifier,member,batch,kg,amount,price="2"):
-    return {"id":identifier,"recipient_member_id":member,"socio":f"S{member}","neto":kg,"precio_medio":price,"importe_total":amount,"batch_id":batch,"status":"ACTIVE","batch_status":"ACTIVE","payload_json":"snapshot"}
+def row(identifier,member,batch,kg,amount,price="2",payload="snapshot",crop="CITRICOS",date="2026-01-01"):
+    return {"id":identifier,"recipient_member_id":member,"socio":f"S{member}","neto":kg,"precio_medio":price,"importe_total":amount,"batch_id":batch,"status":"ACTIVE","batch_status":"ACTIVE","payload_json":payload,"variety_group_code":"NAVEL_TARDIA","payment_date":date,"snapshot_created_at":date,"cultivo":crop}
 
-def frozen(production):
-    metric=SimpleNamespace(own_value=Decimal(production))
-    return SimpleNamespace(group_benchmark=SimpleNamespace(group="NAVEL",subgroup="TARDÍA",kilograms_per_hectare=metric))
+def frozen(surface, *, benchmark=True, fingerprint="surface-v1"):
+    group=SimpleNamespace(group="NAVEL",subgroup="TARDÍA") if benchmark else None
+    return SimpleNamespace(group_benchmark=group,applicable_hectares=Decimal(surface) if surface is not None else None,surface_source="HECTARE_FEE",surface_fingerprint=fingerprint)
 
 def test_global_benchmark_aggregates_remittances_weighted_and_caches(monkeypatch):
-    values=iter((frozen("100"),frozen("300"),frozen("50")))
+    values=iter((frozen("1"),frozen("1"),frozen("2")))
     monkeypatch.setattr(module,"load_snapshot",lambda _:next(values))
     repo=Repository((row(1,818,"A","100","200"),row(2,818,"B","300","900","3"),row(3,1395,"C","100","100","1")))
     service=PersistedVarietyBenchmarkService(repo)
@@ -34,13 +34,64 @@ def test_global_benchmark_aggregates_remittances_weighted_and_caches(monkeypatch
     assert member.commercial_kg==Decimal("400")
     assert member.final_average_price==Decimal("2.75")
     assert member.production_kg_ha==Decimal("400")
+    assert member.final_amount_eur_ha==Decimal("1100")
     assert benchmark.price_metric.comparable_count==2
+    assert benchmark.production_metric.comparable_count==2
 
 def test_fingerprint_changes_when_persisted_population_changes(monkeypatch):
-    monkeypatch.setattr(module,"load_snapshot",lambda _:frozen("100"))
+    monkeypatch.setattr(module,"load_snapshot",lambda _:frozen("1"))
     repo=Repository([row(1,1,"A","100","200")]); service=PersistedVarietyBenchmarkService(repo)
     first=service.get_group_benchmark(campaign="2026",company="1",variety_group_code="NAVEL_TARDIA").source_fingerprint
     repo.rows.append(row(2,2,"B","100","300")); service.clear_cache()
+    second=service.get_group_benchmark(campaign="2026",company="1",variety_group_code="NAVEL_TARDIA").source_fingerprint
+    assert first!=second
+
+
+def test_snapshot_without_group_benchmark_uses_explicit_surface(monkeypatch):
+    monkeypatch.setattr(module,"load_snapshot",lambda _:frozen("2.5",benchmark=False))
+    benchmark=PersistedVarietyBenchmarkService(Repository([row(1,1,"A","1000","500")])).get_group_benchmark(campaign="2026",company="1",variety_group_code="NAVEL_TARDIA")
+    member=benchmark.comparable_members[0]
+    assert member.surface_hectares==Decimal("2.5")
+    assert member.production_kg_ha==Decimal("400")
+    assert member.final_amount_eur_ha==Decimal("200")
+
+
+def test_old_snapshot_recovers_only_surface_from_cuota_ha_service(monkeypatch):
+    monkeypatch.setattr(module,"load_snapshot",lambda _:frozen(None,benchmark=False))
+    class Surface:
+        def __init__(self): self.calls=[]
+        def get_member_variety_group_surface(self,**scope):
+            self.calls.append(scope); return Decimal("4"),"fallback-fingerprint",()
+    surface=Surface()
+    benchmark=PersistedVarietyBenchmarkService(Repository([row(1,7,"A","800","400")]),surface_service=surface).get_group_benchmark(campaign="2026",company="1",variety_group_code="NAVEL_TARDIA")
+    assert benchmark.comparable_members[0].production_kg_ha==Decimal("200")
+    assert len(surface.calls)==1
+
+
+def test_latest_surface_is_selected_once_across_remittances_and_crops(monkeypatch,caplog):
+    values=iter((frozen("2",fingerprint="old"),frozen("3",fingerprint="new"),frozen("3",fingerprint="new")))
+    monkeypatch.setattr(module,"load_snapshot",lambda _:next(values))
+    rows=[row(1,1,"A","300","300",crop="CITRICOS",date="2026-01-01"),row(2,1,"B","300","300",crop="INDUSTRIA",date="2026-02-01"),row(3,1,"C","300","300",crop="DIRECTO",date="2026-03-01")]
+    benchmark=PersistedVarietyBenchmarkService(Repository(rows)).get_group_benchmark(campaign="2026",company="1",variety_group_code="NAVEL_TARDIA")
+    member=benchmark.comparable_members[0]
+    assert member.surface_hectares==Decimal("3") and member.production_kg_ha==Decimal("300")
+    assert "SURFACE_VALUE_CHANGED" in caplog.text
+
+
+def test_member_without_surface_remains_in_price_but_not_hectare_metrics(monkeypatch):
+    values=iter((frozen("2"),frozen(None)))
+    monkeypatch.setattr(module,"load_snapshot",lambda _:next(values))
+    benchmark=PersistedVarietyBenchmarkService(Repository([row(1,1,"A","100","200"),row(2,2,"B","100","300")])).get_group_benchmark(campaign="2026",company="1",variety_group_code="NAVEL_TARDIA")
+    assert benchmark.price_metric.comparable_count==2
+    assert benchmark.production_metric.comparable_count==benchmark.final_amount_metric.comparable_count==1
+
+
+def test_surface_changes_benchmark_fingerprint(monkeypatch):
+    current=["2"]
+    monkeypatch.setattr(module,"load_snapshot",lambda _:frozen(current[0],fingerprint="fp-"+current[0]))
+    service=PersistedVarietyBenchmarkService(Repository([row(1,1,"A","100","200")]))
+    first=service.get_group_benchmark(campaign="2026",company="1",variety_group_code="NAVEL_TARDIA").source_fingerprint
+    current[0]="4"; service.clear_cache()
     second=service.get_group_benchmark(campaign="2026",company="1",variety_group_code="NAVEL_TARDIA").source_fingerprint
     assert first!=second
 
@@ -109,3 +160,12 @@ def test_refresh_snapshot_without_group_benchmark_creates_and_renders_pdf(tmp_pa
     assert rendered[0].group_benchmark.group_label=="NAVEL TEMPRANA"
     assert rendered[0].group_benchmark.price_per_kg.own_value==Decimal("2.5")
     assert any('"benchmark_created_from_scratch": true' in args[2] for args in repository.audits)
+
+
+def test_new_snapshot_persists_explicit_surface_with_schema_three():
+    vm=from_member_liquidation(_header(),_member(member_id=818,variety="NAVELINA",applicable_hectares=Decimal("2.64")))
+    payload=dump(vm)
+    assert '"schema_version":3' in payload
+    restored=load(payload)
+    assert restored.applicable_hectares==Decimal("2.64")
+    assert restored.surface_source=="HECTARE_FEE" and restored.surface_fingerprint

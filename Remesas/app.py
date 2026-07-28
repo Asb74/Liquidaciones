@@ -78,7 +78,9 @@ def main() -> None:
     frame=RemesasFrame(root); frame.pack(fill="both", expand=True)
     root.protocol("WM_DELETE_WINDOW", frame.close_application)
     repository=LiquidationRepository(PersistenceDatabase(config.persistence_database_path))
-    refresh_service=IndividualPdfRefreshService(repository,PersistedVarietyBenchmarkService(repository))
+    from services.member_surface_service import MemberSurfaceService
+    surface_service = MemberSurfaceService(HectareRepository(frame.conn)) if frame.conn else None
+    refresh_service=IndividualPdfRefreshService(repository,PersistedVarietyBenchmarkService(repository, surface_service=surface_service))
     def open_fee_report():
         if not frame.conn: return messagebox.showwarning("Informe de cuota por hectárea", "Conecte primero las bases de datos.")
         meta=frame.meta; HectareFeeReportDialog(root, HectareFeeReportService(HectareRepository(frame.conn)), meta.campaigns(), meta.empresas, frame.context_panel.campana.get(), frame.context_panel.empresa.get())

@@ -69,6 +69,10 @@ class IndividualPdfRefreshService:
                     vm.variety_code or "",code,name)
                 scope=BenchmarkScope(str(doc.campaign),str(doc.company),code)
                 benchmark=benchmarks[scope]
+                if benchmark.comparable_members and not (
+                    benchmark.production_metric.comparable_count or benchmark.final_amount_metric.comparable_count
+                ):
+                    raise ValueError("No se recuperó ninguna superficie válida; la actualización de comparativas no puede considerarse completada.")
                 snapshot_has_benchmark=vm.group_benchmark is not None
                 group_benchmark=self.benchmarks.for_member(
                     benchmark,
