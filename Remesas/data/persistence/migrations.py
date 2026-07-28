@@ -85,7 +85,25 @@ ALTER TABLE liquidaciones ADD COLUMN variety_name TEXT;
 ALTER TABLE liquidaciones ADD COLUMN variety_group_code TEXT;
 ALTER TABLE liquidaciones ADD COLUMN variety_group_name TEXT;
 CREATE INDEX IF NOT EXISTS ix_liq_benchmark_scope ON liquidaciones(campana,empresa,variety_group_code,status);
-"""))
+"""),(12, "duplicate_liquidation_protection", """
+ALTER TABLE liquidation_batches ADD COLUMN supersedes_batch_id TEXT REFERENCES liquidation_batches(batch_id);
+ALTER TABLE liquidation_batches ADD COLUMN modification_reason TEXT;
+CREATE INDEX IF NOT EXISTS ix_batch_supersedes ON liquidation_batches(supersedes_batch_id);
+CREATE TABLE IF NOT EXISTS accounting_export_items(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ export_id INTEGER NOT NULL REFERENCES accounting_exports(id),
+ batch_id TEXT NOT NULL REFERENCES liquidation_batches(batch_id),
+ liquidation_id INTEGER NULL REFERENCES liquidaciones(id),
+ recipient_member_id INTEGER NULL,
+ operation_type TEXT NULL,
+ created_at TEXT NOT NULL,
+ UNIQUE(export_id, liquidation_id)
+);
+CREATE INDEX IF NOT EXISTS ix_accounting_export_items_export ON accounting_export_items(export_id);
+CREATE INDEX IF NOT EXISTS ix_accounting_export_items_batch ON accounting_export_items(batch_id);
+CREATE INDEX IF NOT EXISTS ix_accounting_export_items_liquidation ON accounting_export_items(liquidation_id);
+CREATE INDEX IF NOT EXISTS ix_accounting_export_items_recipient ON accounting_export_items(recipient_member_id);
+"""),(13, "active_scope_unique_index", ""))
 
 
 def _migrate_article_code_as_text(conn: sqlite3.Connection) -> None:
@@ -120,6 +138,21 @@ def migrate(conn: sqlite3.Connection) -> None:
         try:
             if version == 9:
                 _migrate_article_code_as_text(conn)
+            elif version == 13:
+                # Existing conflicts are evidence, never data to silently repair.
+                # Leave the migration pending so startup can report and an
+                # administrator can resolve them before the safety index lands.
+                duplicate = conn.execute("""SELECT campaign,company,crop,remesa_id,COUNT(*)
+                    FROM liquidation_batches
+                    WHERE status IN ('ACTIVE','PARTIAL')
+                      AND operation_type IN ('ORIGINAL','REPLACEMENT')
+                    GROUP BY campaign,company,crop,remesa_id HAVING COUNT(*)>1 LIMIT 1""").fetchone()
+                if duplicate:
+                    raise RuntimeError("ACTIVE_SCOPE_CONFLICT_DETECTED: existen liquidaciones vigentes duplicadas; ejecute el diagnóstico antes de migrar")
+                conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS ux_liquidation_active_scope
+                    ON liquidation_batches(campaign,company,crop,remesa_id)
+                    WHERE status IN ('ACTIVE','PARTIAL')
+                      AND operation_type IN ('ORIGINAL','REPLACEMENT')""")
             else:
                 conn.executescript(sql)
             now=utcnow()

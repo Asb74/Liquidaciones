@@ -14,7 +14,8 @@ class Legacy:
 def _save(db, *, batch_id="batch-1", member=42, operation="ORIGINAL", group=None, net="31577.1200", total="406.4344", cod_art="3983"):
     db.initialize()
     with db.connect() as c:
-        c.execute("INSERT OR IGNORE INTO liquidation_batches(batch_id,remesa_id,remesa_name,campaign,company,crop,calculation_fingerprint,original_line_count,final_line_count,status,created_at,operation_type,modification_group_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (batch_id,7,"BLANCA TEMPRANA", "2025", "ACME", "CITRICOS",batch_id,1,1,"ACTIVE","2025-01-01T00:00:00",operation,group))
+        remittance_id = sum(map(ord, batch_id))
+        c.execute("INSERT OR IGNORE INTO liquidation_batches(batch_id,remesa_id,remesa_name,campaign,company,crop,calculation_fingerprint,original_line_count,final_line_count,status,created_at,operation_type,modification_group_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (batch_id,remittance_id,"BLANCA TEMPRANA", "2025", "ACME", "CITRICOS",batch_id,1,1,"ACTIVE","2025-01-01T00:00:00",operation,group))
         c.execute("INSERT INTO liquidaciones(id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,source_member_id,recipient_member_id,source_liquidation_key,batch_id,status,created_at,operation_type,modification_group_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (f"CI{batch_id}{member}","2025-09-11","CITRICOS","2025","ACME",member,"CRUZ RUIZ,JESÚS",cod_art,"BLANCA",net,"12.0000","0.2679115","-2500.00","0","0","0","0","12","0.1","2","-1",total,8,"SEMANA PENULTIMA","TIPO",member,member,"key"+batch_id,batch_id,"ACTIVE","2025-01-01",operation,group))
 
 

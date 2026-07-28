@@ -25,6 +25,8 @@ from domain.member_rules import (SYSTEM_MEMBER_EXCLUDED_MESSAGE, is_excluded_mem
                                  excluded_member_service)
 import logging
 from collections.abc import Mapping
+from domain.liquidation_conflicts import LiquidationConflictType, LiquidationScope
+from services.liquidation_conflict_service import LiquidationConflictService
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ class LiquidationPersistenceService:
         self.database=database; self.database.initialize(); self.legacy=LegacyPersistenceRepository(legacy_conn); self.legacy_conn=legacy_conn; self.aliases=crop_aliases or {}
         self.variety_resolver = VarietySelectionResolver(VarietyRepository(legacy_conn))
         self.variety_groups = VarietyGroupService(VarietyRepository(legacy_conn))
+        self.conflicts = LiquidationConflictService(self.legacy_repository_adapter())
         self.variety_group_migration_report = migrate_persisted_variety_groups(self.legacy_repository_adapter(), self.variety_groups)
         configure_excluded_members(connection=legacy_conn)
 
@@ -147,7 +150,8 @@ class LiquidationPersistenceService:
         return f"{row['prefix']}{campaign}{company_fmt}{sequence:04d}"
 
     def save(self, preview: PersistencePreview, *, user: str | None=None,
-             document_snapshots: Mapping[int, str] | None = None) -> PersistenceBatch:
+             document_snapshots: Mapping[int, str] | None = None,
+             replace_batch_id: str | None = None, reason: str | None = None) -> PersistenceBatch:
         if not preview.lines:
             raise ValueError("No existen liquidaciones válidas para guardar. El socio 0 es un registro técnico excluido.")
         invalid = [line for line in preview.lines if is_excluded_member(line.source_member_id) or is_excluded_member(line.recipient_member_id)]
@@ -157,16 +161,38 @@ class LiquidationPersistenceService:
             member_id = invalid[0].source_member_id if is_excluded_member(invalid[0].source_member_id) else invalid[0].recipient_member_id
             reason = excluded_member_service.reason_for_exclusion(member_id)
             raise ValueError(f"El socio {member_id} está excluido porque {reason}.")
+        if replace_batch_id and not str(reason or "").strip():
+            raise ValueError("El motivo de sustitución es obligatorio")
         h=preview.header; batch_id=str(uuid.uuid4()); now=_now(); persisted=[]
         conn=self.database.open_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            duplicate=conn.execute("SELECT batch_id FROM liquidation_batches WHERE remesa_id=? AND calculation_fingerprint=? AND status='ACTIVE'",(int(h.remesa_id),preview.fingerprint)).fetchone()
-            if duplicate: raise ValueError(f"La remesa ya está guardada en el batch {duplicate[0]}")
+            scope=(str(h.campana).strip(),str(h.empresa).strip(),str(h.cultivo).strip().upper(),int(h.remesa_id))
+            active=conn.execute("""SELECT batch_id,status,operation_type FROM liquidation_batches
+                WHERE campaign=? AND company=? AND crop=? AND remesa_id=?
+                AND status IN ('ACTIVE','PARTIAL') AND operation_type IN ('ORIGINAL','REPLACEMENT')
+                ORDER BY created_at,batch_id""", scope).fetchall()
+            if len(active)>1:
+                raise ValueError("Se han encontrado varias liquidaciones vigentes para esta remesa. Debe corregirse la duplicidad antes de continuar.")
+            operation_type="ORIGINAL"; modification_group_id=None
+            if active:
+                existing=active[0]["batch_id"]
+                if replace_batch_id != existing:
+                    raise ValueError(f"La remesa ya tiene una liquidación activa ({existing}). No puede guardarse como una nueva liquidación independiente.")
+                exported=conn.execute("""SELECT 1 FROM accounting_exports e
+                    LEFT JOIN accounting_export_items i ON i.export_id=e.id
+                    WHERE e.status='GENERATED' AND (i.batch_id=? OR (i.id IS NULL AND e.batch_id=?)) LIMIT 1""",(existing,existing)).fetchone()
+                if exported:
+                    raise ValueError("La remesa ya fue exportada a contabilidad. Debe generarse una rectificación contable.")
+                modification_group_id=str(uuid.uuid4()); operation_type="REPLACEMENT"
+                conn.execute("UPDATE liquidation_batches SET status='SUPERSEDED',replacement_batch_id=?,modification_reason=? WHERE batch_id=? AND status IN ('ACTIVE','PARTIAL')",(batch_id,str(reason).strip(),existing))
+                conn.execute("UPDATE liquidaciones SET status='SUPERSEDED',replacement_batch_id=? WHERE batch_id=? AND status IN ('ACTIVE','PARTIAL')",(batch_id,existing))
+                conn.execute("UPDATE generated_documents SET status='SUPERSEDED' WHERE batch_id=? AND status='GENERATED'",(existing,))
             conn.execute("""INSERT INTO liquidation_batches
               (batch_id,remesa_id,remesa_name,campaign,company,crop,payment_date,calculation_fingerprint,
-               original_line_count,final_line_count,status,created_at,created_by,operation_type)
-              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(batch_id,int(h.remesa_id),h.remesa_name,str(h.campana),str(h.empresa),str(h.cultivo),str(h.fecha_pago),preview.fingerprint,preview.original_line_count,len(preview.lines),"ACTIVE",now,user,"ORIGINAL"))
+               original_line_count,final_line_count,status,created_at,created_by,operation_type,
+               supersedes_batch_id,original_batch_id,modification_group_id,modification_reason)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(batch_id,int(h.remesa_id),h.remesa_name,str(h.campana),str(h.empresa),str(h.cultivo).strip().upper(),str(h.fecha_pago),preview.fingerprint,preview.original_line_count,len(preview.lines),"ACTIVE",now,user,operation_type,replace_batch_id,replace_batch_id,modification_group_id,str(reason).strip() if reason else None))
             member_groups = {}
             for line in preview.lines:
                 id_liq=self._next_id(conn,str(h.cultivo),str(h.campana),str(h.empresa),user,batch_id)
@@ -179,9 +205,9 @@ class LiquidationPersistenceService:
                 logger.info("[VarietyGroupResolution]\nbatch_id=%s\nrecipient_member_id=%s\nid_liq=%s\nvariety=%s\nnormalized_variety=%s\ngroup_code=%s\ngroup_name=%s\nsource=liquidation\nstatus=RESOLVED",
                     batch_id,line.recipient_member_id,id_liq,line.variety,variety_code,group_code,group_name)
                 key="|".join(map(str,(h.campana,h.empresa,h.cultivo,h.remesa_id,line.source_member_id,line.variety)))
-                values=(id_liq,str(h.fecha_pago),str(h.cultivo),str(h.campana),str(h.empresa),line.recipient_member_id,line.recipient_name,line.cod_art,line.variety,_d(line.net_kg),_d(line.gross_amount),_d(line.commercial_price) if line.commercial_price is not None else None,_d(line.collection_amount),_d(line.hectare_fee_amount),_d(line.quality_amount),_d(line.transport_amount),_d(line.globalgap_amount),_d(line.taxable_base),_d(line.final_average_price) if line.final_average_price is not None else None,_d(line.vat_rate),_d(line.withholding_rate),_d(line.total_amount),int(h.remesa_id),h.remesa_name,h.tipo_liquidacion,int(h.remesa_id),line.source_member_id,line.recipient_member_id,line.source_member_name,line.variety,key,line.split_rule_id,line.split_type,_d(line.split_factor),int(line.split_factor!=1),batch_id,"ACTIVE",now,user,preview.fingerprint,"ORIGINAL")
-                columns="id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,remesa_id,source_member_id,recipient_member_id,source_member_name,source_variety,source_liquidation_key,split_rule_id,split_type,split_factor,is_split,batch_id,status,created_at,created_by,calculation_fingerprint,operation_type,variety_code,variety_name,variety_group_code,variety_group_name"
-                values=values+(variety_code,variety_name,group_code,group_name)
+                values=(id_liq,str(h.fecha_pago),str(h.cultivo),str(h.campana),str(h.empresa),line.recipient_member_id,line.recipient_name,line.cod_art,line.variety,_d(line.net_kg),_d(line.gross_amount),_d(line.commercial_price) if line.commercial_price is not None else None,_d(line.collection_amount),_d(line.hectare_fee_amount),_d(line.quality_amount),_d(line.transport_amount),_d(line.globalgap_amount),_d(line.taxable_base),_d(line.final_average_price) if line.final_average_price is not None else None,_d(line.vat_rate),_d(line.withholding_rate),_d(line.total_amount),int(h.remesa_id),h.remesa_name,h.tipo_liquidacion,int(h.remesa_id),line.source_member_id,line.recipient_member_id,line.source_member_name,line.variety,key,line.split_rule_id,line.split_type,_d(line.split_factor),int(line.split_factor!=1),batch_id,"ACTIVE",now,user,preview.fingerprint,operation_type)
+                columns="id_liq,fecha,cultivo,campana,empresa,id_socio,socio,cod_art,variedad,neto,imp_bruto,precio_comer,recoleccion,cuota_ha,bp_calidad,b_transporte,b_global,base_i,precio_medio,iva,retencion,importe_total,id_concepto_liq,concepto_liq,tipo,remesa_id,source_member_id,recipient_member_id,source_member_name,source_variety,source_liquidation_key,split_rule_id,split_type,split_factor,is_split,batch_id,status,created_at,created_by,calculation_fingerprint,operation_type,original_batch_id,modification_group_id,variety_code,variety_name,variety_group_code,variety_group_name"
+                values=values+(replace_batch_id,modification_group_id,variety_code,variety_name,group_code,group_name)
                 conn.execute("INSERT INTO liquidaciones("+columns+") VALUES("+",".join("?" for _ in values)+")",values)
                 persisted.append(PersistedLiquidation(id_liq,line.recipient_member_id,line.total_amount))
             for recipient_member_id, payload_json in (document_snapshots or {}).items():
