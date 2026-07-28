@@ -46,6 +46,7 @@ from presentation.premium_liquidation_view_model import from_member_liquidation
 from presentation.liquidation_document_snapshot import SCHEMA_VERSION, dump as dump_document_snapshot
 from data.persistence.database import PersistenceDatabase
 from data.persistence.master_repository import LiquidationMasterRepository
+from data.legacy_persistence_repository import LegacyPersistenceRepository
 from services.liquidation_persistence_service import LiquidationPersistenceService
 from data.persistence.liquidation_repository import LiquidationRepository
 from services.document_generation_service import DocumentGenerationOptions, DocumentGenerationService
@@ -198,8 +199,19 @@ class RemesasFrame(ttk.Frame):
     def _connect(self):
         try:
             self.conn=self.db.connect_fruta_with_eepp(); self.meta=ContextService(MetadataRepository(self.conn)); self.variety_service=VarietyGroupService(VarietyRepository(self.conn)); self.deliveries=DeliveriesService(DeliveriesRepository(self.conn)); self.remesas=RemesasService(RemesasRepository(self.conn))
-            self.persistence_enabled=False
-            if self.config.persistence_enabled:
+            logger.info("[RemesasConnect]\nphase=OPEN_DATABASES\nstatus=OK")
+        except Exception:
+            logger.exception("[RemesasConnect]\nphase=OPEN_DATABASES\nstatus=FAILED")
+            messagebox.showerror(
+                "Bases de datos",
+                "No se pudieron abrir las bases de datos locales.\n\n"
+                f"Detalle técnico:\n{traceback.format_exc()}",
+            )
+            return
+
+        self.persistence_enabled=False
+        if self.config.persistence_enabled:
+            try:
                 aliases_path=Path(__file__).resolve().parents[1]/"config"/"crop_aliases.json"
                 aliases=json.loads(aliases_path.read_text(encoding="utf-8")) if aliases_path.exists() else {}
                 self.persistence_service=LiquidationPersistenceService(PersistenceDatabase(self.config.persistence_database_path),self.conn,crop_aliases=aliases)
@@ -211,15 +223,50 @@ class RemesasFrame(ttk.Frame):
                 # attached SQLite connection.  This repository opens both local
                 # legacy databases inside each operation in the calling thread.
                 export_legacy_repository=LegacyPersistenceRepository(self.db.connect_fruta_with_eepp)
+                logger.info("[RemesasConnect]\nphase=CREATE_LEGACY_REPOSITORY\nstatus=OK")
+            except Exception:
+                logger.exception("[RemesasConnect]\nphase=CREATE_LEGACY_REPOSITORY\nstatus=FAILED")
+                messagebox.showerror(
+                    "Repositorio de datos auxiliares",
+                    "No se pudo inicializar el repositorio de datos auxiliares.\n\n"
+                    f"Detalle técnico:\n{traceback.format_exc()}",
+                )
+                return
+
+            try:
                 self.csv_export_service=LiquidationCsvExportService(self.liquidation_repository, export_legacy_repository, output_root)
+                logger.info("[RemesasConnect]\nphase=CREATE_CSV_SERVICE\nstatus=OK")
+            except Exception:
+                logger.exception("[RemesasConnect]\nphase=CREATE_CSV_SERVICE\nstatus=FAILED")
+                messagebox.showerror(
+                    "Servicio de exportación CSV",
+                    "No se pudo inicializar el servicio de exportación CSV.\n\n"
+                    f"Detalle técnico:\n{traceback.format_exc()}",
+                )
+                return
+
+            try:
                 self.history_service=LiquidationHistoryService(self.liquidation_repository,self.document_service,self.modification_service,self.csv_export_service)
                 self.liquidation_master_repository=LiquidationMasterRepository(self.persistence_service.database)
                 self.persistence_service.import_legacy_split_rules(); self.persistence_enabled=True
+            except Exception:
+                logger.exception("[RemesasConnect]\nphase=CREATE_PERSISTENCE_REPOSITORIES\nstatus=FAILED")
+                messagebox.showerror(
+                    "Repositorios de liquidaciones",
+                    "No se pudieron inicializar los repositorios de liquidaciones.\n\n"
+                    f"Detalle técnico:\n{traceback.format_exc()}",
+                )
+                return
+
+        try:
             self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.hectare_master_service=HectareFeeMasterService(self.master_repository, HectareFeeCropRepository(self.conn)); self.calculations=CalculationService(self.conn, self.config); self._refresh_database_status(); self._refresh_action_states()
-        except Exception as exc:
-            logger.exception("No se ha podido abrir la copia local de las bases SQLite")
-            detail = format_sync_diagnostics(self.sync_results) if self.sync_results else traceback.format_exc()
-            messagebox.showerror("Error", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{detail}\n\nExcepción al abrir:\n{traceback.format_exc()}\n\nRevise la conexión de red o utilice la última copia local disponible.")
+        except Exception:
+            logger.exception("[RemesasConnect]\nphase=OPEN_INTERFACE\nstatus=FAILED")
+            messagebox.showerror(
+                "Interfaz de remesas",
+                "No se pudo abrir la interfaz de remesas.\n\n"
+                f"Detalle técnico:\n{traceback.format_exc()}",
+            )
 
     def _save_liquidations(self):
         if self.current_batch_result is not None:
