@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, is_dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+from hashlib import sha256
 import json
 import logging
 import re
@@ -104,6 +105,11 @@ class PremiumLiquidationViewModel:
     variety_name: str | None = None
     variety_group_code: str | None = None
     variety_group_name: str | None = None
+    applicable_hectares: Decimal | None = None
+    surface_group_code: str | None = None
+    surface_group_name: str | None = None
+    surface_source: str | None = None
+    surface_fingerprint: str | None = None
 
     @property
     def variety_text(self) -> str:
@@ -163,6 +169,12 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
     commercial_kg = member.commercial_kg + (secondary_kg if dest.secondary_enabled and dest.secondary_counts_as_commercial else Decimal("0"))
     logger.info("[ProductionDestination] crop=%s primary_label=%s secondary_enabled=%s secondary_label=%s secondary_counts_as_commercial=%s waste_label=%s", dest.crop, dest.primary_label, dest.secondary_enabled, dest.secondary_label, dest.secondary_counts_as_commercial, dest.waste_label)
     logger.info("[ProductionSummary] primary_kg=%s primary_price=%s primary_amount=%s secondary_kg=%s secondary_price=%s secondary_amount=%s waste_kg=%s waste_price=%s waste_amount=%s commercial_kg=%s total_delivered_kg=%s", member.commercial_kg, member.commercial_average_price, member.commercial_amount, secondary_kg, secondary_price, secondary_amount, member.rotten_kg, waste_price, member.rotten_amount, commercial_kg, member.net_kg)
+    surface = member.applicable_hectares
+    surface_audit = getattr(member, "hectare_fee_audit", None)
+    surface_fingerprint = None
+    if surface is not None:
+        surface_fingerprint = sha256("|".join((str(header.campana), str(header.empresa), str(member.member_id),
+            str(surface), ",".join(getattr(surface_audit, "eligible_crops", ())))).encode()).hexdigest()
     return PremiumLiquidationViewModel(
         member_id=member.member_id, member_name=member.member_name, tax_id_masked=mask_tax_id(tax_id),
         remittance_name=header.remesa_name, campaign=str(header.campana), company=header.empresa, crop=header.cultivo,
@@ -180,6 +192,9 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
         withholding_rate=member.withholding_rate, withholding_amount=member.withholding_amount,
         total_amount=member.total_amount, final_average_price=member.final_average_price, final_average_price_pts=pts,
         commercial_breakdown=rows, group_benchmark=group_benchmark,
+        applicable_hectares=surface,
+        surface_source="HECTARE_FEE",
+        surface_fingerprint=surface_fingerprint,
     )
 
 

@@ -192,7 +192,8 @@ class LiquidationPersistenceService:
                     variety_code_value,variety_name_value,group_code_value,group_name_value = next(iter(identities))
                     vm=load_snapshot(payload_json)
                     payload_json=dump_snapshot(replace(vm,variety_code=variety_code_value,variety_name=variety_name_value,
-                        variety_group_code=group_code_value,variety_group_name=group_name_value))
+                        variety_group_code=group_code_value,variety_group_name=group_name_value,
+                        surface_group_code=group_code_value,surface_group_name=group_name_value))
                 logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=%s\nstatus=STARTED", batch_id, recipient_member_id, SCHEMA_VERSION)
                 conn.execute("INSERT OR REPLACE INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, int(recipient_member_id), payload_json, SCHEMA_VERSION, preview.fingerprint, now, user))
                 conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, "DOCUMENT_SNAPSHOT_SAVED", "DOCUMENT", str(recipient_member_id), json.dumps({"recipient_member_id": recipient_member_id, "schema_version": SCHEMA_VERSION, "calculation_fingerprint": preview.fingerprint}), now, user))

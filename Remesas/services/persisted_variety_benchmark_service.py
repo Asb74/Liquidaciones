@@ -16,7 +16,8 @@ def variety_group_code(group, subgroup=""):
 
 class PersistedVarietyBenchmarkService:
     """Aggregates immutable local liquidation values, never consulting Access."""
-    def __init__(self, repository): self.repository=repository; self._cache={}
+    def __init__(self, repository, *, surface_service=None):
+        self.repository=repository; self.surface_service=surface_service; self._cache={}
     def clear_cache(self): self._cache.clear()
     def get_group_benchmarks(self, scopes):
         return {s:self.get_group_benchmark(campaign=s.campaign,company=s.company,variety_group_code=s.variety_group_code) for s in dict.fromkeys(scopes)}
@@ -26,31 +27,68 @@ class PersistedVarietyBenchmarkService:
         members={}; sources=[]
         for row in self.repository.list_persisted_benchmark_rows(scope.campaign,scope.company):
             try:
-                frozen=load_snapshot(row["payload_json"]).group_benchmark if row["payload_json"] else None
+                snapshot=load_snapshot(row["payload_json"]) if row["payload_json"] else None
                 persisted_code = row["variety_group_code"] if "variety_group_code" in row.keys() else None
                 # Compatibility is deliberately limited to pre-migration row
                 # shapes. Real migrated rows are always classified by their
                 # persisted liquidation variety, never by remittance metadata.
+                frozen=snapshot.group_benchmark if snapshot else None
                 effective_code = str(persisted_code or (globals()["variety_group_code"](frozen.group,frozen.subgroup) if frozen else ""))
                 if effective_code != scope.variety_group_code: continue
                 kg=Decimal(str(row["neto"])); amount=Decimal(str(row["importe_total"]))
             except (ValueError,TypeError,KeyError,InvalidOperation): continue
             if not kg.is_finite() or not amount.is_finite() or kg<0: continue
-            mid=int(row["recipient_member_id"]); x=members.setdefault(mid,{"name":str(row["socio"]),"kg":Decimal(0),"commercial":Decimal(0),"amount":Decimal(0),"batch_kg":{},"batch_own":{}})
-            x["kg"]+=kg; x["amount"]+=amount; x["batch_kg"][row["batch_id"]]=x["batch_kg"].get(row["batch_id"],Decimal(0))+kg
-            own=frozen.kilograms_per_hectare.own_value if frozen else None; x["batch_own"][row["batch_id"]]=own
+            mid=int(row["recipient_member_id"]); x=members.setdefault(mid,{"name":str(row["socio"]),"kg":Decimal(0),"commercial":Decimal(0),"amount":Decimal(0),"surfaces":[]})
+            x["kg"]+=kg; x["amount"]+=amount
+            explicit=getattr(snapshot,"applicable_hectares",None) if snapshot else None
+            if explicit is not None:
+                try: explicit=Decimal(explicit)
+                except (InvalidOperation,ValueError,TypeError): explicit=None
+            if explicit is not None and explicit.is_finite() and explicit>0:
+                keys=row.keys()
+                x["surfaces"].append({
+                    "value":explicit,"source":getattr(snapshot,"surface_source",None) or "SNAPSHOT",
+                    "fingerprint":getattr(snapshot,"surface_fingerprint",None) or "",
+                    "date":str(row["payment_date"] if "payment_date" in keys else ""),
+                    "created":str(row["snapshot_created_at"] if "snapshot_created_at" in keys else ""),
+                    "batch_id":str(row["batch_id"]),
+                })
             price=Decimal(str(row["precio_medio"])) if row["precio_medio"] not in (None,"") else None
             x["commercial"] += amount/price if price and price>0 else kg
             sources.append((int(row["id"]),row["status"],row["batch_status"],str(kg),str(amount),scope.variety_group_code))
         result=[]
+        from_snapshot=from_fallback=without_surface=0
         for mid,x in sorted(members.items()):
-            candidates=[batch_kg/x["batch_own"][batch] for batch,batch_kg in x["batch_kg"].items() if x["batch_own"].get(batch) and x["batch_own"][batch]>0]
-            ha=max(candidates) if candidates else None; kg=x["kg"]; commercial=x["commercial"]; amount=x["amount"]
+            candidate=None
+            if x["surfaces"]:
+                # Explicit policy: newest valid documentary surface wins. Repeated
+                # snapshots/remittances are candidates, never additive hectares.
+                ordered=sorted(x["surfaces"],key=lambda c:(c["date"],c["created"],c["batch_id"]))
+                candidate=ordered[-1]; from_snapshot+=1
+                distinct={c["value"] for c in ordered}
+                if len(distinct)>1:
+                    logger.warning("[PersistedBenchmarkSurface] status=SURFACE_VALUE_CHANGED campaign=%s company=%s group=%s member_id=%s previous=%s new=%s policy=LATEST_VALID_SURFACE",scope.campaign,scope.company,scope.variety_group_code,mid,ordered[-2]["value"],candidate["value"])
+            elif self.surface_service is not None:
+                try:
+                    recovered=self.surface_service.get_member_variety_group_surface(campaign=scope.campaign,company=scope.company,member_id=mid,variety_group_code=scope.variety_group_code)
+                    if recovered:
+                        value,fingerprint,*_rest=recovered if isinstance(recovered,tuple) else (recovered,"",())
+                        value=Decimal(value)
+                        if value.is_finite() and value>0:
+                            candidate={"value":value,"source":"SURFACE_SERVICE","fingerprint":fingerprint,"date":"","created":"","batch_id":""}; from_fallback+=1
+                except Exception:
+                    logger.exception("[PersistedBenchmarkSurface] campaign=%s company=%s group=%s member_id=%s source=SURFACE_SERVICE status=ERROR",scope.campaign,scope.company,scope.variety_group_code,mid)
+            ha=candidate["value"] if candidate else None
+            if candidate is None: without_surface+=1
+            logger.info("[PersistedBenchmarkSurface] campaign=%s company=%s group=%s member_id=%s surface=%s source=%s status=%s",scope.campaign,scope.company,scope.variety_group_code,mid,ha,candidate["source"] if candidate else "UNAVAILABLE","AVAILABLE" if candidate else "MISSING")
+            kg=x["kg"]; commercial=x["commercial"]; amount=x["amount"]
             result.append(PersistedMemberBenchmark(mid,x["name"],commercial,amount,ha,amount/commercial if commercial>0 else None,kg/ha if ha and ha>0 else None,amount/ha if ha and ha>0 else None))
+            sources.append(("surface",mid,str(ha) if ha else None,candidate["source"] if candidate else "UNAVAILABLE",candidate["fingerprint"] if candidate else ""))
         fingerprint=sha256(json.dumps([scope.__dict__,sources],sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
         benchmark=VarietyGroupBenchmark(scope,tuple(result),self._metric(result,"final_average_price"),self._metric(result,"production_kg_ha"),self._metric(result,"final_amount_eur_ha"),datetime.now(timezone.utc),fingerprint)
         self._cache[scope]=benchmark
         logger.info("[PersistedBenchmark] campaign=%s company=%s group=%s members=%s liquidations=%s fingerprint=%s",scope.campaign,scope.company,scope.variety_group_code,len(result),len(sources),fingerprint)
+        logger.info("[PersistedBenchmarkSurfaceSummary] campaign=%s company=%s group=%s total_members=%s with_surface=%s without_surface=%s from_snapshot=%s from_fallback=%s",scope.campaign,scope.company,scope.variety_group_code,len(result),len(result)-without_surface,without_surface,from_snapshot,from_fallback)
         return benchmark
     @staticmethod
     def _metric(members, field):

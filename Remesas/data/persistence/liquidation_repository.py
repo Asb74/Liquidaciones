@@ -34,7 +34,8 @@ class LiquidationRepository:
             return conn.execute("""SELECT l.id,l.id_liq,l.recipient_member_id,l.id_socio,l.socio,
               l.campana,l.empresa,l.cultivo,l.variedad,l.variety_code,l.variety_name,
               l.variety_group_code,l.variety_group_name,l.neto,l.precio_medio,l.importe_total,
-              l.status,l.operation_type,l.batch_id,b.status AS batch_status,s.payload_json
+              l.status,l.operation_type,l.batch_id,b.status AS batch_status,b.payment_date,
+              l.created_at,s.created_at AS snapshot_created_at,s.schema_version,s.payload_json
               FROM liquidaciones l JOIN liquidation_batches b ON b.batch_id=l.batch_id
               LEFT JOIN liquidation_document_snapshots s ON s.batch_id=l.batch_id
                 AND s.recipient_member_id=l.recipient_member_id
