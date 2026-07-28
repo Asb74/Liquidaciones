@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from domain.models import AppConfig
-from services.local_database_sync_service import DatabaseValidationError, LocalDatabaseSyncService
+from services.local_database_sync_service import DatabaseValidationError, LocalDatabaseSyncService, format_sync_diagnostics
 
 
 def make_db(path: Path, tables: tuple[str, ...]) -> None:
@@ -58,10 +58,34 @@ class LocalDatabaseSyncServiceTests(unittest.TestCase):
         self.assertFalse(result.synchronized)
 
     def test_source_unavailable_without_local_copy_returns_controlled_error(self):
-        result = self.service.synchronize_database(Path(self.config.source_db_fruta), Path(self.config.db_fruta), "DBfruta")
+        with self.assertLogs("services.local_database_sync_service", level="INFO") as logs:
+            result = self.service.synchronize_database(Path(self.config.source_db_fruta), Path(self.config.db_fruta), "DBfruta")
         self.assertFalse(result.used_local_fallback)
         self.assertFalse(result.synchronized)
         self.assertIn("No se ha podido acceder", result.error_message)
+        expected_lines = (
+            "Nombre: DBfruta",
+            f"Ruta origen: {self.config.source_db_fruta}",
+            f"Ruta local: {self.config.db_fruta}",
+            "¿Existe el origen?: No",
+            "¿Existe la copia local?: No",
+            "Tamaño del archivo: No disponible",
+            "Fecha modificación: No disponible",
+            "Resultado de PRAGMA quick_check: No ejecutado",
+            "Tablas encontradas: Ninguna",
+            "Tablas obligatorias que faltan: DLiquidaciones, PagosCIT, PesosFres",
+            "Excepción completa:",
+            "FileNotFoundError:",
+        )
+        for line in expected_lines:
+            self.assertIn(line, result.diagnostic)
+            self.assertIn(line, "\n".join(logs.output))
+
+    def test_combined_diagnostic_includes_every_database(self):
+        results = self.service.synchronize_all()
+        diagnostic = format_sync_diagnostics(results)
+        self.assertIn("Nombre: DBfruta", diagnostic)
+        self.assertIn("Nombre: DBEEPPL", diagnostic)
 
     def test_corrupt_new_copy_does_not_replace_valid_previous_copy(self):
         make_db(Path(self.config.db_fruta), ("PesosFres", "PagosCIT", "DLiquidaciones"))

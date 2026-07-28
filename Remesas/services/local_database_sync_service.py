@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import time
+import traceback
 from typing import Callable, Sequence
 
 from domain.models import AppConfig
@@ -30,6 +31,11 @@ class DatabaseSyncError(RuntimeError):
     pass
 
 
+def format_sync_diagnostics(results: Sequence[DatabaseSyncResult]) -> str:
+    """Return the complete, user-facing diagnostic for every configured database."""
+    return "\n\n".join(result.diagnostic for result in results if result.diagnostic)
+
+
 @dataclass(frozen=True)
 class DatabaseSyncResult:
     database_name: str
@@ -42,6 +48,7 @@ class DatabaseSyncResult:
     local_modified_at: datetime | None
     file_size: int | None
     error_message: str | None
+    diagnostic: str = ""
 
     @property
     def status(self) -> str:
@@ -85,7 +92,11 @@ class LocalDatabaseSyncService:
         logger.info("Sincronizando %s: origen=%s local=%s existe=%s tamaño=%s", name, source_path, local_path, source_available, file_size)
 
         if not source_available:
-            return self._fallback_or_error(name, source_path, local_path, f"No se ha podido acceder a {source_path}")
+            message = f"No se ha podido acceder a {source_path}"
+            return self._with_diagnostic(
+                self._fallback_or_error(name, source_path, local_path, message),
+                f"FileNotFoundError: {message}",
+            )
 
         self._warn_if_wal_present(source_path, name)
         temp_path = self.temp_dir / f"{local_path.name}.tmp"
@@ -106,10 +117,14 @@ class LocalDatabaseSyncService:
             os.replace(temp_path, local_path)
             local_modified_at = self._mtime(local_path)
             logger.info("Base local abierta posteriormente en lectura: %s", local_path)
-            return DatabaseSyncResult(name, source_path, local_path, True, True, False, source_modified_at, local_modified_at, file_size, None)
+            return self._with_diagnostic(DatabaseSyncResult(name, source_path, local_path, True, True, False, source_modified_at, local_modified_at, file_size, None))
         except Exception as exc:
+            exception_details = traceback.format_exc()
             logger.exception("Error sincronizando %s", name)
-            return self._fallback_or_error(name, source_path, local_path, str(exc), source_modified_at, file_size)
+            return self._with_diagnostic(
+                self._fallback_or_error(name, source_path, local_path, str(exc), source_modified_at, file_size),
+                exception_details,
+            )
         finally:
             try:
                 if temp_path.exists():
@@ -148,6 +163,71 @@ class LocalDatabaseSyncService:
                 logger.exception("Fallback local inválido para %s", name)
                 message = f"{message}. Copia local inválida: {exc}"
         return DatabaseSyncResult(name, source, local, source.exists(), False, False, source_mtime, self._mtime(local), file_size, message)
+
+    def _with_diagnostic(self, result: DatabaseSyncResult, exception_details: str = "Ninguna") -> DatabaseSyncResult:
+        required_tables = REQUIRED_TABLES.get(result.database_name, ())
+        source_info = self._inspect_database_file(result.source_path, required_tables)
+        local_info = self._inspect_database_file(result.local_path, required_tables)
+        diagnostic = "\n".join([
+            f"Nombre: {result.database_name}",
+            f"Ruta origen: {result.source_path}",
+            f"Ruta local: {result.local_path}",
+            f"¿Existe el origen?: {self._yes_no(source_info['exists'])}",
+            f"¿Existe la copia local?: {self._yes_no(local_info['exists'])}",
+            *self._format_file_diagnostic("Origen", source_info),
+            *self._format_file_diagnostic("Copia local", local_info),
+            f"Excepción completa:\n{exception_details.rstrip()}",
+        ])
+        logger.info("Diagnóstico de base de datos:\n%s", diagnostic)
+        return DatabaseSyncResult(
+            result.database_name, result.source_path, result.local_path,
+            result.source_available, result.synchronized, result.used_local_fallback,
+            result.source_modified_at, result.local_modified_at, result.file_size,
+            result.error_message, diagnostic,
+        )
+
+    def _inspect_database_file(self, path: Path, required_tables: Sequence[str]) -> dict[str, object]:
+        info: dict[str, object] = {
+            "exists": path.exists(), "size": None, "modified_at": None,
+            "quick_check": "No ejecutado", "tables": [],
+            "missing_tables": sorted(required_tables), "exception": "Ninguna",
+        }
+        if not info["exists"]:
+            return info
+        try:
+            stat = path.stat()
+            info["size"] = stat.st_size
+            info["modified_at"] = datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds")
+            uri = f"file:{path.as_posix()}?mode=ro"
+            with sqlite3.connect(uri, uri=True, timeout=10) as connection:
+                rows = connection.execute("PRAGMA quick_check").fetchall()
+                info["quick_check"] = ", ".join(str(row[0]) for row in rows) if rows else "Sin resultado"
+                tables = sorted(str(row[0]) for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ))
+                info["tables"] = tables
+                info["missing_tables"] = sorted(set(required_tables) - set(tables))
+        except Exception:
+            info["exception"] = traceback.format_exc().rstrip()
+        return info
+
+    @staticmethod
+    def _format_file_diagnostic(label: str, info: dict[str, object]) -> list[str]:
+        tables = ", ".join(info["tables"]) if info["tables"] else "Ninguna"
+        missing = ", ".join(info["missing_tables"]) if info["missing_tables"] else "Ninguna"
+        size = f"{info['size']} bytes" if info["size"] is not None else "No disponible"
+        return [
+            f"{label} - Tamaño del archivo: {size}",
+            f"{label} - Fecha modificación: {info['modified_at'] or 'No disponible'}",
+            f"{label} - Resultado de PRAGMA quick_check: {info['quick_check']}",
+            f"{label} - Tablas encontradas: {tables}",
+            f"{label} - Tablas obligatorias que faltan: {missing}",
+            f"{label} - Excepción de inspección:\n{info['exception']}",
+        ]
+
+    @staticmethod
+    def _yes_no(value: object) -> str:
+        return "Sí" if value else "No"
 
     def _ensure_directories(self) -> None:
         self.local_dir.mkdir(parents=True, exist_ok=True)

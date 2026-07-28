@@ -4,6 +4,7 @@ import csv
 import hashlib
 import logging
 import os
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 import tkinter as tk
@@ -27,7 +28,7 @@ from services.deliveries_service import DeliveriesService
 from services.remesas_service import RemesasService
 from services.calculation_service import CalculationService
 from services.hectare_fee_master_service import HectareFeeMasterService
-from services.local_database_sync_service import LocalDatabaseSyncService
+from services.local_database_sync_service import LocalDatabaseSyncService, format_sync_diagnostics
 from services.variety_group_service import VarietyGroupService
 from services.group_benchmark_service import GroupBenchmarkService
 from ui.context_panel import ContextPanel
@@ -217,7 +218,8 @@ class RemesasFrame(ttk.Frame):
             self.context_panel.campaña_cb["values"]=self.meta.campaigns(); self.context_panel.set_status(self.db.status()); self.hectare_master_service=HectareFeeMasterService(self.master_repository, HectareFeeCropRepository(self.conn)); self.calculations=CalculationService(self.conn, self.config); self._refresh_database_status(); self._refresh_action_states()
         except Exception as exc:
             logger.exception("No se ha podido abrir la copia local de las bases SQLite")
-            messagebox.showerror("Error", "No se han podido preparar las bases de datos.\n\nDetalle:\nNo existe una copia local válida para abrir en modo lectura.\n\nRevise la conexión de red o utilice la última copia local disponible.")
+            detail = format_sync_diagnostics(self.sync_results) if self.sync_results else traceback.format_exc()
+            messagebox.showerror("Error", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{detail}\n\nExcepción al abrir:\n{traceback.format_exc()}\n\nRevise la conexión de red o utilice la última copia local disponible.")
 
     def _save_liquidations(self):
         if self.current_batch_result is not None:
@@ -340,7 +342,7 @@ class RemesasFrame(ttk.Frame):
             self.sync_results=service.synchronize_all()
             errors=[r for r in self.sync_results if not (r.synchronized or r.used_local_fallback)]
             if errors:
-                detail="\n".join(f"{r.database_name}: {r.error_message}" for r in errors)
+                detail=format_sync_diagnostics(self.sync_results)
                 messagebox.showerror("Bases de datos", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{detail}\n\nRevise la conexión de red o utilice la última copia local disponible.")
                 return False
             if manual:
