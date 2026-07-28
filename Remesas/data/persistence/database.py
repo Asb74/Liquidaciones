@@ -1,55 +1,43 @@
+"""Compatibilidad de construcción para la persistencia PostgreSQL central."""
 from __future__ import annotations
 
-import sqlite3
-import logging
-import threading
 from contextlib import contextmanager
-from pathlib import Path
 
-from .migrations import migrate
-from .search_text import normalize_search_text
+from data.postgres_repository import PostgresRepository, PostgreSQLSettings
 
 
-class PersistenceDatabase:
-    """Factoría de conexiones. Los decimales se guardan como texto canónico."""
+class PersistenceDatabase(PostgresRepository):
+    """Repositorio PostgreSQL de persistencia (el argumento antiguo se ignora)."""
 
-    def __init__(self, path: str) -> None:
-        self.path = Path(path)
+    def __init__(self, _obsolete_path: str | None = None, *, settings: PostgreSQLSettings | None = None, connection=None) -> None:
+        super().__init__(settings, connection=connection)
+
+    @property
+    def path(self) -> str:
+        return "postgresql://liquidaciones"
 
     @contextmanager
     def connect(self):
-        """Yield a connection owned by, and closed in, the calling thread."""
-        conn = self.open_connection()
-        try:
-            yield conn
-        finally:
-            self.close_connection(conn)
+        if self._connection is not None:
+            yield self
+            return
+        with super().connect() as repository:
+            yield type(self)(settings=self.settings, connection=repository._connection)
 
-    def open_connection(self) -> sqlite3.Connection:
-        """Open a manually managed connection for an explicit transaction."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        # Keep accent-insensitive member searches in SQLite so LIMIT is applied
-        # only after the textual predicate has selected the matching rows.
-        conn.create_function("NORMALIZE_SEARCH_TEXT", 1, normalize_search_text)
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        logging.getLogger(__name__).info(
-            "[SQLiteConnection] database=%s thread_id=%s action=OPENED",
-            self.path, threading.get_ident(),
-        )
-        return conn
+    def open_connection(self):
+        connection = self.pool(self.settings).getconn()
+        connection.execute("SET search_path TO liquidaciones, legacy_dbfruta, legacy_eepp, integracion, informes, public")
+        return type(self)(settings=self.settings, connection=connection)
 
-    def close_connection(self, conn: sqlite3.Connection) -> None:
-        conn.close()
-        logging.getLogger(__name__).info(
-            "[SQLiteConnection] database=%s thread_id=%s action=CLOSED",
-            self.path, threading.get_ident(),
-        )
+    def close_connection(self, connection) -> None:
+        raw_connection = getattr(connection, "_connection", connection)
+        self.pool(self.settings).putconn(raw_connection)
 
     def initialize(self) -> None:
-        with self.connect() as conn:
-            migrate(conn)
+        from db_tools.migrations import migrate
+        from pathlib import Path
+        with self.transaction() as repository:
+            migrate(
+                repository._conn(),
+                Path(__file__).resolve().parents[2] / "migrations" / "postgresql",
+            )

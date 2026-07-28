@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
-import sqlite3
+from data.repository import IDataRepository
 
 @dataclass(frozen=True)
 class VarietalGroup:
@@ -15,7 +15,7 @@ def _norm(value: object) -> str:
     return str(value or "").strip().upper()
 
 class GroupBenchmarkRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: IDataRepository) -> None:
         self.conn = conn
 
     def get_varietal_group(self, crop: str, variety: str) -> VarietalGroup | None:
@@ -25,7 +25,7 @@ class GroupBenchmarkRepository:
         if row is None:
             try:
                 row = self.conn.execute(sql.replace("eepp.MVariedad", "MVariedad"), (crop, variety)).fetchone()
-            except sqlite3.Error:
+            except Exception:
                 row = None
         if row is None:
             return None

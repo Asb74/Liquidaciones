@@ -28,7 +28,6 @@ from services.deliveries_service import DeliveriesService
 from services.remesas_service import RemesasService
 from services.calculation_service import CalculationService
 from services.hectare_fee_master_service import HectareFeeMasterService
-from services.local_database_sync_service import LocalDatabaseSyncService, format_sync_diagnostics
 from services.variety_group_service import VarietyGroupService
 from services.group_benchmark_service import GroupBenchmarkService
 from ui.context_panel import ContextPanel
@@ -46,7 +45,7 @@ from presentation.premium_liquidation_view_model import from_member_liquidation
 from presentation.liquidation_document_snapshot import SCHEMA_VERSION, dump as dump_document_snapshot
 from data.persistence.database import PersistenceDatabase
 from data.persistence.master_repository import LiquidationMasterRepository
-from data.legacy_persistence_repository import LegacyPersistenceRepository
+from data.postgres_legacy_repository import PostgresLegacyRepository
 from services.liquidation_persistence_service import LiquidationPersistenceService
 from data.persistence.liquidation_repository import LiquidationRepository
 from services.document_generation_service import DocumentGenerationOptions, DocumentGenerationService
@@ -94,7 +93,7 @@ class RemesasFrame(ttk.Frame):
         self._build(); self._connect()
 
     def _build(self):
-        self.db_status_text=tk.StringVar(value="Preparando bases locales...")
+        self.db_status_text=tk.StringVar(value="Preparando conexión PostgreSQL...")
         ttk.Label(self,textvariable=self.db_status_text).grid(row=0,column=0,columnspan=3,sticky="ew")
         self.context_panel=ContextPanel(self,self.config,self._context_changed); self.context_panel.grid(row=1,column=0,columnspan=3,sticky="ew")
         self.remesa_panel=RemesaPanel(self); self.remesa_panel.grid(row=2,column=0,sticky="nsew",padx=4,pady=4)
@@ -182,7 +181,7 @@ class RemesasFrame(ttk.Frame):
         self._show_about()
 
     def _show_about(self):
-        messagebox.showinfo("Acerca de", "Liquidaciones - Remesas\nModo prueba SQLite\nVersión actual del módulo")
+        messagebox.showinfo("Acerca de", "Liquidaciones - Remesas\nModo prueba PostgreSQL\nVersión actual del módulo")
 
     def _open_hectare_fee_master(self):
         try:
@@ -204,7 +203,7 @@ class RemesasFrame(ttk.Frame):
             logger.exception("[RemesasConnect]\nphase=OPEN_DATABASES\nstatus=FAILED")
             messagebox.showerror(
                 "Bases de datos",
-                "No se pudieron abrir las bases de datos locales.\n\n"
+                "No se pudo abrir PostgreSQL.\n\n"
                 f"Detalle técnico:\n{traceback.format_exc()}",
             )
             return
@@ -220,9 +219,9 @@ class RemesasFrame(ttk.Frame):
                 self.document_service=DocumentGenerationService(self.liquidation_repository, output_root)
                 self.modification_service=LiquidationModificationService(self.persistence_service)
                 # The history worker must never inherit the main Tk thread's
-                # attached SQLite connection.  This repository opens both local
+                # PostgreSQL connection.  This repository opens both local
                 # legacy databases inside each operation in the calling thread.
-                export_legacy_repository=LegacyPersistenceRepository(self.db.connect_fruta_with_eepp)
+                export_legacy_repository=PostgresLegacyRepository(self.db.connect_fruta_with_eepp)
                 logger.info("[RemesasConnect]\nphase=CREATE_LEGACY_REPOSITORY\nstatus=OK")
             except Exception:
                 logger.exception("[RemesasConnect]\nphase=CREATE_LEGACY_REPOSITORY\nstatus=FAILED")
@@ -382,24 +381,16 @@ class RemesasFrame(ttk.Frame):
         self.update_idletasks()
 
     def synchronize_local_databases(self, manual: bool = False) -> bool:
-        if manual and self.calculation_valid and not messagebox.askyesno("Actualizar bases locales", "Existe un cálculo activo. La actualización limpiará los resultados actuales. ¿Continuar?"):
-            return False
+        """Actualiza la vista; PostgreSQL siempre ofrece datos compartidos en tiempo real."""
         try:
-            service=LocalDatabaseSyncService(self.config, progress_callback=self.status.set if hasattr(self, "status") else None)
-            self.sync_results=service.synchronize_all()
-            errors=[r for r in self.sync_results if not (r.synchronized or r.used_local_fallback)]
-            if errors:
-                detail=format_sync_diagnostics(self.sync_results)
-                messagebox.showerror("Bases de datos", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{detail}\n\nRevise la conexión de red o utilice la última copia local disponible.")
-                return False
-            if manual:
-                self._reconnect_after_sync()
-                messagebox.showinfo("Bases locales", self._fallback_warning_text() or "Bases locales actualizadas desde red.")
+            self._reconnect_after_sync()
             self._refresh_database_status()
+            if manual:
+                messagebox.showinfo("PostgreSQL", "Conexión renovada. Los datos ya están actualizados en tiempo real.")
             return True
         except Exception as exc:
-            logger.exception("Error de sincronización manual")
-            messagebox.showerror("Bases de datos", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{exc}\n\nRevise la conexión de red o utilice la última copia local disponible.")
+            logger.exception("No se pudo renovar la conexión PostgreSQL")
+            messagebox.showerror("PostgreSQL", f"No se pudo renovar la conexión: {exc}")
             return False
 
     def _reconnect_after_sync(self):
@@ -409,33 +400,22 @@ class RemesasFrame(ttk.Frame):
         self._connect()
 
     def open_data_folder(self):
-        Path(self.config.local_database_dir).mkdir(parents=True, exist_ok=True)
+        output = Path("C:/Liquidaciones/salidas/remesas") if Path("C:/").exists() else Path.cwd().parent / "salidas" / "remesas"
+        output.mkdir(parents=True, exist_ok=True)
         if hasattr(os, "startfile"):
-            os.startfile(self.config.local_database_dir)
+            os.startfile(output)
         else:
-            messagebox.showinfo("Carpeta de datos", self.config.local_database_dir)
-
-    def _fallback_warning_text(self) -> str:
-        if not any(r.used_local_fallback for r in self.sync_results):
-            return ""
-        lines=["No se ha podido acceder a las bases de red.", "", "La aplicación utilizará la última copia local válida:"]
-        for r in self.sync_results:
-            if r.used_local_fallback:
-                stamp=r.local_modified_at.strftime("%d/%m/%Y %H:%M") if r.local_modified_at else "fecha desconocida"
-                lines.append(f"{r.database_name}: {stamp}")
-        lines += ["", "Los datos pueden no estar actualizados."]
-        return "\n".join(lines)
+            messagebox.showinfo("Carpeta de salidas", output)
 
     def _refresh_database_status(self):
         if not hasattr(self, "db_status_text"):
             return
-        status=self.db.status()
-        parts=[]
-        for key in ("DBfruta", "DBEEPPL"):
-            parts.append(f"{key} local: {status.get(key, 'No accesible')}")
-        if self.sync_results:
-            parts.append(" | ".join(sorted({r.status for r in self.sync_results})))
-        self.db_status_text.set("   ".join(parts))
+        status=self.db.status().get("PostgreSQL", "No accesible")
+        settings=self.config.postgresql_settings
+        self.db_status_text.set(
+            f"Base de datos: PostgreSQL   Servidor: {settings.host}   "
+            f"Base: {settings.database}   Estado: {'Conectado' if status.startswith('OK') else status}"
+        )
 
     def _context_changed(self):
         if self._has_pending_batch() and not self._confirm_discard_pending_batch():

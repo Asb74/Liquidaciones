@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
+from data.repository import IDataRepository
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -27,9 +27,9 @@ def normalize_fiscal_regime(value: Any) -> str:
 
 
 class FiscalRegimeRepository:
-    """Consulta DSocio y MRegimenFiscal en DBEEPPL.sqlite en modo lectura."""
+    """Consulta DSocio y MRegimenFiscal en legacy_eepp en modo lectura."""
 
-    def __init__(self, conn: sqlite3.Connection, schema: str = "eepp") -> None:
+    def __init__(self, conn: IDataRepository, schema: str = "eepp") -> None:
         self.conn = conn
         self.schema = schema
 
@@ -64,7 +64,7 @@ class FiscalRegimeRepository:
             tuple(warnings),
         )
 
-    def _member_rows(self, member_id: int) -> list[sqlite3.Row]:
+    def _member_rows(self, member_id: int) -> list[Any]:
         sql = f"""
         SELECT IdSocio, RegimeFiscal, Inactivo, Baja
         FROM {self.schema}.DSocio
@@ -72,20 +72,20 @@ class FiscalRegimeRepository:
         """
         try:
             return list(self.conn.execute(sql, (member_id,)).fetchall())
-        except sqlite3.OperationalError:
+        except Exception:
             fallback = sql.replace(f"{self.schema}.", "")
             return list(self.conn.execute(fallback, (member_id,)).fetchall())
 
-    def _regime_rows(self) -> list[sqlite3.Row]:
+    def _regime_rows(self) -> list[Any]:
         sql = f"SELECT Regimen, Iva, Retencion FROM {self.schema}.MRegimenFiscal"
         try:
             return list(self.conn.execute(sql).fetchall())
-        except sqlite3.OperationalError:
+        except Exception:
             fallback = sql.replace(f"{self.schema}.", "")
             return list(self.conn.execute(fallback).fetchall())
 
     @staticmethod
-    def _is_active(row: sqlite3.Row) -> bool:
+    def _is_active(row: Any) -> bool:
         inactive = to_decimal(row["Inactivo"])
         baja = row["Baja"]
         return inactive == Decimal("0") and (baja is None or str(baja).strip() == "")

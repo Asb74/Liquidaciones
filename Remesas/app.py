@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging
-import os
+import sys
 import tkinter as tk
 from tkinter import messagebox, ttk
 from ui.remesas_frame import RemesasFrame
@@ -9,7 +9,6 @@ from ui.styles import apply_styles
 from ui.calibre_master_dialog import CalibreMasterDialog
 from ui.production_destination_master_dialog import ProductionDestinationMasterDialog
 from data.db_connection import load_config, setup_logging
-from services.local_database_sync_service import LocalDatabaseSyncService, format_sync_diagnostics
 from data.persistence.database import PersistenceDatabase
 from data.persistence.liquidation_repository import LiquidationRepository
 from services.pdf_merge_service import PdfMergeService
@@ -19,90 +18,37 @@ from data.hectare_repository import HectareRepository
 from services.hectare_fee_report_service import HectareFeeReportService
 from services.persisted_variety_benchmark_service import PersistedVarietyBenchmarkService
 from services.individual_pdf_refresh_service import IndividualPdfRefreshService
+from data.postgres_repository import PostgresRepository
 
 logger = logging.getLogger(__name__)
 
 
-def _check_postgresql_before_start(root: tk.Tk) -> bool:
-    """Bloquea la ventana principal cuando el backend PostgreSQL no está listo."""
-    if os.environ.get("DATABASE_BACKEND", "sqlite").strip().lower() != "postgresql":
-        return True
-    from db_tools.postgres import PostgresConnectionDiagnostics, PostgresSettings, PostgresError
-
-    while True:  # sólo continúa cuando el usuario pulsa explícitamente Reintentar
-        settings = PostgresSettings.from_env(validate=False)
-        result = PostgresConnectionDiagnostics(settings).check_connection()
-        if result.success:
-            return True
-        error_class = getattr(__import__("db_tools.postgres", fromlist=[result.error_type]), result.error_type, PostgresError)
-        title = getattr(error_class, "title", "Error de PostgreSQL")
-        if result.retryable:
-            retry = messagebox.askretrycancel(title, result.user_message, parent=root)
-            if retry:
-                continue
-        else:
-            messagebox.showerror(title, result.user_message, parent=root)
-        return False
-
-
 def _prepare_databases(root: tk.Tk, config) -> bool:
-    if not config.sync_on_start:
-        return True
-    win = tk.Toplevel(root)
-    win.title("Preparando bases de datos")
-    win.resizable(False, False)
-    ttk.Label(win, text="Preparando bases de datos...").pack(padx=18, pady=(14, 4), anchor="w")
-    status = tk.StringVar(value="Comprobando DBfruta.")
-    ttk.Label(win, textvariable=status, width=58).pack(padx=18, pady=(0, 14), anchor="w")
-    win.update_idletasks()
-
-    def progress(message: str) -> None:
-        status.set(message)
-        win.update_idletasks()
-
     try:
-        results = LocalDatabaseSyncService(config, progress_callback=progress).synchronize_all()
-        errors = [r for r in results if not (r.synchronized or r.used_local_fallback)]
-        if errors:
-            detail = format_sync_diagnostics(results)
-            messagebox.showerror("Bases de datos", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{detail}\n\nRevise la conexión de red o utilice la última copia local disponible.")
-            return False
-        fallback = [r for r in results if r.used_local_fallback]
-        if fallback:
-            lines = ["No se ha podido acceder a las bases de red.", "", "La aplicación utilizará la última copia local válida:"]
-            for r in fallback:
-                stamp = r.local_modified_at.strftime("%d/%m/%Y %H:%M") if r.local_modified_at else "fecha desconocida"
-                lines.append(f"{r.database_name}: {stamp}")
-            lines += ["", "Los datos pueden no estar actualizados."]
-            messagebox.showwarning("Bases locales", "\n".join(lines))
-        progress("Iniciando aplicación.")
+        PersistenceDatabase(settings=config.postgresql_settings).initialize()
         return True
     except Exception as exc:
-        logger.exception("No se han podido preparar las bases de datos")
-        messagebox.showerror("Bases de datos", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{exc}\n\nRevise la conexión de red o utilice la última copia local disponible.")
+        logger.exception("PostgreSQL no está disponible")
+        messagebox.showerror("PostgreSQL no disponible", f"No se puede iniciar la aplicación porque PostgreSQL no está disponible.\n\nDetalle:\n{exc}\n\nNo se ha guardado ningún dato parcial.")
         return False
-    finally:
-        win.destroy()
 
 
 def main() -> None:
     config=load_config(); setup_logging(config)
     if config.persistence_enabled:
         try:
-            PersistenceDatabase(config.persistence_database_path).initialize()
+            PersistenceDatabase(settings=config.postgresql_settings).initialize()
         except Exception:
             logger.exception("Persistencia local deshabilitada: falló su inicialización")
             object.__setattr__(config, "persistence_enabled", False)
     root=tk.Tk(); root.withdraw(); root.title(config.app_name); root.geometry(f"{config.window_width}x{config.window_height}")
-    if not _check_postgresql_before_start(root):
-        root.destroy(); return
     apply_styles(root)
     if not _prepare_databases(root, config):
         root.destroy(); return
     root.deiconify()
     frame=RemesasFrame(root); frame.pack(fill="both", expand=True)
     root.protocol("WM_DELETE_WINDOW", frame.close_application)
-    repository=LiquidationRepository(PersistenceDatabase(config.persistence_database_path))
+    repository=LiquidationRepository(PersistenceDatabase(settings=config.postgresql_settings))
     from services.member_surface_service import MemberSurfaceService
     surface_service = MemberSurfaceService(HectareRepository(frame.conn)) if frame.conn else None
     refresh_service=IndividualPdfRefreshService(repository,PersistedVarietyBenchmarkService(repository, surface_service=surface_service))
@@ -119,5 +65,13 @@ def main() -> None:
             individual_refresh_service=refresh_service,
         )
     root.config(menu=build_main_menu(root, MainMenuHandlers(close=frame.close_application, open_hectare_fee_master=frame.open_hectare_fee_master, open_calibre_master=lambda: CalibreMasterDialog(root), open_production_destination_master=lambda: ProductionDestinationMasterDialog(root), open_liquidation_prefix_master=frame.open_liquidation_prefix_master, open_liquidation_split_master=frame.open_liquidation_split_master, show_about=frame.show_about, refresh_local_databases=lambda: frame.synchronize_local_databases(manual=True), open_data_folder=frame.open_data_folder, open_liquidation_history=frame.open_liquidation_history, open_pdf_merge_tool=open_mass_documents, open_hectare_fee_report=open_fee_report)))
-    root.mainloop()
-if __name__ == "__main__": main()
+    try:
+        root.mainloop()
+    finally:
+        PostgresRepository.shutdown_pool()
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "db":
+        from db_tools.__main__ import main as db_main
+        db_main()
+    else:
+        main()

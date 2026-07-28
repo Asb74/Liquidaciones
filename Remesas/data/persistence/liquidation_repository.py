@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class LiquidationRepository:
-    """Único punto de lectura/escritura documental de la SQLite local."""
+    """Único punto de lectura/escritura documental de la PostgreSQL local."""
 
     def __init__(self, database: PersistenceDatabase) -> None:
         self.database = database
@@ -66,7 +66,7 @@ class LiquidationRepository:
     def list_duplicate_active_scopes(self):
         with self.database.connect() as conn:
             return conn.execute("""SELECT campaign,company,crop,remesa_id,COUNT(*) AS active_count,
-                GROUP_CONCAT(batch_id) AS batch_ids,MIN(created_at) AS first_created_at,
+                STRING_AGG(batch_id, ',') AS batch_ids,MIN(created_at) AS first_created_at,
                 MAX(created_at) AS last_created_at
                 FROM liquidation_batches WHERE status IN ('ACTIVE','PARTIAL')
                 AND operation_type IN ('ORIGINAL','REPLACEMENT')
@@ -75,7 +75,7 @@ class LiquidationRepository:
 
     def save_document_snapshot(self, *, batch_id: str, recipient_member_id: int, payload_json: str, schema_version: int, calculation_fingerprint: str, created_at: str, created_by: str | None = None) -> None:
         with self.database.connect() as conn:
-            conn.execute("INSERT OR REPLACE INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by))
+            conn.execute("INSERT INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?) ON CONFLICT (batch_id,recipient_member_id) DO UPDATE SET payload_json=EXCLUDED.payload_json,schema_version=EXCLUDED.schema_version,calculation_fingerprint=EXCLUDED.calculation_fingerprint,created_at=EXCLUDED.created_at,created_by=EXCLUDED.created_by", (batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by))
 
     def get_document_snapshot(self, batch_id: str, recipient_member_id: int):
         with self.database.connect() as conn:
@@ -236,14 +236,14 @@ class LiquidationRepository:
 
     def find_generated_csv_export(self, *, batch_id, modification_group_id, member_id, export_type, source_fingerprint):
         with self.database.connect() as conn:
-            return conn.execute("SELECT * FROM accounting_exports WHERE batch_id IS ? AND modification_group_id IS ? AND member_id IS ? AND export_type=? AND source_fingerprint=? AND status='GENERATED' ORDER BY id DESC LIMIT 1", (batch_id, modification_group_id, member_id, export_type, source_fingerprint)).fetchone()
+            return conn.execute("SELECT * FROM accounting_exports WHERE batch_id IS NOT DISTINCT FROM ? AND modification_group_id IS NOT DISTINCT FROM ? AND member_id IS NOT DISTINCT FROM ? AND export_type=? AND source_fingerprint=? AND status='GENERATED' ORDER BY id DESC LIMIT 1", (batch_id, modification_group_id, member_id, export_type, source_fingerprint)).fetchone()
 
     def record_csv_export(self, **values) -> int:
         from data.persistence.migrations import utcnow
         with self.database.connect() as conn:
-            attempt = conn.execute("SELECT COALESCE(MAX(generation_attempt),0) FROM accounting_exports WHERE batch_id IS ? AND modification_group_id IS ? AND member_id IS ? AND export_type=?", (values.get("batch_id"),values.get("modification_group_id"),values.get("member_id"),values["export_type"])).fetchone()[0] + 1
-            cursor=conn.execute("INSERT INTO accounting_exports(batch_id,modification_group_id,remittance_id,member_id,export_type,file_path,info_file_path,status,line_count,excluded_line_count,net_total,amount_total,file_hash,source_fingerprint,generated_at,created_at,created_by,error_message,generation_attempt,supersedes_export_id,batch_ids_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (values.get("batch_id"),values.get("modification_group_id"),values.get("remittance_id"),values.get("member_id"),values["export_type"],values.get("file_path", ""),values.get("info_file_path"),values["status"],values.get("line_count",0),values.get("excluded_line_count",0),values.get("net_total"),values.get("amount_total"),values.get("file_hash"),values.get("source_fingerprint"),values.get("generated_at"),utcnow(),values.get("created_by"),values.get("error_message"),attempt,values.get("supersedes_export_id"),values.get("batch_ids_json")))
-            export_id=cursor.lastrowid
+            attempt = conn.execute("SELECT COALESCE(MAX(generation_attempt),0) FROM accounting_exports WHERE batch_id IS NOT DISTINCT FROM ? AND modification_group_id IS NOT DISTINCT FROM ? AND member_id IS NOT DISTINCT FROM ? AND export_type=?", (values.get("batch_id"),values.get("modification_group_id"),values.get("member_id"),values["export_type"])).fetchone()[0] + 1
+            cursor=conn.execute("INSERT INTO accounting_exports(batch_id,modification_group_id,remittance_id,member_id,export_type,file_path,info_file_path,status,line_count,excluded_line_count,net_total,amount_total,file_hash,source_fingerprint,generated_at,created_at,created_by,error_message,generation_attempt,supersedes_export_id,batch_ids_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id", (values.get("batch_id"),values.get("modification_group_id"),values.get("remittance_id"),values.get("member_id"),values["export_type"],values.get("file_path", ""),values.get("info_file_path"),values["status"],values.get("line_count",0),values.get("excluded_line_count",0),values.get("net_total"),values.get("amount_total"),values.get("file_hash"),values.get("source_fingerprint"),values.get("generated_at"),utcnow(),values.get("created_by"),values.get("error_message"),attempt,values.get("supersedes_export_id"),values.get("batch_ids_json")))
+            export_id=cursor.fetchone()[0]
             if values["status"] == "GENERATED":
                 batch_ids = values.get("included_batch_ids") or ([values.get("batch_id")] if values.get("batch_id") else [])
                 if not batch_ids and values.get("batch_ids_json"):
@@ -256,9 +256,9 @@ class LiquidationRepository:
                     rows=conn.execute("""SELECT id,recipient_member_id,operation_type FROM liquidaciones
                         WHERE batch_id=? AND status NOT IN ('VOIDED','SUPERSEDED')
                         AND recipient_member_id<>? AND id_socio<>?""", (batch,SYSTEM_MEMBER_ID,SYSTEM_MEMBER_ID)).fetchall()
-                    conn.executemany("""INSERT OR IGNORE INTO accounting_export_items
+                    conn.executemany("""INSERT INTO accounting_export_items
                         (export_id,batch_id,liquidation_id,recipient_member_id,operation_type,created_at)
-                        VALUES(?,?,?,?,?,?)""", ((export_id,batch,r["id"],r["recipient_member_id"],r["operation_type"],utcnow()) for r in rows))
+                        VALUES(?,?,?,?,?,?) ON CONFLICT (export_id,liquidation_id) DO NOTHING""", ((export_id,batch,r["id"],r["recipient_member_id"],r["operation_type"],utcnow()) for r in rows))
             return export_id
 
     def mark_csv_export_superseded(self, export_id: int) -> None:

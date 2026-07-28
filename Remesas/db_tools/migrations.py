@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, re
+import hashlib, re, time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,15 +23,19 @@ def migrate(connection, directory:Path, application_version=None):
         connection.execute("CREATE SCHEMA IF NOT EXISTS liquidaciones")
         connection.execute("""CREATE TABLE IF NOT EXISTS liquidaciones.schema_migrations(
           version bigint PRIMARY KEY,name text NOT NULL,checksum varchar(64) NOT NULL,
-          applied_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,application_version text)""")
+          applied_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,execution_ms bigint NOT NULL DEFAULT 0,
+          application_version text)""")
+        connection.execute("ALTER TABLE liquidaciones.schema_migrations ADD COLUMN IF NOT EXISTS execution_ms bigint NOT NULL DEFAULT 0")
         known={r[0]:(r[1],r[2]) for r in connection.execute("SELECT version,name,checksum FROM liquidaciones.schema_migrations")}
         for item in discover(directory):
             if item.version in known:
                 if known[item.version] != (item.name,item.checksum): raise RuntimeError(f"Checksum modificado en migración {item.version:03d}")
                 continue
+            started=time.monotonic()
             with connection.transaction():
                 connection.execute(item.sql)
-                connection.execute("INSERT INTO liquidaciones.schema_migrations(version,name,checksum,application_version) VALUES(%s,%s,%s,%s)",(item.version,item.name,item.checksum,application_version))
+                elapsed=max(0,round((time.monotonic()-started)*1000))
+                connection.execute("INSERT INTO liquidaciones.schema_migrations(version,name,checksum,execution_ms,application_version) VALUES(%s,%s,%s,%s,%s)",(item.version,item.name,item.checksum,elapsed,application_version))
             applied.append(item.version)
         return applied
     finally:
