@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 
 from data.persistence.database import PersistenceDatabase
 from data.persistence.search_text import normalize_search_text
@@ -19,6 +20,58 @@ class LiquidationRepository:
     def get_batch(self, batch_id: str):
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidation_batches WHERE batch_id=?", (batch_id,)).fetchone()
+
+    def list_active_batches_for_scope(self, scope):
+        scope = scope.normalized()
+        with self.database.connect() as conn:
+            return conn.execute("""SELECT batch_id,remesa_id,campaign,company,crop,status,
+                operation_type,created_at,created_by,modification_group_id,supersedes_batch_id
+                FROM liquidation_batches WHERE campaign=? AND company=? AND crop=? AND remesa_id=?
+                AND status IN ('ACTIVE','PARTIAL')
+                AND operation_type IN ('ORIGINAL','REPLACEMENT') ORDER BY created_at,batch_id""",
+                (scope.campaign,scope.company,scope.crop,scope.remittance_id)).fetchall()
+
+    def find_active_batch_for_scope(self, scope):
+        rows = self.list_active_batches_for_scope(scope)
+        if len(rows) > 1:
+            raise ValueError("Se han encontrado varias liquidaciones vigentes para esta remesa. Debe corregirse la duplicidad antes de continuar.")
+        return rows[0] if rows else None
+
+    def list_accounting_exports_for_batch(self, batch_id: str):
+        with self.database.connect() as conn:
+            # Items are authoritative. The direct batch_id is the only safe
+            # fallback for exports created before item-level tracking existed.
+            return conn.execute("""SELECT DISTINCT e.id,e.file_path,e.file_hash,e.generated_at,e.export_type
+                FROM accounting_exports e LEFT JOIN accounting_export_items i ON i.export_id=e.id
+                WHERE e.status='GENERATED' AND (i.batch_id=? OR (i.id IS NULL AND e.batch_id=?))
+                ORDER BY e.id""", (batch_id,batch_id)).fetchall()
+
+    def has_generated_accounting_export(self, batch_id: str) -> bool:
+        return bool(self.list_accounting_exports_for_batch(batch_id))
+
+    def mark_batch_superseded(self, batch_id: str, *, reason: str, user: str | None=None, conn=None):
+        if not str(reason).strip(): raise ValueError("El motivo de sustitución es obligatorio")
+        owned = conn is None
+        conn = conn or self.database.open_connection()
+        try:
+            changed = conn.execute("""UPDATE liquidation_batches SET status='SUPERSEDED',
+                modification_reason=? WHERE batch_id=? AND status IN ('ACTIVE','PARTIAL')
+                AND operation_type IN ('ORIGINAL','REPLACEMENT')""", (reason.strip(),batch_id)).rowcount
+            if changed != 1: raise ValueError("Transición de estado no válida")
+            conn.execute("UPDATE liquidaciones SET status='SUPERSEDED' WHERE batch_id=? AND status IN ('ACTIVE','PARTIAL')", (batch_id,))
+            return True
+        finally:
+            if owned: self.database.close_connection(conn)
+
+    def list_duplicate_active_scopes(self):
+        with self.database.connect() as conn:
+            return conn.execute("""SELECT campaign,company,crop,remesa_id,COUNT(*) AS active_count,
+                GROUP_CONCAT(batch_id) AS batch_ids,MIN(created_at) AS first_created_at,
+                MAX(created_at) AS last_created_at
+                FROM liquidation_batches WHERE status IN ('ACTIVE','PARTIAL')
+                AND operation_type IN ('ORIGINAL','REPLACEMENT')
+                GROUP BY campaign,company,crop,remesa_id HAVING COUNT(*)>1
+                ORDER BY campaign,company,crop,remesa_id""").fetchall()
 
     def save_document_snapshot(self, *, batch_id: str, recipient_member_id: int, payload_json: str, schema_version: int, calculation_fingerprint: str, created_at: str, created_by: str | None = None) -> None:
         with self.database.connect() as conn:
@@ -158,6 +211,8 @@ class LiquidationRepository:
                 WHERE l.batch_id IN ({placeholders})
                   AND l.status NOT IN ('VOIDED','SUPERSEDED')
                   AND b.status IN ('ACTIVE','PARTIAL')
+                  AND b.operation_type IN ('ORIGINAL','REPLACEMENT')
+                  AND l.operation_type IN ('ORIGINAL','REPLACEMENT')
                   AND l.recipient_member_id <> {SYSTEM_MEMBER_ID} AND l.id_socio <> {SYSTEM_MEMBER_ID}
                 ORDER BY b.campaign, b.company, b.crop, b.remesa_id,
                   CASE l.operation_type WHEN 'REVERSAL' THEN 0 WHEN 'REPLACEMENT' THEN 1 ELSE 2 END, l.id""",
@@ -188,7 +243,23 @@ class LiquidationRepository:
         with self.database.connect() as conn:
             attempt = conn.execute("SELECT COALESCE(MAX(generation_attempt),0) FROM accounting_exports WHERE batch_id IS ? AND modification_group_id IS ? AND member_id IS ? AND export_type=?", (values.get("batch_id"),values.get("modification_group_id"),values.get("member_id"),values["export_type"])).fetchone()[0] + 1
             cursor=conn.execute("INSERT INTO accounting_exports(batch_id,modification_group_id,remittance_id,member_id,export_type,file_path,info_file_path,status,line_count,excluded_line_count,net_total,amount_total,file_hash,source_fingerprint,generated_at,created_at,created_by,error_message,generation_attempt,supersedes_export_id,batch_ids_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (values.get("batch_id"),values.get("modification_group_id"),values.get("remittance_id"),values.get("member_id"),values["export_type"],values.get("file_path", ""),values.get("info_file_path"),values["status"],values.get("line_count",0),values.get("excluded_line_count",0),values.get("net_total"),values.get("amount_total"),values.get("file_hash"),values.get("source_fingerprint"),values.get("generated_at"),utcnow(),values.get("created_by"),values.get("error_message"),attempt,values.get("supersedes_export_id"),values.get("batch_ids_json")))
-            return cursor.lastrowid
+            export_id=cursor.lastrowid
+            if values["status"] == "GENERATED":
+                batch_ids = values.get("included_batch_ids") or ([values.get("batch_id")] if values.get("batch_id") else [])
+                if not batch_ids and values.get("batch_ids_json"):
+                    batch_ids = json.loads(values["batch_ids_json"])
+                if not batch_ids and values.get("modification_group_id"):
+                    batch_ids = [r[0] for r in conn.execute("""SELECT batch_id FROM liquidation_batches
+                        WHERE modification_group_id=? AND operation_type IN ('REVERSAL','REPLACEMENT')""",
+                        (values["modification_group_id"],))]
+                for batch in dict.fromkeys(x for x in batch_ids if x):
+                    rows=conn.execute("""SELECT id,recipient_member_id,operation_type FROM liquidaciones
+                        WHERE batch_id=? AND status NOT IN ('VOIDED','SUPERSEDED')
+                        AND recipient_member_id<>? AND id_socio<>?""", (batch,SYSTEM_MEMBER_ID,SYSTEM_MEMBER_ID)).fetchall()
+                    conn.executemany("""INSERT OR IGNORE INTO accounting_export_items
+                        (export_id,batch_id,liquidation_id,recipient_member_id,operation_type,created_at)
+                        VALUES(?,?,?,?,?,?)""", ((export_id,batch,r["id"],r["recipient_member_id"],r["operation_type"],utcnow()) for r in rows))
+            return export_id
 
     def mark_csv_export_superseded(self, export_id: int) -> None:
         with self.database.connect() as conn: conn.execute("UPDATE accounting_exports SET status='SUPERSEDED' WHERE id=? AND status='GENERATED'", (export_id,))
