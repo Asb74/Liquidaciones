@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 
 from data.legacy_persistence_repository import LegacyPersistenceRepository
 
@@ -47,3 +48,34 @@ def test_article_code_normalizes_aliases_and_logs_resolution(caplog):
     assert "[MVariedadArticulo]" in caplog.text
     assert "article=B391" in caplog.text
     assert "status=resolved" in caplog.text
+
+
+def test_facsoc_factory_opens_and_closes_a_connection_in_worker_thread(tmp_path):
+    path = tmp_path / "legacy.sqlite"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE DSocio(IdSocio INTEGER PRIMARY KEY, FacSoc TEXT)")
+        connection.executemany("INSERT INTO DSocio VALUES(?,?)", ((1523, "NO"), (1524, "SI")))
+
+    opened = []
+    def factory():
+        connection = sqlite3.connect(path, timeout=30)
+        opened.append((threading.get_ident(), connection))
+        return connection
+
+    repository = LegacyPersistenceRepository(factory, schema="main")
+    result, closed = [], []
+    def export_worker():
+        result.extend((repository.member_is_self_billed(1523), repository.member_is_self_billed(1524)))
+        for _, connection in opened:
+            try:
+                connection.execute("SELECT 1")
+            except sqlite3.ProgrammingError as exc:
+                closed.append("closed database" in str(exc))
+    worker = threading.Thread(target=export_worker)
+    worker.start(); worker.join()
+
+    assert result == [False, True]
+    assert len(opened) == 2
+    assert all(owner == worker.ident for owner, _ in opened)
+    assert opened[0][1] is not opened[1][1]
+    assert closed == [True, True]

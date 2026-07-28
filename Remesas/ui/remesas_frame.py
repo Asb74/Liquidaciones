@@ -206,7 +206,11 @@ class RemesasFrame(ttk.Frame):
                 self.liquidation_repository=LiquidationRepository(self.persistence_service.database)
                 self.document_service=DocumentGenerationService(self.liquidation_repository, output_root)
                 self.modification_service=LiquidationModificationService(self.persistence_service)
-                self.csv_export_service=LiquidationCsvExportService(self.liquidation_repository, self.persistence_service.legacy, output_root)
+                # The history worker must never inherit the main Tk thread's
+                # attached SQLite connection.  This repository opens both local
+                # legacy databases inside each operation in the calling thread.
+                export_legacy_repository=LegacyPersistenceRepository(self.db.connect_fruta_with_eepp)
+                self.csv_export_service=LiquidationCsvExportService(self.liquidation_repository, export_legacy_repository, output_root)
                 self.history_service=LiquidationHistoryService(self.liquidation_repository,self.document_service,self.modification_service,self.csv_export_service)
                 self.liquidation_master_repository=LiquidationMasterRepository(self.persistence_service.database)
                 self.persistence_service.import_legacy_split_rules(); self.persistence_enabled=True

@@ -158,7 +158,7 @@ class LiquidationPersistenceService:
             reason = excluded_member_service.reason_for_exclusion(member_id)
             raise ValueError(f"El socio {member_id} está excluido porque {reason}.")
         h=preview.header; batch_id=str(uuid.uuid4()); now=_now(); persisted=[]
-        conn=self.database.connect()
+        conn=self.database.open_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
             duplicate=conn.execute("SELECT batch_id FROM liquidation_batches WHERE remesa_id=? AND calculation_fingerprint=? AND status='ACTIVE'",(int(h.remesa_id),preview.fingerprint)).fetchone()
@@ -204,7 +204,7 @@ class LiquidationPersistenceService:
             conn.rollback()
             logger.exception("[PersistenceTransaction]\nbatch_id=%s\nstatus=ROLLED_BACK\nerror_type=%s\nerror_message=%s", batch_id, type(exc).__name__, exc)
             raise
-        finally: conn.close()
+        finally: self.database.close_connection(conn)
         return PersistenceBatch(batch_id,"ACTIVE",tuple(persisted))
 
     def void_batch(self,batch_id: str,reason: str,user: str | None=None) -> None:
@@ -215,7 +215,7 @@ class LiquidationPersistenceService:
 
     def _void_batch_legacy(self,batch_id: str,reason: str,user: str | None=None) -> None:
         if not reason.strip(): raise ValueError("El motivo de anulación es obligatorio")
-        conn=self.database.connect(); now=_now()
+        conn=self.database.open_connection(); now=_now()
         try:
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("UPDATE liquidation_batches SET status='VOIDED',voided_at=?,voided_by=?,void_reason=? WHERE batch_id=? AND status='ACTIVE'",(now,user,reason.strip(),batch_id)).rowcount!=1: raise ValueError("El batch no existe o ya está anulado")
@@ -223,7 +223,7 @@ class LiquidationPersistenceService:
             conn.execute("UPDATE generated_documents SET status='SUPERSEDED' WHERE batch_id=? AND status='GENERATED'",(batch_id,))
             conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)",(batch_id,"VOID","BATCH",batch_id,json.dumps({"reason":reason.strip()}),now,user)); conn.commit()
         except Exception: conn.rollback(); raise
-        finally: conn.close()
+        finally: self.database.close_connection(conn)
 
     def record_pdf_generated(self,batch_id: str,paths, user: str | None=None) -> None:
         with self.database.connect() as conn:
@@ -231,7 +231,7 @@ class LiquidationPersistenceService:
 
     def import_legacy_split_rules(self) -> bool:
         """Semilla idempotente confirmada; no vuelve a consultar DDividirLiq."""
-        grouped={5970:[(5893,50)],496:[(495,50)],5993:[(7157,50),(7159,50)],7157:[(7159,50)]}; conn=self.database.connect()
+        grouped={5970:[(5893,50)],496:[(495,50)],5993:[(7157,50),(7159,50)],7157:[(7159,50)]}; conn=self.database.open_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("SELECT 1 FROM legacy_imports WHERE name='LEGACY_DDIVIDIRLIQ'").fetchone(): conn.rollback(); return False
@@ -241,4 +241,4 @@ class LiquidationPersistenceService:
                 for order,(recipient,value) in enumerate(recipients): conn.execute("INSERT INTO split_rule_recipients(rule_id,recipient_member_id,recipient_member_name,value,sort_order) VALUES(?,?,?,?,?)",(cur.lastrowid,recipient,self.legacy.member_name(recipient),str(value),order))
             conn.execute("INSERT INTO legacy_imports VALUES(?,?,?)",("LEGACY_DDIVIDIRLIQ",now,json.dumps({"rules":len(grouped)}))); conn.commit(); return True
         except Exception: conn.rollback(); raise
-        finally: conn.close()
+        finally: self.database.close_connection(conn)
