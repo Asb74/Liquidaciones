@@ -8,7 +8,7 @@ from ui.styles import apply_styles
 from ui.calibre_master_dialog import CalibreMasterDialog
 from ui.production_destination_master_dialog import ProductionDestinationMasterDialog
 from data.db_connection import load_config, setup_logging
-from services.local_database_sync_service import LocalDatabaseSyncService
+from services.local_database_sync_service import LocalDatabaseSyncService, format_sync_diagnostics
 from data.persistence.database import PersistenceDatabase
 from data.persistence.liquidation_repository import LiquidationRepository
 from services.pdf_merge_service import PdfMergeService
@@ -41,7 +41,7 @@ def _prepare_databases(root: tk.Tk, config) -> bool:
         results = LocalDatabaseSyncService(config, progress_callback=progress).synchronize_all()
         errors = [r for r in results if not (r.synchronized or r.used_local_fallback)]
         if errors:
-            detail = "\n".join(f"{r.database_name}: {r.error_message}" for r in errors)
+            detail = format_sync_diagnostics(results)
             messagebox.showerror("Bases de datos", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{detail}\n\nRevise la conexión de red o utilice la última copia local disponible.")
             return False
         fallback = [r for r in results if r.used_local_fallback]
