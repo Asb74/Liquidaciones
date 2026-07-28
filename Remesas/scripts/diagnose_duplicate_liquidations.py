@@ -10,7 +10,7 @@ from data.persistence.liquidation_repository import LiquidationRepository
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Diagnostica liquidaciones activas duplicadas sin modificarlas")
-    parser.add_argument("database", help="Ruta de la PostgreSQL local")
+    parser.add_argument("database", help="Ruta de la SQLite local")
     args = parser.parse_args()
     database = PersistenceDatabase(args.database)
     # Do not initialize here: a database with known conflicts deliberately

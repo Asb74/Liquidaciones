@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from data.repository import IDataRepository
+import sqlite3
 from datetime import date
 
 
@@ -8,12 +8,12 @@ SPECIAL_ECONOMIC_CROPS = {"DIRECTO", "DIRECTOCHF", "INDUSTRIA"}
 
 
 class MetadataRepository:
-    def __init__(self, conn: IDataRepository) -> None:
+    def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
 
     def table_exists(self, table: str, schema: str = "main") -> bool:
-        actual_schema = "liquidaciones" if schema == "main" else ("legacy_eepp" if schema == "eepp" else schema)
-        return self.conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=? AND lower(table_name)=lower(?)", (actual_schema, table)).fetchone() is not None
+        sql = f"SELECT 1 FROM {schema}.sqlite_master WHERE type='table' AND name=?"
+        return self.conn.execute(sql, (table,)).fetchone() is not None
 
     def columns(self, table: str, schema: str = "main") -> set[str]:
         return {row[1] for row in self.conn.execute(f"PRAGMA {schema}.table_info({table})")}

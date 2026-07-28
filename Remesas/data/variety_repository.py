@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from data.repository import IDataRepository
+import sqlite3
 from collections.abc import Iterable
 
 from dataclasses import dataclass
@@ -29,7 +29,7 @@ class VarietyMatch:
 
 
 class VarietyRepository:
-    def __init__(self, conn: IDataRepository) -> None:
+    def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
         self._log_schema()
 

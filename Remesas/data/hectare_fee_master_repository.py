@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from data.repository import IDataRepository
+import sqlite3
 
 
 class HectareFeeCropRepository:
     """Read-only queries for crop options used by the hectare fee master."""
 
-    def __init__(self, conn: IDataRepository) -> None:
+    def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
 
     def list_surface_crop_options(self) -> list[str]:

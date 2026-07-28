@@ -8,6 +8,7 @@ from ui.styles import apply_styles
 from ui.calibre_master_dialog import CalibreMasterDialog
 from ui.production_destination_master_dialog import ProductionDestinationMasterDialog
 from data.db_connection import load_config, setup_logging
+from services.local_database_sync_service import LocalDatabaseSyncService, format_sync_diagnostics
 from data.persistence.database import PersistenceDatabase
 from data.persistence.liquidation_repository import LiquidationRepository
 from services.pdf_merge_service import PdfMergeService
@@ -22,20 +23,50 @@ logger = logging.getLogger(__name__)
 
 
 def _prepare_databases(root: tk.Tk, config) -> bool:
+    if not config.sync_on_start:
+        return True
+    win = tk.Toplevel(root)
+    win.title("Preparando bases de datos")
+    win.resizable(False, False)
+    ttk.Label(win, text="Preparando bases de datos...").pack(padx=18, pady=(14, 4), anchor="w")
+    status = tk.StringVar(value="Comprobando DBfruta.")
+    ttk.Label(win, textvariable=status, width=58).pack(padx=18, pady=(0, 14), anchor="w")
+    win.update_idletasks()
+
+    def progress(message: str) -> None:
+        status.set(message)
+        win.update_idletasks()
+
     try:
-        PersistenceDatabase(settings=config.postgresql_settings).initialize()
+        results = LocalDatabaseSyncService(config, progress_callback=progress).synchronize_all()
+        errors = [r for r in results if not (r.synchronized or r.used_local_fallback)]
+        if errors:
+            detail = format_sync_diagnostics(results)
+            messagebox.showerror("Bases de datos", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{detail}\n\nRevise la conexión de red o utilice la última copia local disponible.")
+            return False
+        fallback = [r for r in results if r.used_local_fallback]
+        if fallback:
+            lines = ["No se ha podido acceder a las bases de red.", "", "La aplicación utilizará la última copia local válida:"]
+            for r in fallback:
+                stamp = r.local_modified_at.strftime("%d/%m/%Y %H:%M") if r.local_modified_at else "fecha desconocida"
+                lines.append(f"{r.database_name}: {stamp}")
+            lines += ["", "Los datos pueden no estar actualizados."]
+            messagebox.showwarning("Bases locales", "\n".join(lines))
+        progress("Iniciando aplicación.")
         return True
     except Exception as exc:
-        logger.exception("PostgreSQL no está disponible")
-        messagebox.showerror("PostgreSQL no disponible", f"No se puede iniciar la aplicación porque PostgreSQL no está disponible.\n\nDetalle:\n{exc}\n\nNo se ha guardado ningún dato parcial.")
+        logger.exception("No se han podido preparar las bases de datos")
+        messagebox.showerror("Bases de datos", f"No se han podido preparar las bases de datos.\n\nDetalle:\n{exc}\n\nRevise la conexión de red o utilice la última copia local disponible.")
         return False
+    finally:
+        win.destroy()
 
 
 def main() -> None:
     config=load_config(); setup_logging(config)
     if config.persistence_enabled:
         try:
-            PersistenceDatabase(settings=config.postgresql_settings).initialize()
+            PersistenceDatabase(config.persistence_database_path).initialize()
         except Exception:
             logger.exception("Persistencia local deshabilitada: falló su inicialización")
             object.__setattr__(config, "persistence_enabled", False)
@@ -46,7 +77,7 @@ def main() -> None:
     root.deiconify()
     frame=RemesasFrame(root); frame.pack(fill="both", expand=True)
     root.protocol("WM_DELETE_WINDOW", frame.close_application)
-    repository=LiquidationRepository(PersistenceDatabase(settings=config.postgresql_settings))
+    repository=LiquidationRepository(PersistenceDatabase(config.persistence_database_path))
     from services.member_surface_service import MemberSurfaceService
     surface_service = MemberSurfaceService(HectareRepository(frame.conn)) if frame.conn else None
     refresh_service=IndividualPdfRefreshService(repository,PersistedVarietyBenchmarkService(repository, surface_service=surface_service))

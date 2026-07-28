@@ -25,7 +25,7 @@ def build_main_menu(root: tk.Misc, handlers: MainMenuHandlers) -> tk.Menu:
     menu_bar = tk.Menu(root)
 
     file_menu = tk.Menu(menu_bar, tearoff=False)
-    file_menu.add_command(label="Actualizar conexión PostgreSQL", command=handlers.refresh_local_databases)
+    file_menu.add_command(label="Actualizar bases locales", command=handlers.refresh_local_databases)
     file_menu.add_command(label="Abrir carpeta de datos", command=handlers.open_data_folder)
     file_menu.add_command(label="Liquidaciones guardadas", command=handlers.open_liquidation_history)
     file_menu.add_separator()

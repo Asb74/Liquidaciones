@@ -76,9 +76,9 @@ class LiquidacionApp(tk.Tk):
         self._entry(form, "Precio Podrido", self.precio_podrido_var, 4, 0)
 
         self._file(form, "ANECOP Excel/CSV", self.anecop_path_var, 6)
-        self._file(form, "Esquema DBFruta", self.db_fruta_var, 7)
-        self._file(form, "Esquema Calidad", self.db_calidad_var, 8)
-        self._file(form, "Esquema EEPP", self.db_eeppl_var, 9)
+        self._file(form, "DBfruta.sqlite", self.db_fruta_var, 7)
+        self._file(form, "BdCalidad.sqlite", self.db_calidad_var, 8)
+        self._file(form, "DBEEPPL.sqlite", self.db_eeppl_var, 9)
 
         actions = ttk.Frame(root)
         actions.pack(fill=tk.X, pady=8)
@@ -126,7 +126,7 @@ class LiquidacionApp(tk.Tk):
         ttk.Button(parent, text="Seleccionar", command=lambda: self._pick(var)).grid(row=row * 2 + 1, column=3, sticky="ew", padx=4)
 
     def _pick(self, var: tk.StringVar) -> None:
-        path = filedialog.askopenfilename(filetypes=[("Excel/CSV", "*.xlsx *.xls *.csv"), ("Todos", "*.*")])
+        path = filedialog.askopenfilename(filetypes=[("Excel/CSV/SQLite", "*.xlsx *.xls *.csv *.sqlite"), ("Todos", "*.*")])
         if path:
             var.set(path)
 
@@ -154,6 +154,9 @@ class LiquidacionApp(tk.Tk):
             config = self._build_config()
             if not config.anecop_path.exists():
                 raise ValueError(f"No existe archivo: {config.anecop_path}")
+            for p in [config.db_paths.fruta, config.db_paths.calidad, config.db_paths.eeppl]:
+                if not p.exists():
+                    raise ValueError(f"No existe archivo SQLite: {p}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Parámetros inválidos", str(exc))
             return

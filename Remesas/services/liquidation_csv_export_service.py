@@ -117,7 +117,7 @@ class LiquidationCsvExportService:
 
     def export_batches(self, batch_ids, output_directory: Path | None = None, user: str | None = None, force: bool = False,
                        progress_callback=None, should_cancel=None) -> CsvExportResult:
-        """Build one CSV directly from PostgreSQL rows for all selected batches."""
+        """Build one CSV directly from SQLite rows for all selected batches."""
         batch_ids = tuple(dict.fromkeys(str(batch_id) for batch_id in batch_ids))
         if should_cancel and should_cancel():
             raise CsvExportCancelled()

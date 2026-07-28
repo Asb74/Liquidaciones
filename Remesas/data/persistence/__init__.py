@@ -1,4 +1,4 @@
-"""Base PostgreSQL local, de escritura, exclusiva de liquidaciones definitivas."""
+"""Base SQLite local, de escritura, exclusiva de liquidaciones definitivas."""
 
 from .database import PersistenceDatabase
 

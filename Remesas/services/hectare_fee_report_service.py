@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 import logging
-from data.repository import IDataRepository
+import sqlite3
 
 from data.hectare_repository import HectareRepository
 from domain.financial_rules import calculate_total_hectare_fee
@@ -70,7 +70,7 @@ class HectareFeeReportService:
     def _one(self, member_id, name, boleta, campaign, company, eligible, price, filters):
         raw_surfaces = self.repository.get_boleta_surface_details(member_id, boleta, campaign, company, eligible)
         try: audit = self.repository.get_boleta_surface_audit(member_id, boleta, campaign, company, eligible)
-        except Exception: audit = None
+        except sqlite3.OperationalError: audit = None
         source_rows = audit["parcelas"] if audit else ()
         surfaces = tuple(HectareFeeSurfaceDetail(str(boleta), str(a.get("Cultivo DEEPP", a.get("Cultivo", ""))), str(a.get("Variedad DEEPP", a.get("Variedad", ""))), str(a.get("Pol", a.get("Polígono", ""))), str(a.get("Par", a.get("Parcela", ""))), str(a.get("Rec", a.get("Recinto", ""))), decimal_or_zero(a.get("SupCul DParcela")), bool(a.get("CHA activo") == "Sí"), a.get("Incluida") == "Sí", str(a.get("Motivo exclusión", "")), a.get("Año"), a.get("Antigüedad"), tuple()) for a in source_rows) if audit else tuple(HectareFeeSurfaceDetail(str(boleta), str(a.get("Cultivo", "")), str(a.get("Variedad", "")), str(a.get("Polígono", "")), str(a.get("Parcela", "")), str(a.get("Recinto", "")), decimal_or_zero(dp[9]), bool(a.get("CHA activo") == "Sí"), included, reason or "") for a, included, reason, dp in raw_surfaces)
         area = sum((x.surface for x in surfaces if x.included), Decimal("0")); annual = calculate_total_hectare_fee(area, price)
