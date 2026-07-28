@@ -69,16 +69,31 @@ class IndividualPdfRefreshService:
                     vm.variety_code or "",code,name)
                 scope=BenchmarkScope(str(doc.campaign),str(doc.company),code)
                 benchmark=benchmarks[scope]
-                if not vm.group_benchmark:
-                    raise ValueError(f"No se ha podido actualizar la comparativa del grupo varietal {name}: el snapshot no contiene la plantilla de comparativa.")
-                vm=replace(vm,group_benchmark=self.benchmarks.for_member(benchmark,doc.member_id,vm.group_benchmark))
-                self.repository.audit(doc.batch_id,"INDIVIDUAL_PDF_REFRESH_STARTED",json.dumps({"document_id":doc.document_id,"recipient_member_id":doc.member_id,"source_fingerprint":benchmark.source_fingerprint}),user or self.user)
+                snapshot_has_benchmark=vm.group_benchmark is not None
+                group_benchmark=self.benchmarks.for_member(
+                    benchmark,
+                    doc.member_id,
+                    template=vm.group_benchmark,
+                    group_name=name,
+                    campaign=str(doc.campaign),
+                )
+                vm=replace(vm,group_benchmark=group_benchmark)
+                audit_context={
+                    "benchmark_source_fingerprint":benchmark.source_fingerprint,
+                    "group_code":code,
+                    "group_name":name,
+                    "comparable_members":len(benchmark.comparable_members),
+                    "benchmark_created_from_scratch":not snapshot_has_benchmark,
+                    "document_id":doc.document_id,
+                    "recipient_member_id":doc.member_id,
+                }
+                self.repository.audit(doc.batch_id,"INDIVIDUAL_PDF_REFRESH_STARTED",json.dumps(audit_context),user or self.user)
                 self.exporter(vm,temp); digest=sha256(temp.read_bytes()).hexdigest(); path.parent.mkdir(parents=True,exist_ok=True); os.replace(temp,path)
                 self.repository.supersede_member_document(doc.batch_id,doc.member_id)
                 self.repository.record_document(batch_id=doc.batch_id,remittance_id=doc.remittance_id,recipient_member_id=doc.member_id,document_type=DocumentType.PDF_MEMBER.value,file_path=str(path),status="GENERATED",generated_at=datetime.now(timezone.utc).isoformat(),file_hash=digest,created_by=user or self.user,benchmark_source_fingerprint=benchmark.source_fingerprint)
-                self.repository.audit(doc.batch_id,"INDIVIDUAL_PDF_REFRESH_COMPLETED",json.dumps({"document_id":doc.document_id,"recipient_member_id":doc.member_id,"new_hash":digest,"source_fingerprint":benchmark.source_fingerprint}),user or self.user)
+                self.repository.audit(doc.batch_id,"INDIVIDUAL_PDF_REFRESH_COMPLETED",json.dumps({**audit_context,"new_hash":digest}),user or self.user)
                 items.append(IndividualPdfRefreshItem(doc.document_id,doc.batch_id,doc.member_id,path,True,benchmark.source_fingerprint))
-                logger.info("[IndividualPdfRefresh] document_id=%s batch_id=%s recipient_member_id=%s status=GENERATED duration_ms=%d",doc.document_id,doc.batch_id,doc.member_id,(monotonic()-started)*1000)
+                logger.info("[IndividualPdfRefresh] document_id=%s batch_id=%s member_id=%s snapshot_has_benchmark=%s benchmark_created_from_scratch=%s group_code=%s group_name=%s status=GENERATED duration_ms=%d",doc.document_id,doc.batch_id,doc.member_id,snapshot_has_benchmark,not snapshot_has_benchmark,code,name,(monotonic()-started)*1000)
             except Exception as exc:
                 temp.unlink(missing_ok=True); self.repository.audit(doc.batch_id,"INDIVIDUAL_PDF_REFRESH_FAILED",json.dumps({"document_id":doc.document_id,"recipient_member_id":doc.member_id,"error":str(exc)}),user or self.user)
                 items.append(IndividualPdfRefreshItem(doc.document_id,doc.batch_id,doc.member_id,path,False,error=str(exc))); logger.exception("[IndividualPdfRefresh] document_id=%s status=FAILED",doc.document_id)

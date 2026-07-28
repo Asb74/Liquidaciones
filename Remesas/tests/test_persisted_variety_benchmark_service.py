@@ -1,7 +1,15 @@
 from decimal import Decimal
+from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 import services.persisted_variety_benchmark_service as module
+from domain.benchmark_models import BenchmarkScope, PersistedBenchmarkMetric, PersistedMemberBenchmark, VarietyGroupBenchmark
+from presentation.liquidation_document_snapshot import dump
+from services.group_benchmark_service import PremiumGroupBenchmark
+from services.individual_pdf_refresh_service import IndividualPdfRefreshService
 from services.persisted_variety_benchmark_service import PersistedVarietyBenchmarkService
+from tests.test_premium_pdf import _header, _member
+from presentation.premium_liquidation_view_model import from_member_liquidation
 
 class Repository:
     def __init__(self, rows): self.rows=rows; self.calls=0
@@ -35,3 +43,69 @@ def test_fingerprint_changes_when_persisted_population_changes(monkeypatch):
     repo.rows.append(row(2,2,"B","100","300")); service.clear_cache()
     second=service.get_group_benchmark(campaign="2026",company="1",variety_group_code="NAVEL_TARDIA").source_fingerprint
     assert first!=second
+
+
+def complete_benchmark(members=True):
+    comparable=(PersistedMemberBenchmark(818,"S818",Decimal("100"),Decimal("250"),Decimal("2"),Decimal("2.5"),Decimal("50"),Decimal("125")),) if members else ()
+    metric=lambda maximum,average,minimum: PersistedBenchmarkMetric(None,maximum,average,minimum,None,len(comparable))
+    return VarietyGroupBenchmark(
+        BenchmarkScope("2026","1","NAVEL_TEMPRANA"), comparable,
+        metric(Decimal("3"),Decimal("2.5"),Decimal("2")) if members else metric(None,None,None),
+        metric(Decimal("60"),Decimal("50"),Decimal("40")) if members else metric(None,None,None),
+        metric(Decimal("150"),Decimal("125"),Decimal("100")) if members else metric(None,None,None),
+        datetime.now(timezone.utc), "fingerprint",
+    )
+
+
+def test_for_member_builds_complete_group_benchmark_without_template():
+    result=PersistedVarietyBenchmarkService.for_member(
+        complete_benchmark(),818,template=None,group_name="NAVEL TEMPRANA",campaign="2026"
+    )
+    assert isinstance(result,PremiumGroupBenchmark)
+    assert (result.group_label,result.group,result.subgroup,result.campaign)==("NAVEL TEMPRANA","NAVEL","TEMPRANA","2026")
+    assert result.price_per_kg.own_value==Decimal("2.5")
+    assert (result.price_per_kg.maximum_value,result.price_per_kg.average_value,result.price_per_kg.minimum_value)==(Decimal("3"),Decimal("2.5"),Decimal("2"))
+    assert result.price_per_kg.valid_member_count==1
+    assert result.kilograms_per_hectare.own_value==Decimal("50")
+    assert result.euros_per_hectare.own_value==Decimal("125")
+
+
+def test_for_member_without_comparable_data_builds_unavailable_metrics():
+    result=PersistedVarietyBenchmarkService.for_member(complete_benchmark(False),999,group_name="BLANCA TEMPRANA")
+    for metric in (result.price_per_kg,result.kilograms_per_hectare,result.euros_per_hectare):
+        assert metric.own_value is None and metric.valid_member_count==0
+        assert metric.status=="unavailable" and metric.warning=="Sin datos comparables suficientes"
+
+
+def test_for_member_keeps_optional_metadata_from_old_template():
+    original=PersistedVarietyBenchmarkService.for_member(complete_benchmark(),818,group_name="NAVEL TEMPRANA")
+    old=module.replace(original,crop="CITRICOS",varieties=("NAVELINA",),liquidation_type="Normal",category="Primera")
+    result=PersistedVarietyBenchmarkService.for_member(complete_benchmark(),818,template=old,group_name="NAVEL TEMPRANA",campaign="2026")
+    assert (result.crop,result.varieties,result.liquidation_type,result.category)==("CITRICOS",("NAVELINA",),"Normal","Primera")
+
+
+class RefreshRepository:
+    def __init__(self,payload): self.payload=payload; self.audits=[]; self.recorded=[]
+    def list_document_variety_lines(self,*_): return ({"variety_group_code":"NAVEL_TEMPRANA","variety_group_name":"NAVEL TEMPRANA","variety":"NAVELINA","variety_name":"NAVELINA"},)
+    def get_document_snapshot(self,*_): return {"payload_json":self.payload}
+    def audit(self,*args): self.audits.append(args)
+    def supersede_member_document(self,*_): pass
+    def record_document(self,**values): self.recorded.append(values)
+
+
+class RefreshBenchmarks:
+    def get_group_benchmarks(self,scopes): return {scope:complete_benchmark() for scope in scopes}
+    for_member=staticmethod(PersistedVarietyBenchmarkService.for_member)
+
+
+def test_refresh_snapshot_without_group_benchmark_creates_and_renders_pdf(tmp_path: Path):
+    vm=from_member_liquidation(_header(),_member(member_id=818,variety="NAVELINA"))
+    repository=RefreshRepository(dump(vm)); rendered=[]
+    def exporter(updated,path):
+        rendered.append(updated); Path(path).write_bytes(b"generated pdf")
+    document=SimpleNamespace(document_id=7,batch_id="B1",member_id=818,campaign="2026",company="1",file_path=str(tmp_path/"member.pdf"),remittance_id=3)
+    result=IndividualPdfRefreshService(repository,RefreshBenchmarks(),exporter=exporter).refresh_documents((document,))
+    assert not result.failed and (tmp_path/"member.pdf").exists()
+    assert rendered[0].group_benchmark.group_label=="NAVEL TEMPRANA"
+    assert rendered[0].group_benchmark.price_per_kg.own_value==Decimal("2.5")
+    assert any('"benchmark_created_from_scratch": true' in args[2] for args in repository.audits)
