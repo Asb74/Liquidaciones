@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 import logging
-import sqlite3
+from data.repository import IDataRepository
 
 from domain.utils import decimal_or_zero
 
@@ -17,7 +17,7 @@ class QualityRateResult:
 
 
 class QualityRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: IDataRepository) -> None:
         self.conn = conn
         self.logger = logging.getLogger(__name__)
 

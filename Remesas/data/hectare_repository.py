@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 import logging
-import sqlite3
+from data.repository import IDataRepository
 import time
 from typing import Any, Sequence
 
@@ -13,7 +13,7 @@ from domain.member_rules import configure_excluded_members
 
 
 def is_active_flag(value: object) -> bool:
-    """Normalize Access/SQLite active flags for CHA."""
+    """Normalize Access/PostgreSQL active flags for CHA."""
     if value is None:
         return False
     if isinstance(value, bool):
@@ -53,7 +53,7 @@ def is_active_baja(value: object) -> bool:
 
 
 class HectareRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: IDataRepository) -> None:
         self.conn = conn
         configure_excluded_members(connection=conn)
         self.logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ class HectareRepository:
         audit_rows: list[dict[str, Any]] = []
         included_rows: list[tuple[str, Decimal]] = []
         warnings: list[str] = []
-        dparcela_by_boleta: dict[str, list[sqlite3.Row | tuple[Any, ...]]] = {}
+        dparcela_by_boleta: dict[str, list[Any | tuple[Any, ...]]] = {}
         processed_boletas: set[str] = set()
         filter_counts: dict[str, Any] = self._base_counts(member_id, campaign, company, crops)
         filter_counts["E. Valores reales de CHA"] = "; ".join(f"cultivo={cult} CHA={cha!r} tipo={type(cha).__name__} filas={cnt}" for cult, cha, cnt in cha_summary) or "(sin filas)"
@@ -184,7 +184,7 @@ class HectareRepository:
         """DEEPP boletas are reviewed even when they have no delivery."""
         try:
             rows = self._deepp_candidate_rows_for_report(campaign, company, eligible_crops)
-        except sqlite3.OperationalError:
+        except Exception:
             return ()  # Report-only databases used by legacy installations.
         return tuple((r[0], "", str(campaign), str(company), r[1]) for r in rows)
 

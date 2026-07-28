@@ -1,0 +1,28 @@
+[postgresql]
+host = "192.168.1.3"
+port = 5432
+database = "perceco"
+user = "perceco_engine"
+sslmode = "prefer"
+min_pool_size = 1
+max_pool_size = 10
+connect_timeout = 5
+
+[application]
+name = "Liquidaciones - Remesas"
+mode = "POSTGRESQL"
+window_width = 1450
+window_height = 900
+
+[logging]
+file = "logs/remesas.log"
+level = "INFO"
+
+[audit]
+enabled = true
+
+[hectare_fee]
+surface_crops = ["CITRICOS", "MANDARINA"]
+price_per_hectare = "195"
+delivery_crops = ["CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA"]
+applicable_remittance_crops = ["CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA"]

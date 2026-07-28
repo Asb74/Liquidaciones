@@ -5,7 +5,7 @@ from tkinter import messagebox, ttk
 
 
 class LiquidationPrefixMasterDialog(tk.Toplevel):
-    """CRUD del maestro SQLite de prefijos de liquidación."""
+    """CRUD del maestro PostgreSQL de prefijos de liquidación."""
 
     def __init__(self, parent: tk.Misc, repository, on_saved=None):
         super().__init__(parent)

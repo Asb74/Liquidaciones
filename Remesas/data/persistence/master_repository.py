@@ -51,7 +51,7 @@ class LiquidationMasterRepository:
             if rule_id:
                 conn.execute("UPDATE split_rules SET source_member_id=?,source_member_name=?,split_type=?,campaign=?,crop=?,variety=?,remittance_id=?,effective_from=?,effective_to=?,active=?,priority=?,notes=?,updated_at=? WHERE id=?",common+(int(rule_id),)); conn.execute("DELETE FROM split_rule_recipients WHERE rule_id=?",(rule_id,)); saved_id=int(rule_id)
             else:
-                cur=conn.execute("INSERT INTO split_rules(source_member_id,source_member_name,split_type,campaign,crop,variety,remittance_id,effective_from,effective_to,active,priority,notes,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",common[:-1]+("LOCAL_MASTER",now,now)); saved_id=int(cur.lastrowid)
+                cur=conn.execute("INSERT INTO split_rules(source_member_id,source_member_name,split_type,campaign,crop,variety,remittance_id,effective_from,effective_to,active,priority,notes,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",common[:-1]+("LOCAL_MASTER",now,now)); saved_id=int(cur.fetchone()[0])
             for order,item in enumerate(recipients):
                 member_id,name,value,residual=item
                 conn.execute("INSERT INTO split_rule_recipients(rule_id,recipient_member_id,recipient_member_name,value,is_residual,sort_order) VALUES(?,?,?,?,?,?)",(saved_id,int(member_id),name,format(Decimal(value),"f"),int(residual),order))

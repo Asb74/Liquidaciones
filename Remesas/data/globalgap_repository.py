@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 import logging
-import sqlite3
+from data.repository import IDataRepository
 import unicodedata
 from typing import Any
 
@@ -24,7 +24,7 @@ def _norm_level(value: object) -> str:
 class GlobalGapRepository:
     """Read-only GlobalGAP data access. Never reads or writes the auxiliary table Global."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: IDataRepository) -> None:
         self.conn = conn
         self.logger = logging.getLogger(__name__)
         self.last_certification_rows: tuple[dict[str, Any], ...] = ()

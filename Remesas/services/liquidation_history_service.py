@@ -5,7 +5,7 @@ import json
 
 
 class LiquidationHistoryService:
-    """Fachada de consulta posterior al guardado; la UI nunca accede a SQLite."""
+    """Fachada de consulta posterior al guardado; la UI nunca accede a PostgreSQL."""
 
     def __init__(self, repository, document_service, modification_service=None, csv_export_service=None):
         self.repository = repository
@@ -68,7 +68,7 @@ class LiquidationHistoryService:
         return self.repository.history_summary(**(filters or {}))
 
     def filtered_batch_ids(self, filters=None):
-        """Deliberately queries SQLite again: this is not the paged Treeview scope."""
+        """Deliberately queries PostgreSQL again: this is not the paged Treeview scope."""
         return tuple(row["batch_id"] for row in self.list_batches(filters))
 
     def get_batch_detail(self, batch_id):
