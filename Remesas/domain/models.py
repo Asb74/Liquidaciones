@@ -22,14 +22,17 @@ class AppConfig:
     hectare_fee_surface_crops: tuple[str, ...] = ("CITRICOS", "MANDARINA")
     hectare_fee_delivery_crops: tuple[str, ...] = ("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA")
     hectare_fee_applicable_remittance_crops: tuple[str, ...] = ("CITRICOS", "MANDARINA", "DIRECTO", "DIRECTOCHF", "INDUSTRIA")
-    postgresql_settings: Any = None
-    sync_on_start: bool = False
+    source_db_fruta: str = r"\\personal\C\BasesSQLite\DBfruta.sqlite"
+    source_db_eepp: str = r"\\personal\C\BasesSQLite\DBEEPPL.sqlite"
+    local_database_dir: str = r"C:\Liquidaciones\datos"
+    local_temp_dir: str = r"C:\Liquidaciones\datos\temp"
+    local_backup_dir: str = r"C:\Liquidaciones\datos\backup"
+    sync_metadata_path: str = r"C:\Liquidaciones\datos\sync_metadata.json"
+    sync_on_start: bool = True
+    allow_local_fallback: bool = True
+    keep_backup: bool = True
+    persistence_database_path: str = r"C:\Liquidaciones\datos\liquidaciones.sqlite"
     persistence_enabled: bool = True
-
-    @property
-    def persistence_database_path(self) -> None:
-        """Compatibilidad temporal de firma; PostgreSQL no usa rutas locales."""
-        return None
 
     @property
     def hectare_fee_applicable_crops(self) -> tuple[str, ...]:

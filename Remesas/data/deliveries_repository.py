@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from data.repository import IDataRepository
+import sqlite3
 import time
 from typing import Any
 
@@ -11,7 +11,7 @@ from domain.utils import decimal_or_zero, format_display_date, is_liquidated
 
 
 class DeliveriesRepository:
-    def __init__(self, conn: IDataRepository) -> None:
+    def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
         self.logger = logging.getLogger(__name__)
         configure_excluded_members(connection=conn)

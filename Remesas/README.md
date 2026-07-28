@@ -1,31 +1,27 @@
-# Liquidaciones — Remesas
+# Liquidaciones - Remesas
 
-Aplicación de liquidaciones conectada exclusivamente a PostgreSQL mediante psycopg3.
+Primera versión visual y funcional del módulo `Remesas`, ejecutable de forma independiente e integrable como `ttk.Frame` mediante `ui.remesas_frame.RemesasFrame`.
 
-## Configuración
+## Arranque en Windows
 
-Los parámetros no secretos están centralizados en `config/postgresql.toml`. La contraseña
-se obtiene únicamente de la variable de entorno `POSTGRES_PASSWORD`:
-
-```bash
-export POSTGRES_PASSWORD='…'
+```bat
+cd /d C:\Liquidaciones\Remesas
 python app.py
 ```
 
-La aplicación usa un pool compartido y consulta directamente los esquemas
-`legacy_dbfruta`, `legacy_eepp`, `legacy_calidad`, `integracion` e `informes`. Toda la
-persistencia propia (liquidaciones, líneas, snapshots, documentos, exportaciones,
-rectificaciones, anulaciones, historial y maestros) reside en `liquidaciones`.
+## Configuración
 
-Al arrancar se crea el esquema propio y se aplican automáticamente las migraciones
-pendientes registradas en `liquidaciones.schema_version`. Si PostgreSQL no está disponible,
-se informa al usuario, se registra el error y la aplicación no continúa con datos parciales.
+Las rutas SQLite se leen desde `config.ini`. Las conexiones se abren con `sqlite3` en modo lectura y `PRAGMA query_only = ON`. `DBEEPPL.sqlite` se adjunta como esquema `eepp` para cruzar `PesosFres` con `eepp.DSocio`.
 
-## Instalación y pruebas
+## Tablas usadas
 
-```bash
-python -m pip install -r requirements.txt
-pytest -q tests
-```
+- `PesosFres`: entregas por campaña, empresa, cultivo y periodo.
+- `PesosFresCon`: se valida su existencia para fases posteriores.
+- `PagosCIT`: lectura de remesas existentes y precios `P0` a `P11`, `PDESTRIO`, `PDMESA`, `PPODRIDO`.
+- `DLiquidaciones`: se valida su existencia, sin escritura.
+- `eepp.DEEPP`: variedades reales por contexto.
+- `eepp.DSocio`: nombre de socio por `IdSocio`.
 
-El inventario previo al corte está en `docs/postgresql_phase_1_access_report.md`.
+## Limitaciones de fase 1
+
+No calcula importes económicos, no guarda liquidaciones, no modifica SQLite, no toca Access y no genera PDF final. Los botones de cálculo, guardado, anulación y PDF quedan deshabilitados.

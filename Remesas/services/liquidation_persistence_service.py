@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from data.postgres_legacy_repository import PostgresLegacyRepository
+from data.legacy_persistence_repository import LegacyPersistenceRepository
 from data.variety_repository import VarietyRepository
 from data.persistence.database import PersistenceDatabase
 from domain.persistence_models import (BatchPersistenceSaveResult, PendingBatchPersistence,
@@ -37,7 +37,7 @@ def _d(value): return format(Decimal(value), "f")
 
 class LiquidationPersistenceService:
     def __init__(self, database: PersistenceDatabase, legacy_conn, *, crop_aliases: dict[str,str] | None=None) -> None:
-        self.database=database; self.database.initialize(); self.legacy=PostgresLegacyRepository(legacy_conn); self.legacy_conn=legacy_conn; self.aliases=crop_aliases or {}
+        self.database=database; self.database.initialize(); self.legacy=LegacyPersistenceRepository(legacy_conn); self.legacy_conn=legacy_conn; self.aliases=crop_aliases or {}
         self.variety_resolver = VarietySelectionResolver(VarietyRepository(legacy_conn))
         self.variety_groups = VarietyGroupService(VarietyRepository(legacy_conn))
         self.conflicts = LiquidationConflictService(self.legacy_repository_adapter())
@@ -221,7 +221,7 @@ class LiquidationPersistenceService:
                         variety_group_code=group_code_value,variety_group_name=group_name_value,
                         surface_group_code=group_code_value,surface_group_name=group_name_value))
                 logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=%s\nstatus=STARTED", batch_id, recipient_member_id, SCHEMA_VERSION)
-                conn.execute("INSERT INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?) ON CONFLICT (batch_id,recipient_member_id) DO UPDATE SET payload_json=EXCLUDED.payload_json,schema_version=EXCLUDED.schema_version,calculation_fingerprint=EXCLUDED.calculation_fingerprint,created_at=EXCLUDED.created_at,created_by=EXCLUDED.created_by", (batch_id, int(recipient_member_id), payload_json, SCHEMA_VERSION, preview.fingerprint, now, user))
+                conn.execute("INSERT OR REPLACE INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, int(recipient_member_id), payload_json, SCHEMA_VERSION, preview.fingerprint, now, user))
                 conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, "DOCUMENT_SNAPSHOT_SAVED", "DOCUMENT", str(recipient_member_id), json.dumps({"recipient_member_id": recipient_member_id, "schema_version": SCHEMA_VERSION, "calculation_fingerprint": preview.fingerprint}), now, user))
                 logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=%s\nstatus=SAVED", batch_id, recipient_member_id, SCHEMA_VERSION)
             conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)",(batch_id,"SAVE","BATCH",batch_id,json.dumps({"lines":len(persisted)}),_now(),user)); conn.commit()
@@ -264,7 +264,7 @@ class LiquidationPersistenceService:
             now=_now()
             for source,recipients in grouped.items():
                 cur=conn.execute("INSERT INTO split_rules(source_member_id,source_member_name,split_type,priority,notes,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",(source,self.legacy.member_name(source),"PERCENTAGE_WITH_RESIDUAL",100,"Importación histórica confirmada","LEGACY_DDIVIDIRLIQ",now,now))
-                for order,(recipient,value) in enumerate(recipients): conn.execute("INSERT INTO split_rule_recipients(rule_id,recipient_member_id,recipient_member_name,value,sort_order) VALUES(?,?,?,?,?)",(cur.fetchone()[0],recipient,self.legacy.member_name(recipient),str(value),order))
+                for order,(recipient,value) in enumerate(recipients): conn.execute("INSERT INTO split_rule_recipients(rule_id,recipient_member_id,recipient_member_name,value,sort_order) VALUES(?,?,?,?,?)",(cur.lastrowid,recipient,self.legacy.member_name(recipient),str(value),order))
             conn.execute("INSERT INTO legacy_imports VALUES(?,?,?)",("LEGACY_DDIVIDIRLIQ",now,json.dumps({"rules":len(grouped)}))); conn.commit(); return True
         except Exception: conn.rollback(); raise
         finally: self.database.close_connection(conn)

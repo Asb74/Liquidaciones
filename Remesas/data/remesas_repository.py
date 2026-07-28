@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from data.repository import IDataRepository
+import sqlite3
 from typing import Any
 
 from domain.models import Remesa
@@ -8,7 +8,7 @@ from domain.models import Remesa
 REMESA_FIELDS = ["IdREMESA","REMESA","FECHARE","PERIODO1","PERIODO2","VARIEDAD",*[f"P{i}" for i in range(12)],"PDESTRIO","PDMESA","PPODRIDO","CAMPAÑA","CULTIVO","EMPRESA","CATEGORIA","TipoLiq","AplRec","AplTte","AplCal","AplGlobal","AplCHa","AplPrecalibrado","Observaciones","IdSocio"]
 
 class RemesasRepository:
-    def __init__(self, conn: IDataRepository) -> None:
+    def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
 
     def list_remittances_for_campaign(
