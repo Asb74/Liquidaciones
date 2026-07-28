@@ -28,6 +28,25 @@ class LiquidationRepository:
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidation_document_snapshots WHERE batch_id=? AND recipient_member_id=?", (batch_id,recipient_member_id)).fetchone()
 
+    def list_persisted_benchmark_rows(self, campaign: str, company: str):
+        """Return active persisted economics and their persisted group snapshot."""
+        with self.database.connect() as conn:
+            return conn.execute("""SELECT l.id,l.id_liq,l.recipient_member_id,l.id_socio,l.socio,
+              l.campana,l.empresa,l.cultivo,l.variedad,l.neto,l.precio_medio,l.importe_total,
+              l.status,l.operation_type,l.batch_id,b.status AS batch_status,s.payload_json
+              FROM liquidaciones l JOIN liquidation_batches b ON b.batch_id=l.batch_id
+              LEFT JOIN liquidation_document_snapshots s ON s.batch_id=l.batch_id
+                AND s.recipient_member_id=l.recipient_member_id
+              WHERE l.campana=? AND l.empresa=? AND b.status IN ('ACTIVE','PARTIAL')
+                AND l.status='ACTIVE' AND l.operation_type<>'REVERSAL'
+                AND l.recipient_member_id<>0 AND l.id_socio<>0
+                AND TRIM(COALESCE(l.neto,''))<>'' AND TRIM(COALESCE(l.importe_total,''))<>''
+              ORDER BY l.recipient_member_id,l.batch_id,l.id""", (str(campaign),str(company))).fetchall()
+
+    def supersede_member_document(self, batch_id: str, recipient_member_id: int) -> None:
+        with self.database.connect() as conn:
+            conn.execute("UPDATE generated_documents SET status='SUPERSEDED' WHERE batch_id=? AND recipient_member_id=? AND document_type='PDF_MEMBER' AND status='GENERATED'", (batch_id,recipient_member_id))
+
     def mark_batch_partial(self, batch_id: str) -> None:
         with self.database.connect() as conn:
             conn.execute("UPDATE liquidation_batches SET status='PARTIAL' WHERE batch_id=? AND status='ACTIVE'", (batch_id,))
@@ -365,7 +384,7 @@ class LiquidationRepository:
             return
         with self.database.connect() as conn:
             previous = conn.execute("SELECT COALESCE(MAX(generation_attempt),0) FROM generated_documents WHERE batch_id=? AND recipient_member_id=? AND document_type=?", (values["batch_id"], values["recipient_member_id"], values["document_type"])).fetchone()[0]
-            conn.execute("INSERT INTO generated_documents(batch_id,remittance_id,recipient_member_id,document_type,file_path,status,generated_at,error_message,generation_attempt,file_hash,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (values["batch_id"],values["remittance_id"],values["recipient_member_id"],values["document_type"],values["file_path"],values["status"],values.get("generated_at"),values.get("error_message"),previous+1,values.get("file_hash"),values.get("created_by")))
+            conn.execute("INSERT INTO generated_documents(batch_id,remittance_id,recipient_member_id,document_type,file_path,status,generated_at,error_message,generation_attempt,file_hash,created_by,benchmark_source_fingerprint) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (values["batch_id"],values["remittance_id"],values["recipient_member_id"],values["document_type"],values["file_path"],values["status"],values.get("generated_at"),values.get("error_message"),previous+1,values.get("file_hash"),values.get("created_by"),values.get("benchmark_source_fingerprint")))
 
     def audit(self, batch_id: str, action: str, details: str, user: str | None = None) -> None:
         from data.persistence.migrations import utcnow
