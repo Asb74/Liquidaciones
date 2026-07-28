@@ -6,7 +6,7 @@ from hashlib import sha256
 import json, logging, re, unicodedata
 from domain.benchmark_models import BenchmarkScope, PersistedBenchmarkMetric, PersistedMemberBenchmark, VarietyGroupBenchmark
 from presentation.liquidation_document_snapshot import load as load_snapshot
-from services.group_benchmark_service import BenchmarkMetric
+from services.group_benchmark_service import BenchmarkMetric, PremiumGroupBenchmark
 
 logger=logging.getLogger(__name__)
 
@@ -58,8 +58,58 @@ class PersistedVarietyBenchmarkService:
         avg=sum(values,Decimal(0))/len(values) if values else None
         return PersistedBenchmarkMetric(None,max(values) if values else None,avg,min(values) if values else None,None,len(values))
     @staticmethod
-    def for_member(benchmark, member_id, template):
+    def for_member(
+        benchmark,
+        member_id,
+        template=None,
+        *,
+        group_name=None,
+        campaign=None,
+        subgroup=None,
+    ) -> PremiumGroupBenchmark:
+        """Build the document benchmark, optionally preserving old metadata.
+
+        Metrics always come from the current persisted benchmark.  A benchmark
+        stored in the economic snapshot is metadata only and is deliberately
+        not required.
+        """
         member=next((m for m in benchmark.comparable_members if m.recipient_member_id==int(member_id)),None)
         def convert(summary, own, name):
             return BenchmarkMetric(own,summary.maximum,summary.minimum,summary.average,summary.comparable_count,len(benchmark.comparable_members)-summary.comparable_count,"ok" if summary.comparable_count else "unavailable","" if summary.comparable_count else "Sin datos comparables suficientes",name)
-        return replace(template,price_per_kg=convert(benchmark.price_metric,member.final_average_price if member else None,"FINAL_PRICE"),kilograms_per_hectare=convert(benchmark.production_metric,member.production_kg_ha if member else None,"PRODUCTION_KG_HA"),euros_per_hectare=convert(benchmark.final_amount_metric,member.final_amount_eur_ha if member else None,"FINAL_AMOUNT_EUR_HA"))
+        metrics = {
+            "price_per_kg": convert(benchmark.price_metric,member.final_average_price if member else None,"FINAL_PRICE"),
+            "kilograms_per_hectare": convert(benchmark.production_metric,member.production_kg_ha if member else None,"PRODUCTION_KG_HA"),
+            "euros_per_hectare": convert(benchmark.final_amount_metric,member.final_amount_eur_ha if member else None,"FINAL_AMOUNT_EUR_HA"),
+        }
+        if template is not None:
+            return replace(
+                template,
+                group_label=group_name or template.group_label,
+                campaign=str(campaign or template.campaign),
+                subgroup=subgroup if subgroup is not None else template.subgroup,
+                **metrics,
+            )
+
+        logger.info("[BenchmarkTemplate] snapshot_template_missing=True action=CREATE_FROM_SCRATCH")
+        label=str(group_name or benchmark.scope.variety_group_code).strip()
+        if not label:
+            raise ValueError("El benchmark no contiene un nombre de grupo varietal válido.")
+        resolved_campaign=str(campaign or benchmark.scope.campaign).strip()
+        if not resolved_campaign:
+            raise ValueError("El benchmark no contiene una campaña válida.")
+        label_parts=label.split(maxsplit=1)
+        resolved_group=label_parts[0]
+        resolved_subgroup=subgroup if subgroup is not None else (label_parts[1] if len(label_parts)>1 else "")
+        return PremiumGroupBenchmark(
+            group_label=label,
+            crop="",
+            group=resolved_group,
+            subgroup=resolved_subgroup,
+            varieties=(),
+            campaign=resolved_campaign,
+            company=str(benchmark.scope.company),
+            liquidation_type="",
+            category="",
+            warnings=(),
+            **metrics,
+        )
