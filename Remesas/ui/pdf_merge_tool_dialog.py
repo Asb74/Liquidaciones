@@ -70,10 +70,11 @@ class PdfMergeToolDialog(tk.Toplevel):
     HEADERS=("Seleccionar","Tipo","Campaña","Empresa","Cultivo","Remesa","N.º socio","Socio","IdLiq","Fecha","Estado","Ruta","Páginas","Tamaño")
     def __init__(self,parent,service,*,output_root=None,regenerate_callback=None,
                  remittance_resolver=None,excel_callback=None,cancel_excel_callback=None,
-                 csv_export_service=None):
+                 csv_export_service=None,individual_refresh_service=None):
         super().__init__(parent); self.service=service; self.regenerate_callback=regenerate_callback
         self.remittance_resolver=remittance_resolver; self.excel_callback=excel_callback; self.cancel_excel_callback=cancel_excel_callback
         self.csv_export_service=csv_export_service
+        self.individual_refresh_service=individual_refresh_service
         self.output_root=Path(output_root or (r"C:\Liquidaciones\salidas\impresion_masiva" if Path("C:/").exists() else Path.cwd().parent/"salidas"/"impresion_masiva"))
         self.title("Generación masiva de documentos"); self.geometry("1400x720"); self.documents=[]; self.selected=set(); self.validation_status={}; self.cancelled=False
         self._build()
@@ -93,6 +94,8 @@ class PdfMergeToolDialog(tk.Toplevel):
         ttk.Combobox(filters,textvariable=self.state,values=("Todos","Generado","Error","Sustituido"),state="readonly",width=12).grid(row=1,column=8,padx=3)
         self.kind_combo.bind("<<ComboboxSelected>>",self._kind_changed); self.campaign_combo.bind("<<ComboboxSelected>>",self._campaign_changed); self.company_combo.bind("<<ComboboxSelected>>",self._company_changed); self.crop_combo.bind("<<ComboboxSelected>>",self._crop_changed)
         self.voided_check=ttk.Checkbutton(filters,text="Incluir liquidaciones anuladas",variable=self.voided); self.voided_check.grid(row=2,column=0,columnspan=2,sticky="w")
+        self.refresh_individual_pdfs_var=tk.BooleanVar(value=False)
+        ttk.Checkbutton(filters,text="Actualizar comparativas y regenerar PDF individuales antes del combinado",variable=self.refresh_individual_pdfs_var).grid(row=2,column=2,columnspan=6,sticky="w",padx=3)
         self.search_button=ttk.Button(filters,text="Buscar documentos",command=self.search); self.search_button.grid(row=1,column=9,padx=8)
         actions=ttk.Frame(self); actions.pack(fill="x",padx=8)
         for text,cmd in (("Seleccionar todos",self.select_all),("Quitar selección",self.clear_selection),("Invertir selección",self.invert_selection),("Seleccionar visibles",self.select_all),("Quitar no disponibles",self.remove_unavailable)):
@@ -193,11 +196,30 @@ class PdfMergeToolDialog(tk.Toplevel):
         return folder/f"{label}_{detail}_{stamp}.pdf"
     def merge(self):
         docs=[d for i,d in enumerate(self.documents) if i in self.selected]
-        if not docs: messagebox.showwarning("Unificar","Debe seleccionar al menos un documento.",parent=self); return
+        if not docs:
+            text="Seleccione los documentos que desea actualizar y combinar." if self.refresh_individual_pdfs_var.get() else "Debe seleccionar al menos un documento."
+            messagebox.showwarning("Unificar",text,parent=self); return
+        if self.refresh_individual_pdfs_var.get():
+            if not self.individual_refresh_service:
+                messagebox.showerror("Unificar","La actualización de comparativas no está disponible.",parent=self); return
+            scopes=self.individual_refresh_service.scopes_for_documents(docs)
+            if not messagebox.askyesno("Actualizar comparativas",f"Se actualizarán las comparativas y se regenerarán {len(docs)} PDF individuales.\n\nGrupos varietales afectados: {len(scopes)}\nDocumentos seleccionados: {len(docs)}\n\nDespués se generará el PDF combinado.\n\n¿Desea continuar?",parent=self): return
+            self.cancelled=False; self._set_generating(True)
+            refreshed=self.individual_refresh_service.refresh_documents(docs,progress_callback=self._refresh_progress,should_cancel=lambda:self.cancelled)
+            if refreshed.cancelled:
+                self._set_generating(False); messagebox.showinfo("Unificar","Operación cancelada.",parent=self); return
+            if refreshed.failed:
+                self._set_generating(False); detail="\n".join(f"- {x.recipient_member_id}: {x.error}" for x in refreshed.failed)
+                messagebox.showerror("Unificar","No se generará el combinado porque fallaron PDF individuales:\n"+detail,parent=self); self.search(); return
+            self.search()
+            by_key={(d.batch_id,d.member_id):d for d in self.documents}
+            docs=[by_key[(d.batch_id,d.member_id)] for d in docs]
         if any(d.batch_status=="VOIDED" for d in docs) and not messagebox.askyesno("Liquidaciones anuladas","La selección contiene liquidaciones anuladas. ¿Desea continuar?",parent=self): return
         proposed=self._proposed(docs); proposed.parent.mkdir(parents=True,exist_ok=True)
         path=filedialog.asksaveasfilename(parent=self,title="Archivo de salida",initialdir=proposed.parent,initialfile=proposed.name,defaultextension=".pdf",filetypes=(("Documento PDF","*.pdf"),))
-        if not path:return
+        if not path:
+            if self.refresh_individual_pdfs_var.get(): self._set_generating(False)
+            return
         self.cancelled=False
         self._set_generating(True)
         try:
@@ -269,7 +291,16 @@ class PdfMergeToolDialog(tk.Toplevel):
     def _csv_progress(self,phase,current,total):
         self.progress.set(f"{phase.capitalize()} CSV: {current} de {total}"); self.update()
     def _progress(self,phase,current,total,pages): self.progress.set(f"{phase.capitalize()} documento {current} de {total}. Páginas procesadas: {pages}"); self.update()
+    def _refresh_progress(self,phase,current,total):
+        label="Calculando comparativas" if phase=="comparativas" else "Regenerando PDF"
+        self.progress.set(f"{label}... {current} de {total}"); self.update()
     def regenerate(self):
         if self.kind.get()=="Borradores": messagebox.showinfo("Regenerar","Los borradores no pueden regenerarse automáticamente.",parent=self); return
-        if not self.regenerate_callback: messagebox.showinfo("Regenerar","Abra Liquidaciones guardadas para regenerar este definitivo sin recalcular.",parent=self); return
+        docs=[d for i,d in enumerate(self.documents) if i in self.selected]
+        if self.individual_refresh_service and docs:
+            result=self.individual_refresh_service.refresh_documents(docs,progress_callback=self._refresh_progress,should_cancel=lambda:self.cancelled)
+            if result.failed: messagebox.showerror("Regenerar",f"No se pudieron regenerar {len(result.failed)} documentos.",parent=self)
+            self.search(); return
+        if not docs: messagebox.showwarning("Regenerar","Seleccione al menos un documento.",parent=self); return
+        if not self.regenerate_callback: messagebox.showinfo("Regenerar","No está disponible la regeneración.",parent=self); return
         self.regenerate_callback(); self.search()

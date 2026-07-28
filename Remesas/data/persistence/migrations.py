@@ -76,7 +76,10 @@ CREATE TABLE IF NOT EXISTS liquidation_document_snapshots(
  payload_json TEXT NOT NULL, schema_version INTEGER NOT NULL, calculation_fingerprint TEXT NOT NULL,
  created_at TEXT NOT NULL, created_by TEXT, PRIMARY KEY(batch_id,recipient_member_id)
 );
-"""),(9, "article_code_as_text", ""))
+"""),(9, "article_code_as_text", ""),(10, "persisted_benchmark_metadata", """
+ALTER TABLE generated_documents ADD COLUMN benchmark_source_fingerprint TEXT;
+CREATE INDEX IF NOT EXISTS ix_documents_benchmark_fingerprint ON generated_documents(benchmark_source_fingerprint);
+"""))
 
 
 def _migrate_article_code_as_text(conn: sqlite3.Connection) -> None:
