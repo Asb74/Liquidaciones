@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import os
 import tkinter as tk
 from tkinter import messagebox, ttk
 from ui.remesas_frame import RemesasFrame
@@ -20,6 +21,28 @@ from services.persisted_variety_benchmark_service import PersistedVarietyBenchma
 from services.individual_pdf_refresh_service import IndividualPdfRefreshService
 
 logger = logging.getLogger(__name__)
+
+
+def _check_postgresql_before_start(root: tk.Tk) -> bool:
+    """Bloquea la ventana principal cuando el backend PostgreSQL no está listo."""
+    if os.environ.get("DATABASE_BACKEND", "sqlite").strip().lower() != "postgresql":
+        return True
+    from db_tools.postgres import PostgresConnectionDiagnostics, PostgresSettings, PostgresError
+
+    while True:  # sólo continúa cuando el usuario pulsa explícitamente Reintentar
+        settings = PostgresSettings.from_env(validate=False)
+        result = PostgresConnectionDiagnostics(settings).check_connection()
+        if result.success:
+            return True
+        error_class = getattr(__import__("db_tools.postgres", fromlist=[result.error_type]), result.error_type, PostgresError)
+        title = getattr(error_class, "title", "Error de PostgreSQL")
+        if result.retryable:
+            retry = messagebox.askretrycancel(title, result.user_message, parent=root)
+            if retry:
+                continue
+        else:
+            messagebox.showerror(title, result.user_message, parent=root)
+        return False
 
 
 def _prepare_databases(root: tk.Tk, config) -> bool:
@@ -71,6 +94,8 @@ def main() -> None:
             logger.exception("Persistencia local deshabilitada: falló su inicialización")
             object.__setattr__(config, "persistence_enabled", False)
     root=tk.Tk(); root.withdraw(); root.title(config.app_name); root.geometry(f"{config.window_width}x{config.window_height}")
+    if not _check_postgresql_before_start(root):
+        root.destroy(); return
     apply_styles(root)
     if not _prepare_databases(root, config):
         root.destroy(); return
