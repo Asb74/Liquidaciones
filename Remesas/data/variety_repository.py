@@ -78,6 +78,25 @@ class VarietyRepository:
                 return variety
         return None
 
+    def find_groups_for_variety(self, master_crops: Iterable[str], normalized_value: str) -> tuple[VarietalGroup, ...]:
+        """Return the master groups containing one concrete variety.
+
+        Keeping this query in the master repository avoids introducing a second
+        varietal map in document generation.
+        """
+        matches: list[VarietalGroup] = []
+        for crop in dict.fromkeys(normalize_variety_text(crop) for crop in master_crops):
+            sql = """
+            SELECT DISTINCT TRIM(GRUPO), TRIM(SUBGRUPO)
+            FROM eepp.MVariedad
+            WHERE UPPER(TRIM(CULTIVO)) = ? AND UPPER(TRIM(Variedad)) = ?
+              AND TRIM(COALESCE(GRUPO,'')) <> ''
+              AND TRIM(COALESCE(SUBGRUPO,'')) <> ''
+            ORDER BY UPPER(TRIM(GRUPO)), UPPER(TRIM(SUBGRUPO))
+            """
+            matches.extend(VarietalGroup(crop, str(row[0]), str(row[1])) for row in self.conn.execute(sql, (crop, normalized_value)))
+        return tuple(matches)
+
 
     def find_exact_variety(self, crop: str, normalized_variety: str) -> str | None:
         sql = """

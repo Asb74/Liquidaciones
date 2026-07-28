@@ -9,7 +9,7 @@ from data.persistence.json_serialization import to_json_compatible
 from presentation.premium_liquidation_view_model import CommercialBreakdownRow, PremiumLiquidationViewModel
 from services.group_benchmark_service import BenchmarkMetric, PremiumGroupBenchmark
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _decimal_fields(model_type):
@@ -32,8 +32,12 @@ def dump(vm: PremiumLiquidationViewModel) -> str:
 
 def load(payload_json: str) -> PremiumLiquidationViewModel:
     raw=json.loads(payload_json)
-    if raw.get("schema_version") != SCHEMA_VERSION: raise ValueError("Versión de snapshot documental no compatible")
+    if raw.get("schema_version") not in (1, SCHEMA_VERSION): raise ValueError("Versión de snapshot documental no compatible")
     payload=dict(raw["model"])
+    # Version 1 remains readable so existing immutable documents can be
+    # migrated from their persisted liquidation lines.
+    for name in ("variety_code", "variety_name", "variety_group_code", "variety_group_name"):
+        payload.setdefault(name, None)
     payload["commercial_breakdown"]=tuple(
         CommercialBreakdownRow(**_restore_decimal_fields(row, CommercialBreakdownRow))
         for row in payload["commercial_breakdown"]

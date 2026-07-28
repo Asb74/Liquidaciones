@@ -79,6 +79,12 @@ CREATE TABLE IF NOT EXISTS liquidation_document_snapshots(
 """),(9, "article_code_as_text", ""),(10, "persisted_benchmark_metadata", """
 ALTER TABLE generated_documents ADD COLUMN benchmark_source_fingerprint TEXT;
 CREATE INDEX IF NOT EXISTS ix_documents_benchmark_fingerprint ON generated_documents(benchmark_source_fingerprint);
+"""),(11, "persisted_variety_groups", """
+ALTER TABLE liquidaciones ADD COLUMN variety_code TEXT;
+ALTER TABLE liquidaciones ADD COLUMN variety_name TEXT;
+ALTER TABLE liquidaciones ADD COLUMN variety_group_code TEXT;
+ALTER TABLE liquidaciones ADD COLUMN variety_group_name TEXT;
+CREATE INDEX IF NOT EXISTS ix_liq_benchmark_scope ON liquidaciones(campana,empresa,variety_group_code,status);
 """))
 
 

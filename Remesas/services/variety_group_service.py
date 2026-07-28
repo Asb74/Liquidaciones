@@ -13,9 +13,14 @@ from domain.varieties import (
     VarietySelectionResolution,
     normalize_variety_text,
 )
-from services.variety_selection_resolver import VarietySelectionKind, VarietySelectionResolver
+from services.variety_selection_resolver import (ResolvedVarietySelection, VarietySelectionKind,
+                                                 VarietySelectionResolver)
 
 logger = logging.getLogger(__name__)
+
+
+class VarietyGroupResolutionError(ValueError):
+    pass
 
 
 class VarietyGroupService:
@@ -37,6 +42,29 @@ class VarietyGroupService:
                 seen.add(key)
                 options.append(option)
         return tuple(options)
+
+    def resolve_variety_group(self, crop: str, variety: str):
+        """Resolve a group exclusively from a persisted concrete variety."""
+        normalized = normalize_variety_text(variety)
+        candidates = self.resolver.candidate_master_crops(crop)
+        matches = self.repository.find_exact_varieties(candidates, normalized)
+        if len(matches) > 1:
+            raise VarietyGroupResolutionError(f"La variedad {variety} es ambigua.")
+        if not matches:
+            raise VarietyGroupResolutionError(f"No se ha podido resolver el grupo varietal de la variedad {variety or '—'}.")
+        exact = matches[0]
+        groups = self.repository.find_groups_for_variety(
+            (exact.crop,), normalized,
+        )
+        identities = {(g.group, g.subgroup) for g in groups}
+        if not identities:
+            raise VarietyGroupResolutionError(f"No se ha podido resolver el grupo varietal de la variedad {variety}.")
+        if len(identities) > 1:
+            raise VarietyGroupResolutionError(f"La variedad {variety} pertenece a más de un grupo varietal.")
+        resolved = ResolvedVarietySelection(str(variety), normalized, VarietySelectionKind.VARIETY,
+            (exact.variety,), label=exact.variety, source_crop=str(crop),
+            resolved_master_crop=exact.crop, candidate_master_crops=candidates)
+        return groups[0], resolved
 
     def resolve_selection(self, crop: str, value: str) -> VarietySelectionResolution:
         resolved = self.resolver.resolve(crop, value)
