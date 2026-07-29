@@ -89,7 +89,7 @@ class GroupBenchmarkRepository:
         self._audit(
             "ProductiveSurfaceQuery", member_id=member_id, campaign=campaign, company=company,
             crop=crop, variety_count=len(varieties), varieties_original=varieties,
-            varieties_normalized=normalized_varieties, sql_parameter_count=7 + len(varieties),
+            varieties_normalized=normalized_varieties, sql_parameter_count=4 + len(varieties),
             status="NO_VARIETIES" if not varieties else "EXECUTING",
         )
 
@@ -127,7 +127,8 @@ class GroupBenchmarkRepository:
                                            tuple(sorted(candidate_boletas)), status="MISSING_SURFACE_DATA")
 
         placeholders = ",".join("?" for _ in varieties)
-        # ParcelaRowId prevents multiple matching DEEPP records from multiplying a physical parcel.
+        # Fetch by boleta only so every physical row is auditable. Context and validity
+        # rules are applied below, before summing each rowid once.
         sql = f"""WITH MatchingBoletas AS (
                     SELECT e.Boleta
                     FROM eepp.DEEPP e
@@ -143,12 +144,8 @@ class GroupBenchmarkRepository:
                     p.IdPM, p.Pol, p.Par, p.Rec, p.SupCul, p.BAJA
                   FROM MatchingBoletas m LEFT JOIN eepp.DParcela p
                     ON p.Boleta=m.Boleta
-                   AND UPPER(TRIM(p.CAMPAÑA))=UPPER(TRIM(?))
-                   AND UPPER(TRIM(p.EMPRESA))=UPPER(TRIM(?))
-                   AND UPPER(TRIM(p.CULTIVO))=UPPER(TRIM(?))
-                   AND (p.BAJA IS NULL OR TRIM(p.BAJA)='')
                   ORDER BY m.Boleta, p.rowid"""
-        params = (member_id, campaign, company, crop, *varieties, campaign, company, crop)
+        params = (member_id, campaign, company, crop, *varieties)
         rows = [dict(r) for r in self.conn.execute(sql, params).fetchall()]
         parcel_rows: dict[int, list[dict]] = {}
         joined_boletas: set[str] = set()
@@ -177,31 +174,49 @@ class GroupBenchmarkRepository:
             distinct_raw = {_display(value).strip() for value in raw_values}
             parsed: Decimal | None = None
             decision = "INCLUDED"
-            if len(distinct_raw) > 1:
+            reason = ""
+            first = occurrences[0]
+            if _norm(first.get("ParcelaCampana")) != _norm(campaign):
+                decision, reason = "EXCLUDED", "CAMPAIGN_MISMATCH"
+            elif _norm(first.get("ParcelaEmpresa")) != _norm(company):
+                decision, reason = "EXCLUDED", "COMPANY_MISMATCH"
+            elif _norm(first.get("ParcelaCultivo")) != _norm(crop):
+                decision, reason = "EXCLUDED", "CROP_MISMATCH"
+            elif first.get("BAJA") is not None and str(first.get("BAJA")).strip():
+                decision, reason = "EXCLUDED", "INACTIVE_ROW"
+            elif len(distinct_raw) > 1:
                 decision = "ROW_ID_CONFLICT"
+                reason = "SAME_ROW_ID_WITH_DIFFERENT_JOINED_VALUES"
             else:
                 raw = raw_values[0]
                 if raw is None or (isinstance(raw, str) and not raw.strip()):
                     decision = "INVALID_NULL"
+                    reason = "SUPCUL_NULL"
                 else:
                     try:
                         parsed = Decimal(str(raw).strip())
                         if not parsed.is_finite():
                             decision = "INVALID_FORMAT"
+                            reason = "SUPCUL_INVALID_FORMAT"
                         elif parsed <= 0:
                             decision = "INVALID_ZERO"
+                            reason = "SUPCUL_NOT_POSITIVE"
                     except Exception:
                         decision = "INVALID_FORMAT"
+                        reason = "SUPCUL_INVALID_FORMAT"
             if decision == "INCLUDED" and parsed is not None:
                 valid_by_boleta.setdefault(boleta, {})[row_id] = parsed
             else:
                 invalid_by_boleta.setdefault(boleta, set()).add(row_id)
             for index, occurrence in enumerate(occurrences):
                 row_decision = decision if index == 0 else ("DUPLICATE_JOIN_ROW" if decision != "ROW_ID_CONFLICT" else decision)
+                row_reason = reason if index == 0 else ("SAME_DPARCELA_ROW_REPEATED_BY_JOIN" if decision != "ROW_ID_CONFLICT" else reason)
                 if index:
                     duplicate_count += 1
                 item = {"audit_type": "row_decision", "member_id": member_id, "boleta": boleta,
                         "parcel_row_id": row_id, "surface": occurrence.get("SupCul"), "decision": row_decision}
+                item["reason"] = row_reason
+                item["occurrence_index"] = index
                 audit.append(item)
                 self._audit("ProductiveSurfaceRowDecision", **item)
 
@@ -223,6 +238,8 @@ class GroupBenchmarkRepository:
                         parcel_row_ids="|".join(map(str, parcel_ids)), valid_row_count=len(valid),
                         invalid_row_count=len(invalid), surface_values="|".join(str(valid[k]) for k in sorted(valid)),
                         boleta_hectares=boleta_hectares, status=status)
+            audit.append({"audit_type": "boleta_calculation", "member_id": member_id,
+                          "boleta": boleta, "surface_sum": boleta_hectares, "status": status})
             if not parcel_ids:
                 incident = "BOLETA_SIN_PARCELAS"
             elif not valid:
