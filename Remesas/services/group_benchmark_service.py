@@ -4,9 +4,11 @@ from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from pathlib import Path
 from datetime import datetime
 import logging
+import os
 from data.group_benchmark_repository import GroupBenchmarkRepository, VarietalGroup
 from domain.calculation_models import LiquidationHeader, MemberLiquidation
 from group_benchmark_surface_audit import AUDIT_LOG_PATH, append_surface_audit, record_surface_audit_config
+from services.member_surface_diagnostic_service import MemberSurfaceDiagnosticService
 
 LOGGER = logging.getLogger(__name__)
 MAX_MEMBER_AUDIT_LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "group_benchmark_max_member.log"
@@ -47,11 +49,20 @@ def _positive_decimal(value) -> Decimal | None:
 class GroupBenchmarkService:
     """Benchmarks current-remittance MemberLiquidation rows; no external final amounts are invented."""
     def __init__(self, repository: GroupBenchmarkRepository, log_path: str | Path = "logs/group_benchmark.log", audit_log_path: str | Path | None = None,
-                 max_member_audit_log_path: str | Path = MAX_MEMBER_AUDIT_LOG_PATH) -> None:
+                 max_member_audit_log_path: str | Path = MAX_MEMBER_AUDIT_LOG_PATH,
+                 diagnostic_member_ids: tuple[int, ...] | None = None,
+                 diagnostic_logs_dir: str | Path | None = None) -> None:
         self.repository=repository; self.log_path=Path(log_path)
         self.max_member_audit_log_path = Path(max_member_audit_log_path).resolve()
         self.audit_log_path = Path(audit_log_path) if audit_log_path is not None else Path(getattr(repository, "audit_log_path", AUDIT_LOG_PATH))
         self.audit_log_path = record_surface_audit_config(self.audit_log_path)
+        if diagnostic_member_ids is None:
+            configured = os.getenv("BENCHMARK_SURFACE_DIAGNOSTIC_MEMBERS", "1623")
+            diagnostic_member_ids = tuple(int(value.strip()) for value in configured.split(",") if value.strip())
+        self.diagnostic_member_ids = frozenset(diagnostic_member_ids)
+        self.member_diagnostic = MemberSurfaceDiagnosticService(
+            diagnostic_logs_dir or (Path(__file__).resolve().parent.parent / "logs")
+        )
     def resolve_varietal_group(self, crop: str, variety: str) -> VarietalGroup | None:
         return self.repository.get_varietal_group(crop, variety)
     def build_benchmarks(self, header: LiquidationHeader, members: tuple[MemberLiquidation, ...], *,
@@ -109,6 +120,9 @@ class GroupBenchmarkService:
                     "status": surface.status,
                     "audit_rows": surface.audit_rows,
                 }
+                if int(mid) in self.diagnostic_member_ids:
+                    self.member_diagnostic.write(member_id=mid, group=g.label, campaign=header.campana,
+                                                 net_kg=x["kg"], surface=surface)
                 reason = None
                 if x["kg_ha"] is None:
                     valid_kg, valid_ha = _positive_decimal(x["kg"]), _positive_decimal(ha)

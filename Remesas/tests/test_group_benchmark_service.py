@@ -1,6 +1,7 @@
 from decimal import Decimal
 import sqlite3
 import re
+import pytest
 from types import SimpleNamespace
 
 from data.group_benchmark_repository import ProductiveSurfaceResult, VarietalGroup
@@ -315,7 +316,7 @@ def test_two_benchmark_executions_have_distinct_run_ids_and_completion(tmp_path)
     assert "group_label=NAVEL TEMPRANA" in text
 
 
-def _surface_repo(tmp_path, deepp_rows, parcel_rows):
+def _surface_repo(tmp_path, deepp_rows, parcel_rows, member_id=7):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("ATTACH DATABASE ':memory:' AS eepp")
@@ -325,7 +326,7 @@ def _surface_repo(tmp_path, deepp_rows, parcel_rows):
     conn.executemany('INSERT INTO eepp.DParcela VALUES (?,?,?,?,?,?,?,?,?,?)', parcel_rows)
     from data.group_benchmark_repository import GroupBenchmarkRepository
     return GroupBenchmarkRepository(conn, tmp_path / "surface.log").get_productive_hectares(
-        7, "2026", "1", "CITRICOS", ("NAVELINA",)
+        member_id, "2026", "1", "CITRICOS", ("NAVELINA",)
     )
 
 
@@ -348,11 +349,41 @@ def test_one_boleta_with_two_cadastral_rows_sums_both_surfaces(tmp_path):
     assert not any(r.get("decision") == "excluded_conflicting_surfaces" for r in result.audit_rows)
 
 
+def test_distinct_physical_rows_with_identical_cadastral_key_are_legitimate(tmp_path):
+    result = _surface_repo(tmp_path, [_deepp(47)], [
+        _parcel(47, "1.18"), _parcel(47, "1.01"),
+    ])
+    assert result.hectares == Decimal("2.19")
+    assert result.parcel_row_count == 2
+
+
 def test_duplicate_join_rows_are_counted_once_by_parcela_rowid(tmp_path):
     result = _surface_repo(tmp_path, [_deepp(47), _deepp(47)], [_parcel(47, "1.01")])
     assert result.hectares == Decimal("1.01")
     assert result.parcel_row_count == 1
     assert sum(r.get("decision") == "DUPLICATE_JOIN_ROW" for r in result.audit_rows) == 1
+
+
+def test_member_surface_sums_all_matching_boletas_for_1623_reference(tmp_path):
+    surfaces = ((659, "0.65"), (660, "0.42"), (698, "2.6573"),
+                (699, "2.2674"), (701, "0.6855"), (702, "0.2927"), (703, "0.2608"))
+    deepp_rows = [(1623, *row[1:]) for row in (_deepp(boleta) for boleta, _ in surfaces)]
+    result = _surface_repo(tmp_path, deepp_rows,
+                           [_parcel(boleta, value) for boleta, value in surfaces], member_id=1623)
+    assert result.hectares == Decimal("7.2337")
+    assert Decimal("112745") / result.hectares == pytest.approx(Decimal("15586.08"), abs=Decimal("0.01"))
+    assert result.included_boletas == ("659", "660", "698", "699", "701", "702", "703")
+
+    from services.member_surface_diagnostic_service import MemberSurfaceDiagnosticService
+    log = MemberSurfaceDiagnosticService(tmp_path / "logs").write(
+        member_id=1623, group="NAVEL TEMPRANA", campaign="2026",
+        net_kg=Decimal("112745"), surface=result,
+    )
+    text = log.read_text(encoding="utf-8")
+    assert "total_surface=7.2337" in text
+    assert "kg_per_ha=15586.08" in text
+    for boleta, value in surfaces:
+        assert f"boleta={boleta}\nsurface_sum={value}" in text
 
 
 def test_three_parcels_and_enclosures_on_one_boleta_are_added(tmp_path):
