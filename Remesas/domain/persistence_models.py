@@ -66,6 +66,8 @@ class SplitPreviewLine:
     destruction_price: Decimal | None = None
     table_destruction_price: Decimal | None = None
     rotten_price: Decimal | None = None
+    national_market_price: Decimal | None = None
+    rotten_leaves_price: Decimal | None = None
 
 @dataclass(frozen=True)
 class PersistencePreview:

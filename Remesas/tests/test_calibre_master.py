@@ -26,7 +26,7 @@ class CalibreMasterTests(unittest.TestCase):
         tmp=tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup); repo=CalibreMasterRepository(Path(tmp.name)/"m.json")
         with self.assertRaises(ValueError): repo.save_items([CalibreMasterItem("c0","CITRICOS","CAL 0",0), CalibreMasterItem("c0","CITRICOS","CAL 0 bis",0)])
     def test_premium_summary_has_commercial_amount(self):
-        header=LiquidationHeader("1","R","2026","1","CITRICOS","","","","","","",[],{}, {})
+        header=LiquidationHeader("1","R","2026","1","CITRICOS","","","","","","",[],{}, {"PDESTRIO": Decimal("0"), "PDMESA": Decimal("0"), "PPODRIDO": Decimal("0")})
         member=MemberLiquidation(1,"Socio","Var",1,Decimal("10"),Decimal("10"),Decimal("0"),Decimal("0"),(GradeBreakdown("c0","CAL 0",Decimal("10"),Decimal("1"),Decimal("10")),),Decimal("10"),gross_amount=Decimal("10"),effective_net_kg=Decimal("10"),commercial_average_price=Decimal("1"))
         vm=from_member_liquidation(header, member); self.assertEqual(vm.commercial_amount, Decimal("10")); self.assertEqual(vm.commercial_breakdown_title,"DESGLOSE COMERCIAL POR CALIBRES")
 if __name__ == "__main__": unittest.main()

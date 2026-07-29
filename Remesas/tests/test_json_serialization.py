@@ -26,7 +26,7 @@ def _vm():
     metric = BenchmarkMetric(Decimal("0.31660"), Decimal("0.4"), Decimal("0.25"), Decimal("0.35455"), 2, 0, "ok", metric="FINAL_PRICE")
     benchmark = PremiumGroupBenchmark("Grupo ñ", "CITRICOS", "G", "SG", ("NÁVEL",), "2026", "1", "NORMAL", "A", metric, metric, metric)
     values = {field: (None if "amount" in field or "price" in field or "rate" in field else Decimal("1.20")) for field in PremiumLiquidationViewModel.__dataclass_fields__}
-    values.update(member_id=1, member_name="José", tax_id_masked=None, remittance_name="Remesa", campaign="2026", company="1", crop="CITRICOS", varieties=("NÁVEL",), period_from="", period_to="", payment_date=None, commercial_breakdown=(), group_benchmark=benchmark, id_liqs=("CI1",), secondary_enabled=False, secondary_counts_as_commercial=False, primary_label="P", secondary_label=None, waste_label="W", commercial_breakdown_title="",)
+    values.update(national_market_price=Decimal("0.14500"), rotten_leaves_price=Decimal("-0.12900"), destruction_price=Decimal("0.14500"), rotten_price=Decimal("-0.12900"), secondary_price=Decimal("0.14500"), waste_price=Decimal("-0.12900"), member_id=1, member_name="José", tax_id_masked=None, remittance_name="Remesa", campaign="2026", company="1", crop="CITRICOS", varieties=("NÁVEL",), period_from="", period_to="", payment_date=None, commercial_breakdown=(), group_benchmark=benchmark, id_liqs=("CI1",), secondary_enabled=False, secondary_counts_as_commercial=False, primary_label="P", secondary_label=None, waste_label="W", commercial_breakdown_title="",)
     return PremiumLiquidationViewModel(**values)
 
 
@@ -48,6 +48,8 @@ def test_legacy_snapshot_without_fixed_prices_remains_loadable(caplog):
     raw["schema_version"] = 3
     raw["model"].pop("destruction_price")
     raw["model"].pop("rotten_price")
+    raw["model"].pop("national_market_price")
+    raw["model"].pop("rotten_leaves_price")
     raw["model"].update(secondary_kg="1327", secondary_amount="192.42", waste_kg="1327", waste_amount="-171.18")
     restored = load(json.dumps(raw))
     assert restored.secondary_price == Decimal("192.42") / Decimal("1327")

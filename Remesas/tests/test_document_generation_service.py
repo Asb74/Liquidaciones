@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import pytest
 
@@ -56,7 +57,9 @@ def test_regeneration_from_snapshots_reactivates_a_partial_batch(tmp_path):
     batch=repo.get_batch("batch")
     for recipient in (5893, 5970):
         snapshot_vm=build_premium_view_model_from_persisted(service._vm(batch, repo.list_recipient_lines("batch", recipient)))
-        repo.save_document_snapshot(batch_id="batch", recipient_member_id=recipient, payload_json=dump(snapshot_vm), schema_version=1, calculation_fingerprint="fp", created_at="now")
+        payload = json.loads(dump(snapshot_vm))
+        payload["schema_version"] = 1  # Simulates the historical snapshot stored by this fixture.
+        repo.save_document_snapshot(batch_id="batch", recipient_member_id=recipient, payload_json=json.dumps(payload), schema_version=1, calculation_fingerprint="fp", created_at="now")
 
     failed=service.generate_for_batch("batch", options=DocumentGenerationOptions(), progress_callback=None)
     assert not failed.failed_documents

@@ -13,7 +13,7 @@ from presentation.premium_liquidation_view_model import (
 
 
 def _header():
-    return LiquidationHeader(1,"BLANCA TEMPRANA SEMANA 4 Y +","2026","SANSEBAS","CÍTRICOS","13/08/2026","10/12/2025","05/03/2026","Normal","Primera","",["BLANCA"],{}, {})
+    return LiquidationHeader(1,"BLANCA TEMPRANA SEMANA 4 Y +","2026","SANSEBAS","CÍTRICOS","13/08/2026","10/12/2025","05/03/2026","Normal","Primera","",["BLANCA"],{}, {"PDESTRIO": Decimal("0.145"), "PDMESA": Decimal("0.145"), "PPODRIDO": Decimal("-0.129")})
 
 
 def _member(**kw):
