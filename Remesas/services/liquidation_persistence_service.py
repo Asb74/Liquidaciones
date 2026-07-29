@@ -27,6 +27,7 @@ import logging
 from collections.abc import Mapping
 from domain.liquidation_conflicts import LiquidationConflictType, LiquidationScope
 from services.liquidation_conflict_service import LiquidationConflictService
+from services.document_snapshot_repair_service import repair_invalid_v4_snapshots
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class LiquidationPersistenceService:
         self.variety_resolver = VarietySelectionResolver(VarietyRepository(legacy_conn))
         self.variety_groups = VarietyGroupService(VarietyRepository(legacy_conn))
         self.conflicts = LiquidationConflictService(self.legacy_repository_adapter())
+        self.snapshot_repair_report = repair_invalid_v4_snapshots(self.database, legacy_conn)
         self.variety_group_migration_report = migrate_persisted_variety_groups(self.legacy_repository_adapter(), self.variety_groups)
         configure_excluded_members(connection=legacy_conn)
 
@@ -214,12 +216,16 @@ class LiquidationPersistenceService:
                 identities = member_groups.get(int(recipient_member_id), set())
                 if len({item[2] for item in identities}) > 1:
                     raise ValueError("El documento contiene liquidaciones de más de un grupo varietal y no puede generar una comparativa única.")
+                # Validate and canonicalize every payload at the final write
+                # boundary, including callers that did not need enrichment.
+                vm=load_snapshot(payload_json)
                 if identities:
                     variety_code_value,variety_name_value,group_code_value,group_name_value = next(iter(identities))
-                    vm=load_snapshot(payload_json)
-                    payload_json=dump_snapshot(replace(vm,variety_code=variety_code_value,variety_name=variety_name_value,
+                    vm=replace(vm,variety_code=variety_code_value,variety_name=variety_name_value,
                         variety_group_code=group_code_value,variety_group_name=group_name_value,
-                        surface_group_code=group_code_value,surface_group_name=group_name_value))
+                        surface_group_code=group_code_value,surface_group_name=group_name_value)
+                payload_json=dump_snapshot(vm)
+                logger.info("[DocumentSnapshotFixedPrices] member_id=%s remesa=%s schema_version=%s national_market_price=%s rotten_leaves_price=%s", recipient_member_id, h.remesa_id, SCHEMA_VERSION, vm.national_market_price, vm.rotten_leaves_price)
                 logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=%s\nstatus=STARTED", batch_id, recipient_member_id, SCHEMA_VERSION)
                 conn.execute("INSERT OR REPLACE INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, int(recipient_member_id), payload_json, SCHEMA_VERSION, preview.fingerprint, now, user))
                 conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, "DOCUMENT_SNAPSHOT_SAVED", "DOCUMENT", str(recipient_member_id), json.dumps({"recipient_member_id": recipient_member_id, "schema_version": SCHEMA_VERSION, "calculation_fingerprint": preview.fingerprint}), now, user))

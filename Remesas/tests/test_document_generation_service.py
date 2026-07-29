@@ -1,4 +1,6 @@
 import json
+from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 import pytest
 
@@ -56,7 +58,8 @@ def test_regeneration_from_snapshots_reactivates_a_partial_batch(tmp_path):
     service=DocumentGenerationService(repo,tmp_path/"out")
     batch=repo.get_batch("batch")
     for recipient in (5893, 5970):
-        snapshot_vm=build_premium_view_model_from_persisted(service._vm(batch, repo.list_recipient_lines("batch", recipient)))
+        snapshot_vm=replace(build_premium_view_model_from_persisted(service._vm(batch, repo.list_recipient_lines("batch", recipient))),
+                            national_market_price=Decimal("0.14500"), rotten_leaves_price=Decimal("-0.12900"))
         payload = json.loads(dump(snapshot_vm))
         payload["schema_version"] = 1  # Simulates the historical snapshot stored by this fixture.
         repo.save_document_snapshot(batch_id="batch", recipient_member_id=recipient, payload_json=json.dumps(payload), schema_version=1, calculation_fingerprint="fp", created_at="now")
