@@ -9,6 +9,7 @@ from domain.calculation_models import LiquidationHeader, MemberLiquidation
 from group_benchmark_surface_audit import AUDIT_LOG_PATH, append_surface_audit, record_surface_audit_config
 
 LOGGER = logging.getLogger(__name__)
+MAX_MEMBER_AUDIT_LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "group_benchmark_max_member.log"
 
 @dataclass(frozen=True)
 class BenchmarkMetric:
@@ -45,8 +46,10 @@ def _positive_decimal(value) -> Decimal | None:
 
 class GroupBenchmarkService:
     """Benchmarks current-remittance MemberLiquidation rows; no external final amounts are invented."""
-    def __init__(self, repository: GroupBenchmarkRepository, log_path: str | Path = "logs/group_benchmark.log", audit_log_path: str | Path | None = None) -> None:
+    def __init__(self, repository: GroupBenchmarkRepository, log_path: str | Path = "logs/group_benchmark.log", audit_log_path: str | Path | None = None,
+                 max_member_audit_log_path: str | Path = MAX_MEMBER_AUDIT_LOG_PATH) -> None:
         self.repository=repository; self.log_path=Path(log_path)
+        self.max_member_audit_log_path = Path(max_member_audit_log_path).resolve()
         self.audit_log_path = Path(audit_log_path) if audit_log_path is not None else Path(getattr(repository, "audit_log_path", AUDIT_LOG_PATH))
         self.audit_log_path = record_surface_audit_config(self.audit_log_path)
     def resolve_varietal_group(self, crop: str, variety: str) -> VarietalGroup | None:
@@ -76,7 +79,8 @@ class GroupBenchmarkService:
         for label,(g, lines) in grouped.items():
             per={}
             for m in lines:
-                x=per.setdefault(m.member_id,{"member":m,"kg":Decimal("0"),"commercial_kg":Decimal("0"),"amount":Decimal("0"),"statuses":[]})
+                x=per.setdefault(m.member_id,{"member":m,"member_lines":[],"kg":Decimal("0"),"commercial_kg":Decimal("0"),"amount":Decimal("0"),"statuses":[]})
+                x["member_lines"].append(m)
                 x["kg"]+=_d(m.net_kg); x["commercial_kg"]+=_d(m.commercial_kg); x["amount"]+=_d(m.total_amount); x["statuses"].extend(m.statuses.values())
             for mid,x in per.items():
                 member_lines = [m for m in lines if m.member_id == mid]
@@ -103,6 +107,7 @@ class GroupBenchmarkService:
                     "invalid_row_count": surface.invalid_row_count,
                     "missing_surface_boletas": surface.missing_surface_boletas,
                     "status": surface.status,
+                    "audit_rows": surface.audit_rows,
                 }
                 reason = None
                 if x["kg_ha"] is None:
@@ -114,6 +119,7 @@ class GroupBenchmarkService:
                                     surface_hectares=ha, production_kg_ha=x["kg_ha"], reason=reason,
                                     parcel_count=surface.parcel_count, excluded_count=surface.excluded_count,
                                     warnings=surface.warnings)
+            self._audit_maximum_member(header, g, per, surfaces)
             warnings=tuple(w for srf in surfaces.values() for w in srf.warnings)+tuple(missing)
             price=self._metric("COMPARATIVA_PRECIO", "FINAL_PRICE", [dict(v, value=v["price"], price=v["price"], kilos=v["commercial_kg"], importe=v["amount"]) for v in per.values()])
             prod=self._metric("COMPARATIVA_PRODUCCION", "PRODUCTION_KG_HA", [dict(v, value=v["kg_ha"], produccion=v["kg"], hectareas=v["ha"]) for v in per.values()])
@@ -127,6 +133,96 @@ class GroupBenchmarkService:
                             run_source=run_source, group_count=len(grouped),
                             benchmark_count=len(out), finished_at=datetime.now().isoformat())
         return out
+
+    @staticmethod
+    def _delivery_rows(member_lines):
+        rows = []
+        for member in member_lines:
+            for delivery in getattr(member, "source_deliveries", ()) or ():
+                rows.append({
+                    "boleta": getattr(delivery, "boleta", None),
+                    "fecha": getattr(delivery, "fecha", None),
+                    "variedad": getattr(delivery, "variedad", None) or member.variety,
+                    "kg": getattr(delivery, "effective_net_kg", getattr(delivery, "net_kg", None)),
+                })
+        return rows
+
+    @staticmethod
+    def _anomaly_reasons(kg, ha, kg_ha):
+        reasons = []
+        if ha is None or ha <= 0: reasons.append("superficie <= 0 ha")
+        if ha is not None and ha < Decimal("0.20"): reasons.append("superficie < 0,20 ha")
+        if kg is not None and kg > Decimal("40000") and ha is not None and ha < 1:
+            reasons.append("producción > 40.000 kg con superficie < 1 ha")
+        if kg_ha is not None and kg_ha > Decimal("80000"): reasons.append("kg/ha > 80.000")
+        return reasons
+
+    def _audit_maximum_member(self, header, group, members, surfaces):
+        """Write a forensic view of existing inputs and decisions; never alters them."""
+        ranked = sorted(
+            ((mid, item) for mid, item in members.items() if _positive_decimal(item.get("kg_ha"))),
+            key=lambda pair: pair[1]["kg_ha"], reverse=True,
+        )
+        if not ranked:
+            return
+        maximum_id, maximum = ranked[0]
+        surface = surfaces[maximum_id]
+        audit_rows = list(getattr(surface, "audit_rows", ()) or ())
+        candidates = [row for row in audit_rows if row.get("audit_type") == "deepp_candidate" and row.get("matches_group")]
+        sql_rows = [row for row in audit_rows if row.get("audit_type") == "join_row"]
+        decisions = [row for row in audit_rows if row.get("audit_type") == "row_decision"]
+        included = [row for row in decisions if row.get("decision") == "INCLUDED"]
+        duplicates = [row for row in decisions if row.get("decision") == "DUPLICATE_JOIN_ROW"]
+        deliveries = self._delivery_rows(maximum["member_lines"])
+
+        target = self.max_member_audit_log_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as stream:
+            missing = object()
+            def line(label="", value=missing):
+                stream.write(f"{label}{'' if value is missing else value}\n")
+
+            line("=====================================================")
+            line("BENCHMARK MAXIMUM MEMBER")
+            line("=====================================================")
+            line("Grupo varietal: ", group.label); line("Subgrupo: ", group.subgroup); line("Campaña: ", header.campana)
+            line(); line("Socio: ", maximum_id); line("Nombre: ", maximum["member"].member_name)
+            line(); line("Producción total (kg): ", maximum["kg"]); line(); line("Superficie utilizada (ha): ", maximum["ha"])
+            line(); line("Resultado kg/ha: ", maximum["kg_ha"]); line()
+            line("BOLETAS UTILIZADAS")
+            boletas = deliveries or [{"boleta": r.get("Boleta"), "fecha": "NO DISPONIBLE EN LA CONSULTA", "variedad": r.get("Variedad"), "kg": "NO DISPONIBLE EN LA CONSULTA"} for r in candidates]
+            for row in boletas:
+                line(); line("Boleta: ", row.get("boleta")); line("Fecha: ", row.get("fecha")); line("Variedad: ", row.get("variedad")); line("Kg: ", row.get("kg"))
+            line(); line("PARCELAS RECUPERADAS")
+            for row in sql_rows:
+                line(); line("Boleta ", row.get("DeeppBoleta")); line("Parcela: ", row.get("ParcelaRowId")); line("Recinto: ", row.get("Rec"))
+                line("Polígono: ", row.get("Pol")); line("Parcela SIGPAC: ", row.get("Par")); line("Superficie total: ", "NO DISPONIBLE EN LA CONSULTA")
+                line("Superficie productiva: ", row.get("SupCul")); line("Origen del dato: ", "eepp.DParcela.SupCul")
+            line(); line("SQL RESULT")
+            for index, row in enumerate(sql_rows, 1):
+                line(f"Fila {index}")
+                for column, value in row.items(): line(f"{column}: ", value)
+                line()
+            for duplicate in duplicates:
+                previous = next((row for row in included if row.get("parcel_row_id") == duplicate.get("parcel_row_id")), None)
+                line("PARCELA DUPLICADA"); line("IdParcela: ", duplicate.get("parcel_row_id"))
+                line("Boleta anterior: ", previous.get("boleta") if previous else "NO DISPONIBLE")
+                line("Boleta descartada: ", duplicate.get("boleta")); line("Motivo: ", "DUPLICATE_JOIN_ROW: la misma fila física (rowid) ya estaba contabilizada"); line()
+            line("SUPERFICIE FINAL")
+            for row in included:
+                line(); line("Parcela ", row.get("parcel_row_id")); line(); line("", f"{row.get('surface')} ha")
+            line(); line("TOTAL SUPERFICIE = ", f"{maximum['ha']} ha")
+            line(); line("CÁLCULO DEL RENDIMIENTO"); line("Producción = ", f"{maximum['kg']} kg")
+            line("Superficie = ", f"{maximum['ha']} ha"); line("kg/ha = ", maximum["kg_ha"]); line()
+            line("COMPARATIVA DEL GRUPO"); line("SOCIO | KG | HA | KG/HA | ES MAXIMO")
+            for mid, item in ranked:
+                line("", f"{mid} | {item['kg']} | {item['ha']} | {item['kg_ha']} | {'SI' if item['kg_ha'] == maximum['kg_ha'] else 'NO'}")
+            unranked = ((mid, item) for mid, item in members.items() if not _positive_decimal(item.get("kg_ha")))
+            for mid, item in unranked: line("", f"{mid} | {item['kg']} | {item['ha']} | {item['kg_ha']} | NO")
+            for mid, item in members.items():
+                for reason in self._anomaly_reasons(item.get("kg"), item.get("ha"), item.get("kg_ha")):
+                    line(); line("***** POSIBLE ANOMALÍA *****"); line("Socio: ", mid); line("Kg: ", item.get("kg")); line("Ha: ", item.get("ha")); line("kg/ha: ", item.get("kg_ha")); line("Motivo: ", reason)
+            line(); line()
     def _surface_audit(self, section, **values):
         append_surface_audit(section, values, self.audit_log_path)
     def _metric(self, log_name, name, candidates):
