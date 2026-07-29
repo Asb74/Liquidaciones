@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import fields
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import logging
 
@@ -13,6 +13,18 @@ from services.group_benchmark_service import BenchmarkMetric, PremiumGroupBenchm
 SCHEMA_VERSION = 4
 FIXED_PRICES_SCHEMA_VERSION = 4
 logger = logging.getLogger(__name__)
+
+
+def _derive_historical_price(amount, kilograms):
+    """Return a legacy amount/kg price without ever attempting a 0/0 division."""
+    try:
+        decimal_amount = Decimal(str(amount or "0"))
+        decimal_kilograms = Decimal(str(kilograms or "0"))
+        if decimal_kilograms == 0:
+            return None
+        return decimal_amount / decimal_kilograms
+    except (InvalidOperation, ValueError, TypeError):
+        return None
 
 
 def _decimal_fields(model_type):
@@ -46,10 +58,14 @@ def load(payload_json: str) -> PremiumLiquidationViewModel:
     payload.setdefault("rotten_price", payload.get("rotten_leaves_price"))
     if version < FIXED_PRICES_SCHEMA_VERSION and missing_fixed_prices:
         # Explicit, version-gated compatibility for immutable historical snapshots.
-        if payload["national_market_price"] is None and payload.get("secondary_kg") and payload.get("secondary_amount") is not None:
-            payload["national_market_price"] = str(Decimal(payload["secondary_amount"]) / Decimal(payload["secondary_kg"]))
-        if payload["rotten_leaves_price"] is None and payload.get("waste_kg") and payload.get("waste_amount") is not None:
-            payload["rotten_leaves_price"] = str(Decimal(payload["waste_amount"]) / Decimal(payload["waste_kg"]))
+        if payload["national_market_price"] is None:
+            payload["national_market_price"] = _derive_historical_price(
+                payload.get("secondary_amount"), payload.get("secondary_kg")
+            )
+        if payload["rotten_leaves_price"] is None:
+            payload["rotten_leaves_price"] = _derive_historical_price(
+                payload.get("waste_amount"), payload.get("waste_kg")
+            )
         payload["destruction_price"] = payload["national_market_price"]
         payload["rotten_price"] = payload["rotten_leaves_price"]
         payload["secondary_price"] = payload["national_market_price"]
