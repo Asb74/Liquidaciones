@@ -162,10 +162,10 @@ def test_refresh_snapshot_without_group_benchmark_creates_and_renders_pdf(tmp_pa
     assert any('"benchmark_created_from_scratch": true' in args[2] for args in repository.audits)
 
 
-def test_new_snapshot_persists_explicit_surface_with_schema_three():
+def test_new_snapshot_persists_explicit_surface_with_schema_four():
     vm=from_member_liquidation(_header(),_member(member_id=818,variety="NAVELINA",applicable_hectares=Decimal("2.64")))
     payload=dump(vm)
-    assert '"schema_version":3' in payload
+    assert '"schema_version":4' in payload
     restored=load(payload)
     assert restored.applicable_hectares==Decimal("2.64")
     assert restored.surface_source=="HECTARE_FEE" and restored.surface_fingerprint

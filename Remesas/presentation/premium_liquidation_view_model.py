@@ -14,6 +14,7 @@ from services.group_benchmark_service import PremiumGroupBenchmark
 from services.calibre_master_service import CalibreMasterService
 from services.production_destination_master_service import ProductionDestinationMasterService
 from domain.utils import format_decimal_es
+from domain.utils import round_price
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,8 @@ class PremiumLiquidationViewModel:
     destruction_price: Decimal | None
     rotten_amount: Decimal | None
     rotten_price: Decimal | None
+    national_market_price: Decimal | None
+    rotten_leaves_price: Decimal | None
     gross_average_price: Decimal | None
     commercial_breakdown_title: str
     primary_label: str
@@ -158,23 +161,25 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
     dest = ProductionDestinationMasterService().get_for_crop(header.cultivo)
     secondary_kg = member.destruction_kg + member.table_destruction_kg
     secondary_amount = member.destruction_amount + member.table_destruction_amount
-    secondary_price = member.destruction_price
-    if (
-        member.destruction_price is not None
-        and member.table_destruction_price is not None
-        and member.destruction_price != member.table_destruction_price
-    ):
-        logger.warning(
-            "[ProductionSummary] fixed Mercado Nacional prices differ: "
-            "PDESTRIO=%s PDMESA=%s; using PDESTRIO without averaging",
-            member.destruction_price,
-            member.table_destruction_price,
+    try:
+        pdestrio = round_price(header.prices["PDESTRIO"])
+        pdmesa = round_price(header.prices["PDMESA"])
+        ppodrido = round_price(header.prices["PPODRIDO"])
+    except (KeyError, TypeError):
+        raise ValueError(
+            "Falta el precio fijo PPODRIDO/PDESTRIO/PDMESA de la remesa para generar el documento."
+        ) from None
+    if pdestrio != pdmesa:
+        logger.error(
+            "[FixedRemittancePriceMismatch] remesa_id=%s PDESTRIO=%s PDMESA=%s",
+            header.remesa_id, pdestrio, pdmesa,
         )
-    if secondary_price is None:
-        secondary_price = member.table_destruction_price
-    waste_price = member.rotten_price
+        raise ValueError("PDESTRIO y PDMESA no coinciden; no se puede mostrar un precio único de Mercado Nacional.")
+    secondary_price = pdestrio
+    waste_price = ppodrido
     commercial_kg = member.commercial_kg + (secondary_kg if dest.secondary_enabled and dest.secondary_counts_as_commercial else Decimal("0"))
     logger.info("[ProductionDestination] crop=%s primary_label=%s secondary_enabled=%s secondary_label=%s secondary_counts_as_commercial=%s waste_label=%s", dest.crop, dest.primary_label, dest.secondary_enabled, dest.secondary_label, dest.secondary_counts_as_commercial, dest.waste_label)
+    logger.info("[ProductionFixedPrices] remesa_id=%s member_id=%s source=remittance PDESTRIO=%s PDMESA=%s PPODRIDO=%s national_display_price=%s rotten_display_price=%s", header.remesa_id, member.member_id, pdestrio, pdmesa, ppodrido, secondary_price, waste_price)
     logger.info("[ProductionSummary] primary_kg=%s primary_price=%s primary_amount=%s secondary_kg=%s secondary_price=%s secondary_amount=%s waste_kg=%s waste_price=%s waste_amount=%s commercial_kg=%s total_delivered_kg=%s", member.commercial_kg, member.commercial_average_price, member.commercial_amount, secondary_kg, secondary_price, secondary_amount, member.rotten_kg, waste_price, member.rotten_amount, commercial_kg, member.net_kg)
     surface = member.applicable_hectares
     surface_audit = getattr(member, "hectare_fee_audit", None)
@@ -190,7 +195,7 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
         effective_net_kg=member.net_kg, commercial_net_kg=commercial_kg,
         waste_net_kg=secondary_kg, rotten_net_kg=member.rotten_kg,
         gross_amount=member.gross_amount, commercial_amount=member.commercial_amount, commercial_average_price=member.commercial_average_price,
-        destruction_amount=secondary_amount, destruction_price=secondary_price, rotten_amount=member.rotten_amount, rotten_price=waste_price, gross_average_price=(member.gross_amount / member.net_kg if member.net_kg else None), commercial_breakdown_title=CalibreMasterService().commercial_breakdown_title(header.cultivo),
+        destruction_amount=secondary_amount, destruction_price=secondary_price, rotten_amount=member.rotten_amount, rotten_price=waste_price, national_market_price=secondary_price, rotten_leaves_price=waste_price, gross_average_price=(member.gross_amount / member.net_kg if member.net_kg else None), commercial_breakdown_title=CalibreMasterService().commercial_breakdown_title(header.cultivo),
         primary_label=dest.primary_label, secondary_label=dest.secondary_label if dest.secondary_enabled else None, waste_label=dest.waste_label, secondary_enabled=dest.secondary_enabled, secondary_counts_as_commercial=dest.secondary_counts_as_commercial,
         primary_kg=member.commercial_kg, primary_price=member.commercial_average_price, primary_amount=member.commercial_amount, secondary_kg=secondary_kg, secondary_price=secondary_price, secondary_amount=secondary_amount, waste_kg=member.rotten_kg, waste_price=waste_price, waste_amount=member.rotten_amount, commercial_kg=commercial_kg,
         collection_amount=member.collection_amount, hectare_fee_amount=member.hectare_fee_amount,

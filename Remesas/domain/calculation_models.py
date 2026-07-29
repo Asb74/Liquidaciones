@@ -225,6 +225,8 @@ class MemberLiquidation:
     destruction_price: Decimal | None = None
     table_destruction_price: Decimal | None = None
     rotten_price: Decimal | None = None
+    national_market_price: Decimal | None = None
+    rotten_leaves_price: Decimal | None = None
     gross_amount: Decimal = Decimal("0")
     detected_collection_amount: Decimal = Decimal("0")
     collection_amount: Decimal | None = None
