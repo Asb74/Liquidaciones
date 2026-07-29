@@ -252,9 +252,13 @@ def build_tax_section(vm, config, width):
 
 def build_benchmark_flowable(vm, width, *, content_bottom_limit: float | None = None):
     from reportlab.platypus import Paragraph, Table, TableStyle
+    from services.group_benchmark_applicability import is_group_benchmark_applicable
     st = _premium_styles()
     if not vm.group_benchmark:
-        return _section("COMPARATIVA CON SU GRUPO VARIETAL", [Paragraph("Comparativa con el grupo varietal no disponible para esta liquidación.", st["small"])], width)
+        message=("Comparativa no aplicable para esta liquidación."
+                 if not is_group_benchmark_applicable(vm.crop,None,None)
+                 else "Comparativa con el grupo varietal no disponible para esta liquidación.")
+        return _section("COMPARATIVA CON SU GRUPO VARIETAL", [Paragraph(message, st["small"])], width)
     b = vm.group_benchmark
     metric=b.kilograms_per_hectare
     write_value_trace("PdfBenchmarkRead",dict(member_id=vm.member_id,user_value=metric.own_value,
