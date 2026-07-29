@@ -63,6 +63,9 @@ class SplitPreviewLine:
     split_rule_id: int | None = None
     split_type: str | None = None
     warnings: tuple[str, ...] = ()
+    destruction_price: Decimal | None = None
+    table_destruction_price: Decimal | None = None
+    rotten_price: Decimal | None = None
 
 @dataclass(frozen=True)
 class PersistencePreview:

@@ -158,14 +158,21 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
     dest = ProductionDestinationMasterService().get_for_crop(header.cultivo)
     secondary_kg = member.destruction_kg + member.table_destruction_kg
     secondary_amount = member.destruction_amount + member.table_destruction_amount
-    secondary_price = getattr(member, "destruction_price", None)
-    if secondary_price is None and secondary_kg and secondary_amount is not None:
-        secondary_price = (secondary_amount / secondary_kg) if secondary_kg > 0 else None
-        if secondary_price is not None: logger.info("[ProductionSummary] secondary_price derivado de importe/kilos")
-    waste_price = getattr(member, "rotten_price", None)
-    if waste_price is None and member.rotten_kg and member.rotten_amount is not None:
-        waste_price = (member.rotten_amount / member.rotten_kg) if member.rotten_kg > 0 else None
-        if waste_price is not None: logger.info("[ProductionSummary] waste_price derivado de importe/kilos")
+    secondary_price = member.destruction_price
+    if (
+        member.destruction_price is not None
+        and member.table_destruction_price is not None
+        and member.destruction_price != member.table_destruction_price
+    ):
+        logger.warning(
+            "[ProductionSummary] fixed Mercado Nacional prices differ: "
+            "PDESTRIO=%s PDMESA=%s; using PDESTRIO without averaging",
+            member.destruction_price,
+            member.table_destruction_price,
+        )
+    if secondary_price is None:
+        secondary_price = member.table_destruction_price
+    waste_price = member.rotten_price
     commercial_kg = member.commercial_kg + (secondary_kg if dest.secondary_enabled and dest.secondary_counts_as_commercial else Decimal("0"))
     logger.info("[ProductionDestination] crop=%s primary_label=%s secondary_enabled=%s secondary_label=%s secondary_counts_as_commercial=%s waste_label=%s", dest.crop, dest.primary_label, dest.secondary_enabled, dest.secondary_label, dest.secondary_counts_as_commercial, dest.waste_label)
     logger.info("[ProductionSummary] primary_kg=%s primary_price=%s primary_amount=%s secondary_kg=%s secondary_price=%s secondary_amount=%s waste_kg=%s waste_price=%s waste_amount=%s commercial_kg=%s total_delivered_kg=%s", member.commercial_kg, member.commercial_average_price, member.commercial_amount, secondary_kg, secondary_price, secondary_amount, member.rotten_kg, waste_price, member.rotten_amount, commercial_kg, member.net_kg)
