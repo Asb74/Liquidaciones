@@ -99,11 +99,15 @@ class GroupBenchmarkService:
                     "candidate_boletas": surface.candidate_boletas,
                     "matched_boletas": surface.matched_boletas,
                     "included_boletas": surface.included_boletas,
+                    "parcel_row_count": surface.parcel_row_count,
+                    "invalid_row_count": surface.invalid_row_count,
+                    "missing_surface_boletas": surface.missing_surface_boletas,
+                    "status": surface.status,
                 }
                 reason = None
                 if x["kg_ha"] is None:
                     valid_kg, valid_ha = _positive_decimal(x["kg"]), _positive_decimal(ha)
-                    reason = "BOTH" if not valid_kg and not valid_ha else ("INVALID_KG" if not valid_kg else "INVALID_HECTARES")
+                    reason = "BOTH" if not valid_kg and not valid_ha else ("INVALID_KG" if not valid_kg else "MISSING_SURFACE_DATA")
                 self._surface_audit("GroupBenchmarkMemberProduction", run_id=run_id,
                                     parent_run_id=parent_run_id, run_source=run_source, member_id=mid,
                                     group_label=g.label, group_varieties=g.varieties, net_kg=x["kg"],

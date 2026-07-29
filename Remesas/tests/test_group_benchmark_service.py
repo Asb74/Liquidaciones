@@ -121,7 +121,7 @@ def test_final_price_without_valid_records_does_not_return_zero_minimum():
     assert b.price_per_kg.warning == 'Sin datos comparables suficientes'
 
 
-def test_surface_audit_traces_candidates_join_deduplication_and_conflicts(tmp_path):
+def test_surface_audit_sums_distinct_physical_parcel_rows(tmp_path):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("ATTACH DATABASE ':memory:' AS eepp")
@@ -145,12 +145,14 @@ def test_surface_audit_traces_candidates_join_deduplication_and_conflicts(tmp_pa
         7, "2026", "1", "CITRICOS", ("NAVELINA", "NEWHALL")
     )
 
-    assert result.hectares == Decimal("0.6500")
-    assert result.parcel_count == 1
-    assert result.excluded_count == 1
+    assert result.hectares == Decimal("3.8000")
+    assert result.parcel_count == 4
+    assert result.parcel_row_count == 4
+    assert result.excluded_count == 0
+    assert result.status == "PARTIAL_SURFACE"
     assert result.candidate_boletas == ("659", "660", "698", "699")
     assert result.matched_boletas == ("659", "698", "699")
-    assert result.included_boletas == ("659",)
+    assert result.included_boletas == ("659", "699")
     assert any(r.get("incident_type") == "VARIEDAD_NO_COINCIDE" and r["boleta"] == "660" for r in result.audit_rows)
     assert any(r.get("incident_type") == "BOLETA_SIN_PARCELAS" and r["boleta"] == "698" for r in result.audit_rows)
     text = log.read_text(encoding="utf-8")
@@ -158,7 +160,8 @@ def test_surface_audit_traces_candidates_join_deduplication_and_conflicts(tmp_pa
         "ProductiveSurfaceQuery",
         "ProductiveSurfaceDeeppCandidate",
         "ProductiveSurfaceJoinRow",
-        "ProductiveSurfaceDedupe",
+        "ProductiveSurfaceRowDecision",
+        "ProductiveSurfaceBoletaCalculation",
         "ProductiveSurfaceBoletaSummary",
         "ProductiveSurfaceResult",
     ):
@@ -166,8 +169,8 @@ def test_surface_audit_traces_candidates_join_deduplication_and_conflicts(tmp_pa
     assert "varieties_original=NAVELINA|NEWHALL" in text
     assert "varieties_normalized=NAVELINA|NEWHALL" in text
     assert "boleta=660\nvariety_original=OTRA\nvariety_normalized=OTRA\nmatches_group=no" in text
-    assert "decision=excluded_conflicting_surfaces" in text
-    assert "hectares=0.6500" in text
+    assert "excluded_conflicting_surfaces" not in text
+    assert "hectares=3.8000" in text
 
 
 def test_member_production_audit_contains_kilos_hectares_and_ratio(tmp_path):
@@ -216,3 +219,73 @@ def test_two_benchmark_executions_have_distinct_run_ids_and_completion(tmp_path)
     assert text.count("[GroupBenchmarkAuditRunCompleted]") == 2
     assert "member_variety=NAVELINA" in text
     assert "group_label=NAVEL TEMPRANA" in text
+
+
+def _surface_repo(tmp_path, deepp_rows, parcel_rows):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("ATTACH DATABASE ':memory:' AS eepp")
+    conn.execute('CREATE TABLE eepp.DEEPP (IdSocio, Boleta, "CAMPAÑA", EMPRESA, CULTIVO, Variedad)')
+    conn.execute('CREATE TABLE eepp.DParcela (Boleta, "CAMPAÑA", EMPRESA, CULTIVO, IdPM, Pol, Par, Rec, SupCul, BAJA)')
+    conn.executemany('INSERT INTO eepp.DEEPP VALUES (?,?,?,?,?,?)', deepp_rows)
+    conn.executemany('INSERT INTO eepp.DParcela VALUES (?,?,?,?,?,?,?,?,?,?)', parcel_rows)
+    from data.group_benchmark_repository import GroupBenchmarkRepository
+    return GroupBenchmarkRepository(conn, tmp_path / "surface.log").get_productive_hectares(
+        7, "2026", "1", "CITRICOS", ("NAVELINA",)
+    )
+
+
+def _deepp(boleta):
+    return (7, boleta, "2026", "1", "CITRICOS", "NAVELINA")
+
+
+def _parcel(boleta, surface, polygon=1, parcel=1, enclosure=1):
+    return (boleta, "2026", "1", "CITRICOS", 1, polygon, parcel, enclosure, surface, None)
+
+
+def test_one_boleta_with_two_cadastral_rows_sums_both_surfaces(tmp_path):
+    result = _surface_repo(tmp_path, [_deepp(47)], [
+        _parcel(47, "1.01", parcel=1), _parcel(47, "1.18", parcel=2),
+    ])
+    assert result.hectares == Decimal("2.19")
+    assert result.parcel_row_count == 2
+    assert result.excluded_count == 0
+    assert result.status == "OK"
+    assert not any(r.get("decision") == "excluded_conflicting_surfaces" for r in result.audit_rows)
+
+
+def test_duplicate_join_rows_are_counted_once_by_parcela_rowid(tmp_path):
+    result = _surface_repo(tmp_path, [_deepp(47), _deepp(47)], [_parcel(47, "1.01")])
+    assert result.hectares == Decimal("1.01")
+    assert result.parcel_row_count == 1
+    assert sum(r.get("decision") == "DUPLICATE_JOIN_ROW" for r in result.audit_rows) == 1
+
+
+def test_three_parcels_and_enclosures_on_one_boleta_are_added(tmp_path):
+    result = _surface_repo(tmp_path, [_deepp(100)], [
+        _parcel(100, "1.20", parcel=1), _parcel(100, "0.35", parcel=2),
+        _parcel(100, "0.80", parcel=2, enclosure=2),
+    ])
+    assert result.hectares == Decimal("2.35")
+    calculation = next(r for r in result.audit_rows if r.get("audit_type") == "row_decision")
+    assert calculation["decision"] == "INCLUDED"
+
+
+def test_missing_surfaces_return_explicit_missing_data_status(tmp_path):
+    result = _surface_repo(tmp_path, [_deepp(200)], [
+        _parcel(200, None, parcel=1), _parcel(200, "0", parcel=2),
+    ])
+    assert result.hectares == 0
+    assert result.status == "MISSING_SURFACE_DATA"
+    assert result.invalid_row_count == 2
+    assert "deben ser completados por el usuario" in result.warnings[0]
+    production_kg_ha = Decimal("1000") / result.hectares if result.hectares > 0 else None
+    assert production_kg_ha is None
+
+
+def test_valid_and_missing_boletas_return_partial_surface(tmp_path):
+    result = _surface_repo(tmp_path, [_deepp(300), _deepp(301)], [_parcel(300, "2.10")])
+    assert result.hectares == Decimal("2.10")
+    assert result.status == "PARTIAL_SURFACE"
+    assert result.missing_surface_boletas == ("301",)
+    assert result.included_boletas == ("300",)
