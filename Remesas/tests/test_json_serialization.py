@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from data.persistence.json_serialization import to_json_compatible
-from presentation.liquidation_document_snapshot import dump, load
+from presentation.liquidation_document_snapshot import _derive_historical_price, dump, load
 from presentation.premium_liquidation_view_model import PremiumLiquidationViewModel
 from services.group_benchmark_service import BenchmarkMetric, PremiumGroupBenchmark
 
@@ -55,6 +55,54 @@ def test_legacy_snapshot_without_fixed_prices_remains_loadable(caplog):
     assert restored.secondary_price == Decimal("192.42") / Decimal("1327")
     assert restored.waste_price == Decimal("-171.18") / Decimal("1327")
     assert "legacy snapshot without fixed remittance price" in caplog.text
+
+
+def _legacy_snapshot(**changes):
+    raw = json.loads(dump(_vm()))
+    raw["schema_version"] = 3
+    for name in ("national_market_price", "rotten_leaves_price", "destruction_price", "rotten_price"):
+        raw["model"].pop(name)
+    raw["model"].update(changes)
+    return raw
+
+
+def test_legacy_snapshot_zero_amount_and_kilograms_has_no_derived_price():
+    raw = _legacy_snapshot(
+        secondary_kg="0", secondary_amount="0", waste_kg="0", waste_amount="0",
+    )
+
+    restored = load(json.dumps(raw))
+
+    assert restored.national_market_price is None
+    assert restored.rotten_leaves_price is None
+
+
+@pytest.mark.parametrize("value", ["", None])
+def test_historical_price_treats_empty_and_none_as_zero(value):
+    assert _derive_historical_price(value, value) is None
+
+
+def test_legacy_snapshot_derives_both_historical_prices_for_positive_kilograms():
+    raw = _legacy_snapshot(
+        secondary_kg="4", secondary_amount="1", waste_kg="8", waste_amount="-2",
+    )
+
+    restored = load(json.dumps(raw))
+
+    assert restored.national_market_price == Decimal("0.25")
+    assert restored.rotten_leaves_price == Decimal("-0.25")
+
+
+def test_legacy_snapshot_never_overwrites_prices_already_persisted():
+    raw = _legacy_snapshot(
+        national_market_price="0.145", rotten_leaves_price="-0.129",
+        secondary_kg="1", secondary_amount="999", waste_kg="1", waste_amount="999",
+    )
+
+    restored = load(json.dumps(raw))
+
+    assert restored.national_market_price == Decimal("0.145")
+    assert restored.rotten_leaves_price == Decimal("-0.129")
 
 
 def test_unknown_snapshot_type_fails_clearly():
