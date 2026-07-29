@@ -11,10 +11,8 @@ from domain.document_models import DocumentType
 from exporters.persisted_liquidation_pdf_exporter import export_persisted_liquidation_pdf
 from presentation.liquidation_document_snapshot import load as load_snapshot
 from services.persisted_variety_benchmark_service import variety_group_code
-from services.group_benchmark_applicability import (
-    CROP_NOT_INCLUDED_REASON,
-    is_group_benchmark_applicable,
-)
+from services.group_benchmark_applicability import is_group_benchmark_applicable
+from services.group_benchmark_population import normalize_group_label
 
 logger=logging.getLogger(__name__)
 PDF_COMPARISON_RESOLUTION_LOG = Path(__file__).resolve().parent.parent / "logs" / "pdf_comparison_resolution.log"
@@ -72,7 +70,7 @@ class IndividualPdfRefreshService:
                     "selected_candidate":selected if selected is not None else "",
                     "resolution_status":status,"reason":reason,"generation_run_id":generation_run_id or ""}
             for field in ("document_id","liquidation_id","member_id","campaign","company","crop",
-                          "group_label","subgroup","variety","batch_id","snapshot_id",
+                          "group_label","normalized_group_label","subgroup","variety","batch_id","snapshot_id",
                           "generation_run_id","candidate_count","selected_candidate","resolution_status","reason"):
                 stream.write(f"{field}={values.get(field,'')}\n")
             stream.write("\n")
@@ -101,15 +99,15 @@ class IndividualPdfRefreshService:
                  "group_label":name,"subgroup":str(getattr(getattr(vm,"group_benchmark",None),"subgroup","") or ""),
                  "variety":str(getattr(vm,"variety_name","") or ""),"batch_id":str(doc.batch_id),
                  "snapshot_id":getattr(doc,"snapshot_id",None)}
-        if not is_group_benchmark_applicable(context["crop"], getattr(doc,"document_type",None), name):
-            self._write_resolution(context,(),None,"NOT_APPLICABLE",generation_run_id,CROP_NOT_INCLUDED_REASON)
-            return None, "NOT_APPLICABLE"
+        context["normalized_group_label"]=normalize_group_label(name)
         candidates=[self._candidate_metadata(key,value,generation_run_id) for key,value in calculated_benchmarks.items()]
         # A generation identifier is the hard boundary.  Candidates explicitly tied
         # to another execution are never considered, even if every business field matches.
         candidates=[c for c in candidates if not generation_run_id or str(c.get("generation_run_id"))==str(generation_run_id)]
-        criteria=("document_id","liquidation_id","snapshot_id","member_id","campaign","company","crop",
-                  "group_label","subgroup","variety","batch_id")
+        # Crop, subgroup and concrete variety remain auditable metadata.  They do
+        # not partition a normalized varietal-group comparison.
+        criteria=("document_id","liquidation_id","snapshot_id","member_id","campaign","company",
+                  "group_label","batch_id")
         for field in criteria:
             expected=context.get(field)
             if expected in (None,""): continue
