@@ -7,6 +7,8 @@ import json, logging, re, unicodedata
 from domain.benchmark_models import BenchmarkScope, PersistedBenchmarkMetric, PersistedMemberBenchmark, VarietyGroupBenchmark
 from presentation.liquidation_document_snapshot import load as load_snapshot
 from services.group_benchmark_service import BenchmarkMetric, PremiumGroupBenchmark
+from services.benchmark_calculation import kilograms_per_hectare, metric_statistics
+from services.pdf_benchmark_value_trace import write_value_trace
 
 logger=logging.getLogger(__name__)
 
@@ -60,15 +62,9 @@ class PersistedVarietyBenchmarkService:
         from_snapshot=from_fallback=without_surface=0
         for mid,x in sorted(members.items()):
             candidate=None
-            if x["surfaces"]:
-                # Explicit policy: newest valid documentary surface wins. Repeated
-                # snapshots/remittances are candidates, never additive hectares.
-                ordered=sorted(x["surfaces"],key=lambda c:(c["date"],c["created"],c["batch_id"]))
-                candidate=ordered[-1]; from_snapshot+=1
-                distinct={c["value"] for c in ordered}
-                if len(distinct)>1:
-                    logger.warning("[PersistedBenchmarkSurface] status=SURFACE_VALUE_CHANGED campaign=%s company=%s group=%s member_id=%s previous=%s new=%s policy=LATEST_VALID_SURFACE",scope.campaign,scope.company,scope.variety_group_code,mid,ordered[-2]["value"],candidate["value"])
-            elif self.surface_service is not None:
+            # Live productive surface is authoritative.  A documentary snapshot
+            # is only a fallback when the shared surface service is unavailable.
+            if self.surface_service is not None:
                 try:
                     recovered=self.surface_service.get_member_variety_group_surface(campaign=scope.campaign,company=scope.company,member_id=mid,variety_group_code=scope.variety_group_code)
                     if recovered:
@@ -78,11 +74,22 @@ class PersistedVarietyBenchmarkService:
                             candidate={"value":value,"source":"SURFACE_SERVICE","fingerprint":fingerprint,"date":"","created":"","batch_id":""}; from_fallback+=1
                 except Exception:
                     logger.exception("[PersistedBenchmarkSurface] campaign=%s company=%s group=%s member_id=%s source=SURFACE_SERVICE status=ERROR",scope.campaign,scope.company,scope.variety_group_code,mid)
+            if candidate is None and x["surfaces"]:
+                # Explicit policy: newest valid documentary surface wins. Repeated
+                # snapshots/remittances are candidates, never additive hectares.
+                ordered=sorted(x["surfaces"],key=lambda c:(c["date"],c["created"],c["batch_id"]))
+                candidate=ordered[-1]; from_snapshot+=1
+                distinct={c["value"] for c in ordered}
+                if len(distinct)>1:
+                    logger.warning("[PersistedBenchmarkSurface] status=SURFACE_VALUE_CHANGED campaign=%s company=%s group=%s member_id=%s previous=%s new=%s policy=LATEST_VALID_SURFACE",scope.campaign,scope.company,scope.variety_group_code,mid,ordered[-2]["value"],candidate["value"])
             ha=candidate["value"] if candidate else None
             if candidate is None: without_surface+=1
             logger.info("[PersistedBenchmarkSurface] campaign=%s company=%s group=%s member_id=%s surface=%s source=%s status=%s",scope.campaign,scope.company,scope.variety_group_code,mid,ha,candidate["source"] if candidate else "UNAVAILABLE","AVAILABLE" if candidate else "MISSING")
             kg=x["kg"]; commercial=x["commercial"]; amount=x["amount"]
-            result.append(PersistedMemberBenchmark(mid,x["name"],commercial,amount,ha,amount/commercial if commercial>0 else None,kg/ha if ha and ha>0 else None,amount/ha if ha and ha>0 else None))
+            production=kilograms_per_hectare(kg,ha)
+            result.append(PersistedMemberBenchmark(mid,x["name"],commercial,amount,ha,amount/commercial if commercial>0 else None,production,kilograms_per_hectare(amount,ha)))
+            write_value_trace("PdfMemberCalculation", dict(member_id=mid,net_kg=kg,surface=ha,kg_per_ha=production,
+                function="PersistedVarietyBenchmarkService.get_group_benchmark",file=__file__,object_type="PersistedMemberBenchmark",object_id=id(result[-1])),member_id=mid)
             sources.append(("surface",mid,str(ha) if ha else None,candidate["source"] if candidate else "UNAVAILABLE",candidate["fingerprint"] if candidate else ""))
         fingerprint=sha256(json.dumps([scope.__dict__,sources],sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
         benchmark=VarietyGroupBenchmark(scope,tuple(result),self._metric(result,"final_average_price"),self._metric(result,"production_kg_ha"),self._metric(result,"final_amount_eur_ha"),datetime.now(timezone.utc),fingerprint)
@@ -92,9 +99,8 @@ class PersistedVarietyBenchmarkService:
         return benchmark
     @staticmethod
     def _metric(members, field):
-        values=[getattr(m,field) for m in members if getattr(m,field) is not None and getattr(m,field)>0]
-        avg=sum(values,Decimal(0))/len(values) if values else None
-        return PersistedBenchmarkMetric(None,max(values) if values else None,avg,min(values) if values else None,None,len(values))
+        stats=metric_statistics(getattr(m,field) for m in members)
+        return PersistedBenchmarkMetric(None,stats.maximum,stats.average,stats.minimum,None,stats.count)
     @staticmethod
     def for_member(
         benchmark,
@@ -119,6 +125,11 @@ class PersistedVarietyBenchmarkService:
             "kilograms_per_hectare": convert(benchmark.production_metric,member.production_kg_ha if member else None,"PRODUCTION_KG_HA"),
             "euros_per_hectare": convert(benchmark.final_amount_metric,member.final_amount_eur_ha if member else None,"FINAL_AMOUNT_EUR_HA"),
         }
+        production=metrics["kilograms_per_hectare"]
+        write_value_trace("PdfBenchmarkDtoCreated",dict(member_id=member_id,user_value=production.own_value,
+            max_value=production.maximum_value,average_value=production.average_value,min_value=production.minimum_value,
+            comparable_count=production.valid_member_count,constructor_function="PersistedVarietyBenchmarkService.for_member",
+            file=__file__,dto_type="PremiumGroupBenchmark",dto_id=id(production)),member_id=member_id)
         if template is not None:
             return replace(
                 template,

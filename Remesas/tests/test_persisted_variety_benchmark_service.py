@@ -68,6 +68,19 @@ def test_old_snapshot_recovers_only_surface_from_cuota_ha_service(monkeypatch):
     assert len(surface.calls)==1
 
 
+def test_live_surface_replaces_stale_snapshot_for_pdf_benchmark(monkeypatch):
+    monkeypatch.setattr(module,"load_snapshot",lambda _:frozen("1.0552"))
+    class Surface:
+        def get_member_variety_group_surface(self,**_scope):
+            return Decimal("7.4259"),"current-surface",()
+    benchmark=PersistedVarietyBenchmarkService(
+        Repository([row(1,1623,"A","112745","1000")]),surface_service=Surface()
+    ).get_group_benchmark(campaign="2026",company="1",variety_group_code="NAVEL_TARDIA")
+    member=benchmark.comparable_members[0]
+    assert member.surface_hectares==Decimal("7.4259")
+    assert member.production_kg_ha.quantize(Decimal("0.01"))==Decimal("15182.67")
+
+
 def test_latest_surface_is_selected_once_across_remittances_and_crops(monkeypatch,caplog):
     values=iter((frozen("2",fingerprint="old"),frozen("3",fingerprint="new"),frozen("3",fingerprint="new")))
     monkeypatch.setattr(module,"load_snapshot",lambda _:next(values))
@@ -160,6 +173,25 @@ def test_refresh_snapshot_without_group_benchmark_creates_and_renders_pdf(tmp_pa
     assert rendered[0].group_benchmark.group_label=="NAVEL TEMPRANA"
     assert rendered[0].group_benchmark.price_per_kg.own_value==Decimal("2.5")
     assert any('"benchmark_created_from_scratch": true' in args[2] for args in repository.audits)
+
+
+def test_mass_refresh_renders_exact_benchmark_returned_by_audit(tmp_path: Path):
+    vm=from_member_liquidation(_header(),_member(member_id=818,variety="NAVELINA"))
+    repository=RefreshRepository(dump(vm)); rendered=[]
+    audited=module.replace(
+        PersistedVarietyBenchmarkService.for_member(complete_benchmark(),818,group_name="NAVEL TEMPRANA"),
+        kilograms_per_hectare=module.BenchmarkMetric(Decimal("15182.67"),Decimal("52120.55"),Decimal("261"),Decimal("17523"),55,0,"ok"),
+    )
+    def exporter(updated,path):
+        rendered.append(updated); Path(path).write_bytes(b"generated pdf")
+    document=SimpleNamespace(document_id=7,batch_id="B1",member_id=818,campaign="2026",company="1",file_path=str(tmp_path/"member.pdf"),remittance_id=3)
+    key=(818,"NAVEL TEMPRANA","2026","1","CITRICOS","","")
+    result=IndividualPdfRefreshService(repository,RefreshBenchmarks(),exporter=exporter).refresh_documents(
+        (document,),calculated_benchmarks={key:audited},benchmark_run_id="audit-1")
+    assert not result.failed
+    metric=rendered[0].group_benchmark.kilograms_per_hectare
+    assert (metric.own_value,metric.maximum_value,metric.valid_member_count)==(Decimal("15182.67"),Decimal("52120.55"),55)
+    assert result.items[0].source_fingerprint=="AUDITED:audit-1"
 
 
 def test_new_snapshot_persists_explicit_surface_with_schema_four():

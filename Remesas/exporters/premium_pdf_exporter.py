@@ -15,6 +15,7 @@ from presentation.premium_liquidation_view_model import (
     format_signed_money, format_unit_price, from_member_liquidation,
     load_premium_pdf_config, sanitize_filename, format_decimal_es,
 )
+from services.pdf_benchmark_value_trace import write_value_trace
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,16 @@ def build_benchmark_flowable(vm, width, *, content_bottom_limit: float | None = 
     if not vm.group_benchmark:
         return _section("COMPARATIVA CON SU GRUPO VARIETAL", [Paragraph("Comparativa con el grupo varietal no disponible para esta liquidación.", st["small"])], width)
     b = vm.group_benchmark
+    metric=b.kilograms_per_hectare
+    write_value_trace("PdfBenchmarkRead",dict(member_id=vm.member_id,user_value=metric.own_value,
+        max_value=metric.maximum_value,average_value=metric.average_value,min_value=metric.minimum_value,
+        comparable_count=metric.valid_member_count,reader_function="build_benchmark_flowable",file=__file__,
+        source_object_type=type(b).__name__,source_object_id=id(b)),member_id=vm.member_id)
+    write_value_trace("PdfBenchmarkRender",dict(member_id=vm.member_id,raw_user_value=metric.own_value,
+        formatted_user_value=_fmt_metric(metric.own_value,"kg/ha"),raw_max_value=metric.maximum_value,
+        formatted_max_value=_fmt_metric(metric.maximum_value,"kg/ha"),raw_average_value=metric.average_value,
+        formatted_average_value=_fmt_metric(metric.average_value,"kg/ha"),raw_min_value=metric.minimum_value,
+        formatted_min_value=_fmt_metric(metric.minimum_value,"kg/ha"),render_function="build_benchmark_flowable",file=__file__),member_id=vm.member_id)
     comparable = b.price_per_kg.valid_member_count if b.price_per_kg else 0
     subtitle = Paragraph(f"{b.group_label} · Campaña {b.campaign}" + (f" · {comparable} socios comparables" if comparable else ""), st["small"])
     gap = 2 * MM

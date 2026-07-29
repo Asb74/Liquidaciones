@@ -26,3 +26,15 @@ boletas coincidentes y la validación debe decidir fila por fila. Después se su
 primero por boleta y luego por socio/grupo. El mismo resultado calculado se entrega
 al servicio que construye el benchmark consumido por el PDF; no existe una fórmula
 alternativa para la auditoría.
+
+La regeneración individual tenía además una segunda ruta: agregaba todas las
+liquidaciones persistidas del grupo (73 socios) y prefería la superficie congelada
+en el snapshot. La auditoría masiva reconstruía únicamente la selección validada
+(55 socios) y consultaba la superficie productiva actual, pero después la
+regeneración descartaba ese resultado. La ruta persistida conserva su universo
+documental, pero ahora consulta primero el mismo servicio de superficies y ambas
+rutas delegan la división y las estadísticas en `services.benchmark_calculation`.
+
+El fichero `logs/pdf_member_1623_value_trace.log` se genera en ejecución para el
+socio 1623 (configurable mediante `PDF_BENCHMARK_TRACE_MEMBERS`) y registra cálculo,
+DTO, lectura y formato final sin introducir una excepción de negocio para el socio.

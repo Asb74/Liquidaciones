@@ -51,11 +51,12 @@ class IndividualPdfRefreshService:
             except ValueError:
                 continue
         return tuple(dict.fromkeys(scopes))
-    def refresh_documents(self, documents, *, progress_callback=None, should_cancel=None, user=None):
+    def refresh_documents(self, documents, *, progress_callback=None, should_cancel=None, user=None,
+                          calculated_benchmarks=None, benchmark_run_id=None):
         docs=tuple(documents); scopes=self.scopes_for_documents(docs)
         if progress_callback:
             for i,_ in enumerate(scopes,1): progress_callback("comparativas",i,len(scopes))
-        benchmarks=self.benchmarks.get_group_benchmarks(scopes); items=[]
+        benchmarks={} if calculated_benchmarks else self.benchmarks.get_group_benchmarks(scopes); items=[]
         for index,doc in enumerate(docs,1):
             if should_cancel and should_cancel(): return IndividualPdfRefreshResult(tuple(items),True)
             started=monotonic(); path=Path(doc.file_path); temp=path.with_suffix(path.suffix+".refresh.tmp")
@@ -67,26 +68,28 @@ class IndividualPdfRefreshService:
                 logger.info("[VarietyGroupResolution]\nbatch_id=%s\nrecipient_member_id=%s\nid_liq=%s\nvariety=%s\nnormalized_variety=%s\ngroup_code=%s\ngroup_name=%s\nsource=liquidation\nstatus=RESOLVED",
                     doc.batch_id,doc.member_id,",".join(vm.id_liqs),vm.variety_name or vm.variety_text,
                     vm.variety_code or "",code,name)
-                scope=BenchmarkScope(str(doc.campaign),str(doc.company),code)
-                benchmark=benchmarks[scope]
-                if benchmark.comparable_members and not (
-                    benchmark.production_metric.comparable_count or benchmark.final_amount_metric.comparable_count
-                ):
-                    raise ValueError("No se recuperó ninguna superficie válida; la actualización de comparativas no puede considerarse completada.")
                 snapshot_has_benchmark=vm.group_benchmark is not None
-                group_benchmark=self.benchmarks.for_member(
-                    benchmark,
-                    doc.member_id,
-                    template=vm.group_benchmark,
-                    group_name=name,
-                    campaign=str(doc.campaign),
-                )
+                if calculated_benchmarks:
+                    matches=[value for key,value in calculated_benchmarks.items()
+                             if int(key[0])==int(doc.member_id) and key[1]==name
+                             and str(key[2])==str(doc.campaign) and str(key[3])==str(doc.company)]
+                    if len(matches)!=1:
+                        raise ValueError("La auditoría no produjo una comparativa única para el documento.")
+                    group_benchmark=matches[0]
+                    fingerprint=f"AUDITED:{benchmark_run_id or 'CURRENT'}"
+                else:
+                    scope=BenchmarkScope(str(doc.campaign),str(doc.company),code)
+                    benchmark=benchmarks[scope]
+                    if benchmark.comparable_members and not (benchmark.production_metric.comparable_count or benchmark.final_amount_metric.comparable_count):
+                        raise ValueError("No se recuperó ninguna superficie válida; la actualización de comparativas no puede considerarse completada.")
+                    group_benchmark=self.benchmarks.for_member(benchmark,doc.member_id,template=vm.group_benchmark,group_name=name,campaign=str(doc.campaign))
+                    fingerprint=benchmark.source_fingerprint
                 vm=replace(vm,group_benchmark=group_benchmark)
                 audit_context={
-                    "benchmark_source_fingerprint":benchmark.source_fingerprint,
+                    "benchmark_source_fingerprint":fingerprint,
                     "group_code":code,
                     "group_name":name,
-                    "comparable_members":len(benchmark.comparable_members),
+                    "comparable_members":group_benchmark.kilograms_per_hectare.valid_member_count,
                     "benchmark_created_from_scratch":not snapshot_has_benchmark,
                     "document_id":doc.document_id,
                     "recipient_member_id":doc.member_id,
@@ -94,9 +97,9 @@ class IndividualPdfRefreshService:
                 self.repository.audit(doc.batch_id,"INDIVIDUAL_PDF_REFRESH_STARTED",json.dumps(audit_context),user or self.user)
                 self.exporter(vm,temp); digest=sha256(temp.read_bytes()).hexdigest(); path.parent.mkdir(parents=True,exist_ok=True); os.replace(temp,path)
                 self.repository.supersede_member_document(doc.batch_id,doc.member_id)
-                self.repository.record_document(batch_id=doc.batch_id,remittance_id=doc.remittance_id,recipient_member_id=doc.member_id,document_type=DocumentType.PDF_MEMBER.value,file_path=str(path),status="GENERATED",generated_at=datetime.now(timezone.utc).isoformat(),file_hash=digest,created_by=user or self.user,benchmark_source_fingerprint=benchmark.source_fingerprint)
+                self.repository.record_document(batch_id=doc.batch_id,remittance_id=doc.remittance_id,recipient_member_id=doc.member_id,document_type=DocumentType.PDF_MEMBER.value,file_path=str(path),status="GENERATED",generated_at=datetime.now(timezone.utc).isoformat(),file_hash=digest,created_by=user or self.user,benchmark_source_fingerprint=fingerprint)
                 self.repository.audit(doc.batch_id,"INDIVIDUAL_PDF_REFRESH_COMPLETED",json.dumps({**audit_context,"new_hash":digest}),user or self.user)
-                items.append(IndividualPdfRefreshItem(doc.document_id,doc.batch_id,doc.member_id,path,True,benchmark.source_fingerprint))
+                items.append(IndividualPdfRefreshItem(doc.document_id,doc.batch_id,doc.member_id,path,True,fingerprint))
                 logger.info("[IndividualPdfRefresh] document_id=%s batch_id=%s member_id=%s snapshot_has_benchmark=%s benchmark_created_from_scratch=%s group_code=%s group_name=%s status=GENERATED duration_ms=%d",doc.document_id,doc.batch_id,doc.member_id,snapshot_has_benchmark,not snapshot_has_benchmark,code,name,(monotonic()-started)*1000)
             except Exception as exc:
                 temp.unlink(missing_ok=True); self.repository.audit(doc.batch_id,"INDIVIDUAL_PDF_REFRESH_FAILED",json.dumps({"document_id":doc.document_id,"recipient_member_id":doc.member_id,"error":str(exc)}),user or self.user)

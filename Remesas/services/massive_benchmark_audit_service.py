@@ -61,6 +61,7 @@ class MassiveBenchmarkAuditResult:
     incidents: tuple[MassiveBenchmarkIncident, ...]
     context_count: int
     document_count: int
+    benchmarks: dict[tuple, object] | None = None
 
     @property
     def has_severe_incidents(self) -> bool:
@@ -149,7 +150,7 @@ class MassiveBenchmarkAuditService:
         if progress_callback: progress_callback("3. Agrupando socios y grupos",len(grouped),len(grouped))
         by_context={}
         for key,item in grouped.items(): by_context.setdefault(key[:6],[]).append((key,item))
-        productions=[]
+        productions=[]; calculated_benchmarks={}
         for context_index,(context,entries) in enumerate(by_context.items(),1):
             campaign,company,crop,group_label,liq_type,category=context
             members_for_benchmark=[]
@@ -161,6 +162,7 @@ class MassiveBenchmarkAuditService:
             header=LiquidationHeader(None,"AUDITORIA MASIVA",campaign,company,crop,"","","",liq_type,category,"",[],{},{})
             if progress_callback: progress_callback("4. Validando superficies",context_index,len(by_context))
             benchmarks=self.benchmark_service.build_benchmarks(header,tuple(members_for_benchmark),parent_run_id=run_id,run_source="MASS_PDF_REBUILD")
+            calculated_benchmarks.update(benchmarks)
             details=getattr(self.benchmark_service,"last_surface_details",{})
             for key,item in entries:
                 vm=item["vm"]; detail=details.get((vm.member_id,group_label),{}); ha=detail.get("hectares")
@@ -178,4 +180,4 @@ class MassiveBenchmarkAuditService:
         status="ERROR" if any(x.severe for x in incidents) else ("WARNING" if incidents else "OK")
         completed=dict(mass_run_id=run_id,context_count=len(by_context),member_group_count=len(productions),document_count=len(documents),incident_count=len(incidents),status=status,finished_at=datetime.now().isoformat())
         self._write("MassPdfBenchmarkAuditRunCompleted",**completed); logger.info("[MassPdfBenchmarkAuditRunCompleted] %s", " ".join(f"{k}={v}" for k,v in completed.items()))
-        return MassiveBenchmarkAuditResult(run_id,mode,tuple(productions),tuple(incidents),len(by_context),len(documents))
+        return MassiveBenchmarkAuditResult(run_id,mode,tuple(productions),tuple(incidents),len(by_context),len(documents),calculated_benchmarks)
