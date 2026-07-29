@@ -224,6 +224,61 @@ def test_maximum_member_forensic_report_contains_inputs_deduplication_ranking_an
     assert "Motivo: kg/ha > 80.000" in text
 
 
+def test_candidate_audit_logs_every_member_exclusions_and_complete_ranking(tmp_path):
+    class CandidateRepo(FakeRepo):
+        hectares = {1: Decimal("2"), 2: Decimal("1"), 3: Decimal("0"), 4: Decimal("3")}
+
+        def get_productive_hectares(self, member_id, campaign, company, crop, varieties):
+            boletas = () if member_id == 3 else (str(500 + member_id),)
+            return ProductiveSurfaceResult(
+                self.hectares[member_id], 1 if boletas else 0, 0, (), (),
+                candidate_boletas=boletas, included_boletas=boletas,
+                status="OK" if self.hectares[member_id] > 0 else "MISSING_SURFACE_DATA",
+            )
+
+    report = tmp_path / "group_benchmark_max_member.log"
+    svc = GroupBenchmarkService(
+        CandidateRepo(), log_path=tmp_path / "metrics.log",
+        audit_log_path=tmp_path / "surface.log", max_member_audit_log_path=report,
+    )
+    svc.build_benchmarks(header(), (
+        member(1, "NAVELINA", "40000", "1"),
+        member(2, "NAVELINA", "30000", "1"),
+        member(3, "NAVELINA", "20000", "1"),
+        member(4, "NAVELINA", "0", "0", price="0"),
+    ))
+
+    text = report.read_text(encoding="utf-8")
+    assert text.count("[GroupBenchmarkCandidate]") == 4
+    assert re.search(
+        r"member_id=2\npartner=Socio 2\nboletas=1\nnet_kg=30000\n"
+        r"productive_ha=1\nkg_per_ha=30000\nsurface_status=OK\nselected=true",
+        text,
+    )
+    assert re.search(r"member_id=3[\s\S]*?selected=false\nexcluded_reason=NO_VALID_BOLETAS", text)
+    assert re.search(r"member_id=4[\s\S]*?selected=false\nexcluded_reason=NO_KG", text)
+    ranking = text.split("[GroupBenchmarkRanking]", 1)[1].split("BENCHMARK MAXIMUM MEMBER", 1)[0]
+    assert "1) member=2\nkg_per_ha=30000" in ranking
+    assert "2) member=1\nkg_per_ha=20000" in ranking
+    assert "member=3" not in ranking and "member=4" not in ranking
+
+
+def test_candidate_audit_is_written_even_when_no_member_can_be_ranked(tmp_path):
+    report = tmp_path / "group_benchmark_max_member.log"
+    svc = GroupBenchmarkService(
+        FakeRepo(), log_path=tmp_path / "metrics.log",
+        audit_log_path=tmp_path / "surface.log", max_member_audit_log_path=report,
+    )
+    svc.build_benchmarks(header(), (member(3, "NAVELINA", "10000", "1"),))
+
+    text = report.read_text(encoding="utf-8")
+    assert "[GroupBenchmarkCandidate]" in text
+    assert "member_id=3" in text
+    assert "excluded_reason=NO_VALID_BOLETAS" in text
+    assert "[GroupBenchmarkRanking]\ngroup_id=NAVEL TEMPRANA" in text
+    assert "BENCHMARK MAXIMUM MEMBER" not in text
+
+
 def test_real_case_production_formula_reference():
     production = Decimal("112745") / Decimal("7.2337")
     assert production.quantize(Decimal("0.00001")) == Decimal("15586.07628")

@@ -157,27 +157,67 @@ class GroupBenchmarkService:
         if kg_ha is not None and kg_ha > Decimal("80000"): reasons.append("kg/ha > 80.000")
         return reasons
 
+    @staticmethod
+    def _candidate_excluded_reason(item, surface):
+        """Describe an existing ranking exclusion without changing its criteria."""
+        if not _positive_decimal(item.get("kg")):
+            return "NO_KG"
+        if not _positive_decimal(item.get("ha")):
+            if not getattr(surface, "candidate_boletas", ()):
+                return "NO_VALID_BOLETAS"
+            return "MISSING_SURFACE"
+        return "INVALID_KG_PER_HA"
+
+    def _write_candidate_audit(self, stream, group, members, surfaces, ranked):
+        """Log every input to the existing maximum selection and its final order."""
+        selected_id = ranked[0][0] if ranked else None
+        ranked_ids = {mid for mid, _item in ranked}
+        for mid, item in members.items():
+            surface = surfaces[mid]
+            deliveries = self._delivery_rows(item["member_lines"])
+            boleta_count = len(deliveries) if deliveries else len(getattr(surface, "candidate_boletas", ()) or ())
+            stream.write("[GroupBenchmarkCandidate]\n")
+            stream.write(f"group_id={group.label}\n")
+            stream.write(f"member_id={mid}\n")
+            stream.write(f"partner={item['member'].member_name}\n")
+            stream.write(f"boletas={boleta_count}\n")
+            stream.write(f"net_kg={item['kg']}\n")
+            stream.write(f"productive_ha={item['ha']}\n")
+            stream.write(f"kg_per_ha={item['kg_ha']}\n")
+            stream.write(f"surface_status={surface.status}\n")
+            stream.write(f"selected={'true' if mid == selected_id else 'false'}\n")
+            if mid not in ranked_ids:
+                stream.write(f"excluded_reason={self._candidate_excluded_reason(item, surface)}\n")
+            stream.write("\n")
+
+        stream.write("[GroupBenchmarkRanking]\n")
+        stream.write(f"group_id={group.label}\n\n")
+        for position, (mid, item) in enumerate(ranked, 1):
+            stream.write(f"{position}) member={mid}\n")
+            stream.write(f"kg_per_ha={item['kg_ha']}\n\n")
+
     def _audit_maximum_member(self, header, group, members, surfaces):
         """Write a forensic view of existing inputs and decisions; never alters them."""
         ranked = sorted(
             ((mid, item) for mid, item in members.items() if _positive_decimal(item.get("kg_ha"))),
             key=lambda pair: pair[1]["kg_ha"], reverse=True,
         )
-        if not ranked:
-            return
-        maximum_id, maximum = ranked[0]
-        surface = surfaces[maximum_id]
+        maximum_id, maximum = ranked[0] if ranked else (None, None)
+        surface = surfaces[maximum_id] if maximum_id is not None else None
         audit_rows = list(getattr(surface, "audit_rows", ()) or ())
         candidates = [row for row in audit_rows if row.get("audit_type") == "deepp_candidate" and row.get("matches_group")]
         sql_rows = [row for row in audit_rows if row.get("audit_type") == "join_row"]
         decisions = [row for row in audit_rows if row.get("audit_type") == "row_decision"]
         included = [row for row in decisions if row.get("decision") == "INCLUDED"]
         duplicates = [row for row in decisions if row.get("decision") == "DUPLICATE_JOIN_ROW"]
-        deliveries = self._delivery_rows(maximum["member_lines"])
+        deliveries = self._delivery_rows(maximum["member_lines"]) if maximum is not None else []
 
         target = self.max_member_audit_log_path
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as stream:
+            self._write_candidate_audit(stream, group, members, surfaces, ranked)
+            if maximum is None:
+                return
             missing = object()
             def line(label="", value=missing):
                 stream.write(f"{label}{'' if value is missing else value}\n")
