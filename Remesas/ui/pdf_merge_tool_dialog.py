@@ -233,7 +233,7 @@ class PdfMergeToolDialog(tk.Toplevel):
             logger.info("[MassPdfFlowTrace] phase=GENERATING_DOCUMENTS selected_documents=%s selected_remittances=%s selected_members=%s source=RECALCULATION",len(docs),len({d.remittance_id for d in docs}),len({d.member_id for d in docs}))
             refreshed=self.individual_refresh_service.refresh_documents(
                 docs,progress_callback=self._refresh_progress,should_cancel=lambda:self.cancelled,
-                calculated_benchmarks=audit.benchmarks,benchmark_run_id=audit.mass_run_id)
+                calculated_benchmarks=audit.benchmarks,generation_run_id=audit.generation_run_id)
             if refreshed.cancelled:
                 self._set_generating(False); messagebox.showinfo("Unificar","Operación cancelada.",parent=self); return
             if refreshed.failed:
