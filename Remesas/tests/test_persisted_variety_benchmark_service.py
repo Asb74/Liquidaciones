@@ -194,6 +194,69 @@ def test_mass_refresh_renders_exact_benchmark_returned_by_audit(tmp_path: Path):
     assert result.items[0].source_fingerprint=="AUDITED:audit-1"
 
 
+def _audited_key(document, *, group="NAVEL TEMPRANA", variety="NAVELINA", run_id="audit-1",
+                 liquidation_id="", snapshot_id=None, crop="CITRICOS"):
+    return (document.member_id,str(document.campaign),str(document.company),crop,group,"TEMPRANA",
+            variety,liquidation_id,document.document_id,document.batch_id,snapshot_id,run_id,"","")
+
+
+def test_audited_comparison_is_resolved_per_document_and_group(tmp_path: Path):
+    vm=from_member_liquidation(_header(),_member(member_id=818,variety="NAVELINA"))
+    repository=RefreshRepository(dump(vm)); rendered=[]
+    document=SimpleNamespace(document_id=7,batch_id="B1",member_id=818,campaign="2026",company="1",
+                             file_path=str(tmp_path/"member.pdf"),remittance_id=3)
+    selected=PersistedVarietyBenchmarkService.for_member(complete_benchmark(),818,group_name="NAVEL TEMPRANA")
+    other=module.replace(selected,group_label="NAVEL TARDÍA",subgroup="TARDÍA")
+    service=IndividualPdfRefreshService(repository,RefreshBenchmarks(),
+        exporter=lambda updated,path:(rendered.append(updated),Path(path).write_bytes(b"pdf")),
+        comparison_log_path=tmp_path/"resolution.log")
+    result=service.refresh_documents((document,),calculated_benchmarks={
+        _audited_key(document):selected,
+        _audited_key(document,group="NAVEL TARDÍA",variety="NAVELATE"):other,
+    },benchmark_run_id="audit-1")
+    assert not result.failed and rendered[0].group_benchmark is selected
+    assert "candidate_count=1" in (tmp_path/"resolution.log").read_text()
+    assert "resolution_status=UNIQUE" in (tmp_path/"resolution.log").read_text()
+
+
+def test_audited_comparison_ignores_previous_generation(tmp_path: Path):
+    vm=from_member_liquidation(_header(),_member(member_id=818,variety="NAVELINA"))
+    repository=RefreshRepository(dump(vm)); rendered=[]
+    document=SimpleNamespace(document_id=7,batch_id="B1",member_id=818,campaign="2026",company="1",
+                             file_path=str(tmp_path/"member.pdf"),remittance_id=3)
+    current=PersistedVarietyBenchmarkService.for_member(complete_benchmark(),818,group_name="NAVEL TEMPRANA")
+    old=module.replace(current,kilograms_per_hectare=module.replace(current.kilograms_per_hectare,own_value=Decimal("1")))
+    service=IndividualPdfRefreshService(repository,RefreshBenchmarks(),
+        exporter=lambda updated,path:(rendered.append(updated),Path(path).write_bytes(b"pdf")),
+        comparison_log_path=tmp_path/"resolution.log")
+    result=service.refresh_documents((document,),calculated_benchmarks={
+        _audited_key(document,run_id="old-run"):old,
+        _audited_key(document,run_id="current-run"):current,
+    },benchmark_run_id="current-run")
+    assert not result.failed and rendered[0].group_benchmark is current
+
+
+def test_ambiguous_or_missing_audit_does_not_cancel_pdf(tmp_path: Path):
+    vm=from_member_liquidation(_header(),_member(member_id=818,variety="NAVELINA"))
+    persisted=vm.group_benchmark
+    benchmark=PersistedVarietyBenchmarkService.for_member(complete_benchmark(),818,group_name="NAVEL TEMPRANA")
+    for label,candidates,expected_status in (
+        ("ambiguous",{(818,"NAVEL TEMPRANA","2026","1","CITRICOS","A",""):benchmark,
+                      (818,"NAVEL TEMPRANA","2026","1","CITRICOS","B",""):benchmark},"AMBIGUOUS"),
+        ("missing",{},"NOT_FOUND"),
+    ):
+        repository=RefreshRepository(dump(vm)); rendered=[]
+        document=SimpleNamespace(document_id=7,batch_id="B1",member_id=818,campaign="2026",company="1",
+                                 file_path=str(tmp_path/f"{label}.pdf"),remittance_id=3)
+        log=tmp_path/f"{label}.log"
+        service=IndividualPdfRefreshService(repository,RefreshBenchmarks(),
+            exporter=lambda updated,path:(rendered.append(updated),Path(path).write_bytes(b"pdf")),comparison_log_path=log)
+        result=service.refresh_documents((document,),calculated_benchmarks=candidates,benchmark_run_id="audit-1")
+        assert not result.failed and rendered[0].group_benchmark==persisted
+        text=log.read_text(); assert f"resolution_status={expected_status}" in text
+        if expected_status=="AMBIGUOUS": assert text.count("[PdfComparisonCandidate]")==2
+
+
 def test_new_snapshot_persists_explicit_surface_with_schema_four():
     vm=from_member_liquidation(_header(),_member(member_id=818,variety="NAVELINA",applicable_hectares=Decimal("2.64")))
     payload=dump(vm)

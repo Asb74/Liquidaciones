@@ -64,6 +64,11 @@ class MassiveBenchmarkAuditResult:
     benchmarks: dict[tuple, object] | None = None
 
     @property
+    def generation_run_id(self) -> str:
+        """Identifier shared by calculation, DTO resolution, rendering and merge."""
+        return self.mass_run_id
+
+    @property
     def has_severe_incidents(self) -> bool:
         return any(item.severe for item in self.incidents)
 
@@ -143,7 +148,8 @@ class MassiveBenchmarkAuditService:
                 incidents.append(MassiveBenchmarkIncident("MISSING_GROUP","Liquidación sin grupo varietal",True,getattr(doc,"document_id",None),vm.member_id)); continue
             context=(str(vm.campaign),str(vm.company),str(vm.crop),group_label,str(liquidation_type),str(category))
             key=context+(str(vm.member_id),)
-            item=grouped.setdefault(key,{"vm":vm,"varieties":set(),"remittances":set(),"lines":0,"net":Decimal(0),"commercial":Decimal(0),"amount":Decimal(0)})
+            item=grouped.setdefault(key,{"vm":vm,"documents":[],"varieties":set(),"remittances":set(),"lines":0,"net":Decimal(0),"commercial":Decimal(0),"amount":Decimal(0)})
+            item["documents"].append((doc, vm))
             item["varieties"].update(v for v in (getattr(vm,"variety_name",None),*getattr(vm,"varieties",())) if v)
             item["remittances"].add(str(getattr(doc,"remittance_id",None) or vm.remittance_name)); item["lines"]+=1
             item["net"]+=self._decimal(vm.effective_net_kg) or Decimal(0); item["commercial"]+=self._decimal(vm.commercial_kg) or Decimal(0); item["amount"]+=self._decimal(vm.total_amount) or Decimal(0)
@@ -162,7 +168,26 @@ class MassiveBenchmarkAuditService:
             header=LiquidationHeader(None,"AUDITORIA MASIVA",campaign,company,crop,"","","",liq_type,category,"",[],{},{})
             if progress_callback: progress_callback("4. Validando superficies",context_index,len(by_context))
             benchmarks=self.benchmark_service.build_benchmarks(header,tuple(members_for_benchmark),parent_run_id=run_id,run_source="MASS_PDF_REBUILD")
-            calculated_benchmarks.update(benchmarks)
+            # The calculation service keys a result by member and business context.  Do
+            # not expose that coarse key to PDF resolution: one member/context may have
+            # several real documents, and later runs may contain the same tuple.
+            for benchmark_key, benchmark in benchmarks.items():
+                member_id = int(benchmark_key[0])
+                matching_entry = next((item for key, item in entries if int(key[6]) == member_id), None)
+                if matching_entry is None:
+                    continue
+                for document, document_vm in matching_entry["documents"]:
+                    liquidation_ids = tuple(str(value) for value in (getattr(document_vm, "id_liqs", ()) or ()))
+                    correlation_key = (
+                        member_id, campaign, company, crop, group_label,
+                        str(getattr(benchmark, "subgroup", "") or ""),
+                        str(getattr(document_vm, "variety_name", "") or ""),
+                        "|".join(liquidation_ids), getattr(document, "document_id", None),
+                        str(getattr(document, "batch_id", "") or ""),
+                        getattr(document, "snapshot_id", None), run_id,
+                        liq_type, category,
+                    )
+                    calculated_benchmarks[correlation_key] = benchmark
             details=getattr(self.benchmark_service,"last_surface_details",{})
             for key,item in entries:
                 vm=item["vm"]; detail=details.get((vm.member_id,group_label),{}); ha=detail.get("hectares")
