@@ -1,4 +1,5 @@
 from decimal import Decimal
+import sqlite3
 
 from data.group_benchmark_repository import ProductiveSurfaceResult, VarietalGroup
 from domain.calculation_models import LiquidationHeader, MemberLiquidation
@@ -117,3 +118,59 @@ def test_final_price_without_valid_records_does_not_return_zero_minimum():
     assert b.price_per_kg.status == 'unavailable'
     assert b.price_per_kg.minimum_value is None
     assert b.price_per_kg.warning == 'Sin datos comparables suficientes'
+
+
+def test_surface_audit_traces_candidates_join_deduplication_and_conflicts(tmp_path):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("ATTACH DATABASE ':memory:' AS eepp")
+    conn.execute('CREATE TABLE eepp.DEEPP (IdSocio, Boleta, "CAMPAÑA", EMPRESA, CULTIVO, Variedad)')
+    conn.execute('CREATE TABLE eepp.DParcela (Boleta, "CAMPAÑA", EMPRESA, CULTIVO, IdPM, Pol, Par, Rec, SupCul, BAJA)')
+    conn.executemany('INSERT INTO eepp.DEEPP VALUES (?,?,?,?,?,?)', (
+        (7, 659, "2026", "1", "CITRICOS", " navelina "),
+        (7, 660, "2026", "1", "CITRICOS", "OTRA"),
+        (7, 698, "2026", "1", "CITRICOS", "NEWHALL"),
+        (7, 699, "2026", "1", "CITRICOS", "NAVELINA"),
+    ))
+    conn.executemany('INSERT INTO eepp.DParcela VALUES (?,?,?,?,?,?,?,?,?,?)', (
+        (659, "2026", "1", "CITRICOS", 1, 2, 3, 4, "0.6500", None),
+        (659, "2026", "1", "CITRICOS", 1, 2, 3, 4, "0.6500", None),
+        (699, "2026", "1", "CITRICOS", 5, 6, 7, 8, "1.2", None),
+        (699, "2026", "1", "CITRICOS", 5, 6, 7, 8, "1.3", None),
+    ))
+    log = tmp_path / "surface.log"
+    from data.group_benchmark_repository import GroupBenchmarkRepository
+    result = GroupBenchmarkRepository(conn, log).get_productive_hectares(
+        7, "2026", "1", "CITRICOS", ("NAVELINA", "NEWHALL")
+    )
+
+    assert result.hectares == Decimal("0.6500")
+    assert result.parcel_count == 1
+    assert result.excluded_count == 1
+    assert result.candidate_boletas == ("659", "660", "698", "699")
+    assert result.matched_boletas == ("659", "698", "699")
+    assert result.included_boletas == ("659",)
+    assert any(r.get("incident_type") == "VARIEDAD_NO_COINCIDE" and r["boleta"] == "660" for r in result.audit_rows)
+    assert any(r.get("incident_type") == "BOLETA_SIN_PARCELAS" and r["boleta"] == "698" for r in result.audit_rows)
+    text = log.read_text(encoding="utf-8")
+    assert "[ProductiveSurfaceVarieties]\noriginal=NAVELINA\nnormalized=NAVELINA" in text
+    assert "boleta=660\nvariety_original=OTRA\nvariety_normalized=OTRA\nmatches_group=no" in text
+    assert "decision=excluded_conflicting_surfaces" in text
+    assert "hectares=0.6500" in text
+
+
+def test_member_production_audit_contains_kilos_hectares_and_ratio(tmp_path):
+    log = tmp_path / "surface.log"
+    svc = GroupBenchmarkService(FakeRepo(), log_path=tmp_path / "metrics.log", audit_log_path=log)
+    svc.build_benchmarks(header(), (member(1, "NAVELINA", "112745", "1"),))
+    text = log.read_text(encoding="utf-8")
+    assert "[GroupBenchmarkMemberAggregation]" in text
+    assert "total_net_kg=112745" in text
+    assert "[GroupBenchmarkMemberProduction]" in text
+    assert "surface_hectares=2" in text
+    assert "production_kg_ha=56372.5" in text
+
+
+def test_real_case_production_formula_reference():
+    production = Decimal("112745") / Decimal("7.2337")
+    assert production.quantize(Decimal("0.00001")) == Decimal("15586.07628")

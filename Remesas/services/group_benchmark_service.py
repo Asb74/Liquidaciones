@@ -40,8 +40,9 @@ def _positive_decimal(value) -> Decimal | None:
 
 class GroupBenchmarkService:
     """Benchmarks current-remittance MemberLiquidation rows; no external final amounts are invented."""
-    def __init__(self, repository: GroupBenchmarkRepository, log_path: str | Path = "logs/group_benchmark.log") -> None:
+    def __init__(self, repository: GroupBenchmarkRepository, log_path: str | Path = "logs/group_benchmark.log", audit_log_path: str | Path | None = None) -> None:
         self.repository=repository; self.log_path=Path(log_path)
+        self.audit_log_path = Path(audit_log_path) if audit_log_path is not None else Path(getattr(repository, "audit_log_path", "logs/group_benchmark_surface_audit.log"))
     def resolve_varietal_group(self, crop: str, variety: str) -> VarietalGroup | None:
         return self.repository.get_varietal_group(crop, variety)
     def build_benchmarks(self, header: LiquidationHeader, members: tuple[MemberLiquidation, ...]) -> dict[tuple, PremiumGroupBenchmark]:
@@ -56,12 +57,16 @@ class GroupBenchmarkService:
             for m in lines:
                 x=per.setdefault(m.member_id,{"member":m,"kg":Decimal("0"),"commercial_kg":Decimal("0"),"amount":Decimal("0"),"statuses":[]})
                 x["kg"]+=_d(m.net_kg); x["commercial_kg"]+=_d(m.commercial_kg); x["amount"]+=_d(m.total_amount); x["statuses"].extend(m.statuses.values())
+            for mid,x in per.items():
+                self._surface_audit("GroupBenchmarkMemberAggregation", member_id=mid, variety_lines=sum(1 for m in lines if m.member_id == mid), total_net_kg=x["kg"], total_commercial_kg=x["commercial_kg"], total_amount=x["amount"])
             surfaces={mid:self.repository.get_productive_hectares(mid, header.campana, header.empresa, header.cultivo, g.varieties) for mid in per}
             for mid,x in per.items():
                 ha=surfaces[mid].hectares; x["ha"]=ha
                 x["kg_ha"]=x["kg"]/ha if _positive_decimal(x["kg"]) and _positive_decimal(ha) else None
                 x["eur_ha"]=x["amount"]/ha if _positive_decimal(x["amount"]) and _positive_decimal(ha) else None
                 x["price"]=x["amount"]/x["commercial_kg"] if _positive_decimal(x["amount"]) and _positive_decimal(x["commercial_kg"]) else None
+                surface=surfaces[mid]
+                self._surface_audit("GroupBenchmarkMemberProduction", member_id=mid, group_label=g.label, group_varieties="|".join(g.varieties), net_kg=x["kg"], surface_hectares=ha, production_kg_ha=x["kg_ha"], parcel_count=surface.parcel_count, excluded_count=surface.excluded_count, warnings="|".join(surface.warnings))
             warnings=tuple(w for srf in surfaces.values() for w in srf.warnings)+tuple(missing)
             price=self._metric("COMPARATIVA_PRECIO", "FINAL_PRICE", [dict(v, value=v["price"], price=v["price"], kilos=v["commercial_kg"], importe=v["amount"]) for v in per.values()])
             prod=self._metric("COMPARATIVA_PRODUCCION", "PRODUCTION_KG_HA", [dict(v, value=v["kg_ha"], produccion=v["kg"], hectareas=v["ha"]) for v in per.values()])
@@ -72,6 +77,12 @@ class GroupBenchmarkService:
                 b=PremiumGroupBenchmark(label,g.crop,g.group,g.subgroup,g.varieties,str(header.campana),header.empresa,header.tipo_liquidacion,header.categoria,p,k,e,warnings+validate_benchmark_metric(p)+validate_benchmark_metric(k)+validate_benchmark_metric(e))
                 out[(mid,label,str(header.campana),header.empresa,header.cultivo,header.tipo_liquidacion,header.categoria)]=b; self._log(b, amount[1])
         return out
+    def _surface_audit(self, section, **values):
+        self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.audit_log_path.open("a", encoding="utf-8") as f:
+            f.write(f"[{section}]\n")
+            for key,value in values.items(): f.write(f"{key}={'' if value is None else value}\n")
+            f.write("\n")
     def _metric(self, log_name, name, candidates):
         excluded={"null":0,"zero":0,"negative":0}; valid=[]
         for c in candidates:
