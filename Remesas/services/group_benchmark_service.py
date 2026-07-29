@@ -9,6 +9,8 @@ from data.group_benchmark_repository import GroupBenchmarkRepository, VarietalGr
 from domain.calculation_models import LiquidationHeader, MemberLiquidation
 from group_benchmark_surface_audit import AUDIT_LOG_PATH, append_surface_audit, record_surface_audit_config
 from services.member_surface_diagnostic_service import MemberSurfaceDiagnosticService
+from services.benchmark_calculation import kilograms_per_hectare, positive_decimal, metric_statistics
+from services.pdf_benchmark_value_trace import write_value_trace
 
 LOGGER = logging.getLogger(__name__)
 MAX_MEMBER_AUDIT_LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "group_benchmark_max_member.log"
@@ -104,8 +106,8 @@ class GroupBenchmarkService:
             surfaces={mid:self.repository.get_productive_hectares(mid, header.campana, header.empresa, header.cultivo, g.varieties) for mid in per}
             for mid,x in per.items():
                 ha=surfaces[mid].hectares; x["ha"]=ha
-                x["kg_ha"]=x["kg"]/ha if _positive_decimal(x["kg"]) and _positive_decimal(ha) else None
-                x["eur_ha"]=x["amount"]/ha if _positive_decimal(x["amount"]) and _positive_decimal(ha) else None
+                x["kg_ha"]=kilograms_per_hectare(x["kg"], ha)
+                x["eur_ha"]=kilograms_per_hectare(x["amount"], ha)
                 x["price"]=x["amount"]/x["commercial_kg"] if _positive_decimal(x["amount"]) and _positive_decimal(x["commercial_kg"]) else None
                 surface=surfaces[mid]
                 self.last_surface_details[(mid, g.label)] = {
@@ -123,6 +125,10 @@ class GroupBenchmarkService:
                 if int(mid) in self.diagnostic_member_ids:
                     self.member_diagnostic.write(member_id=mid, group=g.label, campaign=header.campana,
                                                  net_kg=x["kg"], surface=surface)
+                    trace = dict(member_id=mid, net_kg=x["kg"], surface=ha, kg_per_ha=x["kg_ha"],
+                                 function="GroupBenchmarkService.build_benchmarks", file=__file__, object_id=id(x))
+                    write_value_trace("AuditedMemberCalculation", trace, member_id=mid)
+                    write_value_trace("PdfMemberCalculation", {**trace, "object_type":type(x).__name__}, member_id=mid)
                 reason = None
                 if x["kg_ha"] is None:
                     valid_kg, valid_ha = _positive_decimal(x["kg"]), _positive_decimal(ha)
@@ -142,6 +148,10 @@ class GroupBenchmarkService:
             for mid,x in per.items():
                 p=price[0](x["price"]); k=prod[0](x["kg_ha"], "No se ha podido determinar una superficie productiva válida para este grupo varietal." if x["kg_ha"] is None else ""); e=eurha[0](x["eur_ha"], "No se ha podido determinar una superficie productiva válida para este grupo varietal." if x["eur_ha"] is None else "")
                 b=PremiumGroupBenchmark(label,g.crop,g.group,g.subgroup,g.varieties,str(header.campana),header.empresa,header.tipo_liquidacion,header.categoria,p,k,e,warnings+validate_benchmark_metric(p)+validate_benchmark_metric(k)+validate_benchmark_metric(e))
+                write_value_trace("PdfBenchmarkDtoCreated", dict(member_id=mid, user_value=k.own_value,
+                    max_value=k.maximum_value, average_value=k.average_value, min_value=k.minimum_value,
+                    comparable_count=k.valid_member_count, constructor_function="GroupBenchmarkService.build_benchmarks",
+                    file=__file__, dto_type=type(b).__name__, dto_id=id(b)), member_id=mid)
                 out[(mid,label,str(header.campana),header.empresa,header.cultivo,header.tipo_liquidacion,header.categoria)]=b; self._log(b, amount[1])
         self._surface_audit("GroupBenchmarkAuditRunCompleted", run_id=run_id, parent_run_id=parent_run_id,
                             run_source=run_source, group_count=len(grouped),
@@ -289,7 +299,7 @@ class GroupBenchmarkService:
             if v < 0: excluded["negative"]+=1; continue
             if v == 0: excluded["zero"]+=1; continue
             valid.append(v)
-        avg=(sum(valid,Decimal("0"))/len(valid)) if valid else None
+        stats=metric_statistics(valid); avg=stats.average
         def build(own, warning=""):
             m=BenchmarkMetric(_q(own), _q(max(valid)) if valid else None, _q(min(valid)) if valid else None, _q(avg), len(valid), len(candidates)-len(valid), "ok" if valid else "unavailable", warning or ("Sin datos comparables suficientes" if not valid else ""), name, excluded["null"], excluded["zero"], excluded["negative"])
             ws=validate_benchmark_metric(m)

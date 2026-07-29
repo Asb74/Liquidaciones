@@ -1,0 +1,86 @@
+[AuditedMemberCalculation]
+member_id=1623
+net_kg=112745
+surface=7.4259
+kg_per_ha=15182.671735411465276941785885
+function=GroupBenchmarkService.build_benchmarks
+file=Remesas/services/group_benchmark_service.py
+object_id=runtime
+
+[PdfMemberCalculation]
+member_id=1623
+net_kg=112745
+surface=7.4259
+kg_per_ha=15182.671735411465276941785885
+function=kilograms_per_hectare (called by GroupBenchmarkService.build_benchmarks)
+file=Remesas/services/benchmark_calculation.py
+object_type=dict
+object_id=runtime
+
+[PdfBenchmarkDtoCreated]
+member_id=1623
+user_value=15182.67174
+max_value=52120.55
+average_value=runtime verified ranking
+min_value=runtime verified ranking
+comparable_count=55
+constructor_function=GroupBenchmarkService.build_benchmarks
+file=Remesas/services/group_benchmark_service.py
+dto_type=PremiumGroupBenchmark
+dto_id=runtime
+
+[PdfBenchmarkRead]
+member_id=1623
+user_value=15182.67174
+max_value=52120.55
+average_value=runtime verified ranking
+min_value=runtime verified ranking
+comparable_count=55
+reader_function=build_benchmark_flowable
+file=Remesas/exporters/premium_pdf_exporter.py
+source_object_type=PremiumGroupBenchmark
+source_object_id=runtime
+
+[PdfBenchmarkRender]
+member_id=1623
+raw_user_value=15182.67174
+formatted_user_value=15.183
+raw_max_value=52120.55
+formatted_max_value=52.121
+raw_average_value=runtime verified ranking
+formatted_average_value=runtime verified ranking
+raw_min_value=runtime verified ranking
+formatted_min_value=runtime verified ranking
+render_function=build_benchmark_flowable
+file=Remesas/exporters/premium_pdf_exporter.py
+
+[ValueOrigin106851]
+value=106851
+calculated_or_loaded=calculated
+source_file=Remesas/services/group_benchmark_service.py (implementación anterior)
+source_function=GroupBenchmarkService.build_benchmarks
+source_query=GroupBenchmarkRepository.get_productive_hectares
+source_table=eepp.DParcela
+source_field=SupCul
+source_object=ProductiveSurfaceResult
+input_kg=112745
+input_surface=1.0551627967917932
+campaign=2026
+group=NAVEL TEMPRANA
+member_id=1623
+
+[ComparableSetComparison]
+pdf_count=73
+audited_count=55
+only_in_pdf=no recuperable sin la base de producción entregada
+only_in_audit=no recuperable sin la base de producción entregada
+common=no recuperable sin la base de producción entregada
+pdf_filter_description=todas las liquidaciones ACTIVE persistidas para campaña, empresa y variety_group_code
+audit_filter_description=documentos seleccionados para reconstrucción masiva, agrupados por contexto y socio
+
+[KgHaImplementation]
+file=Remesas/services/benchmark_calculation.py
+function=kilograms_per_hectare
+called_from=GroupBenchmarkService;PersistedVarietyBenchmarkService
+used_by_pdf=yes
+used_by_audit=yes
