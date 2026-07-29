@@ -155,16 +155,16 @@ class GroupBenchmarkRepository:
         for row in rows:
             boleta = _display(row.get("DeeppBoleta"))
             row_id = row.get("ParcelaRowId")
-            if row_id is None:
-                continue
-            joined_boletas.add(boleta)
-            parcel_rows.setdefault(int(row_id), []).append(row)
             audit.append({"audit_type": "join_row", **row, "parcel_row_id": row_id})
             self._audit("ProductiveSurfaceJoinRow", member_id=member_id, boleta=boleta,
                         parcel_row_id=row_id, parcel_boleta=row.get("ParcelaBoleta"),
                         parcel_campaign=row.get("ParcelaCampana"), parcel_company=row.get("ParcelaEmpresa"),
                         parcel_crop=row.get("ParcelaCultivo"), idpm=row.get("IdPM"), polygon=row.get("Pol"),
                         parcel=row.get("Par"), enclosure=row.get("Rec"), surface=row.get("SupCul"), baja=row.get("BAJA"))
+            if row_id is None:
+                continue
+            joined_boletas.add(boleta)
+            parcel_rows.setdefault(int(row_id), []).append(row)
 
         valid_by_boleta: dict[str, dict[int, Decimal]] = {b: {} for b in matched_boletas}
         invalid_by_boleta: dict[str, set[int]] = {b: set() for b in matched_boletas}

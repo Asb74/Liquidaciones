@@ -1,6 +1,7 @@
 from decimal import Decimal
 import sqlite3
 import re
+from types import SimpleNamespace
 
 from data.group_benchmark_repository import ProductiveSurfaceResult, VarietalGroup
 from domain.calculation_models import LiquidationHeader, MemberLiquidation
@@ -183,6 +184,44 @@ def test_member_production_audit_contains_kilos_hectares_and_ratio(tmp_path):
     assert "[GroupBenchmarkMemberProduction]" in text
     assert "surface_hectares=2" in text
     assert "production_kg_ha=56372.5" in text
+
+
+def test_maximum_member_forensic_report_contains_inputs_deduplication_ranking_and_anomalies(tmp_path):
+    class AuditRepo(FakeRepo):
+        hectares = {1: Decimal("0.10"), 2: Decimal("2")}
+
+        def get_productive_hectares(self, member_id, campaign, company, crop, varieties):
+            row = {"audit_type": "join_row", "DeeppBoleta": 501, "ParcelaRowId": 15,
+                   "ParcelaBoleta": 501, "ParcelaCampana": "2026", "ParcelaEmpresa": "1",
+                   "ParcelaCultivo": "CITRICOS", "IdPM": 91, "Pol": 2, "Par": 3,
+                   "Rec": 4, "SupCul": "0.10", "BAJA": None, "parcel_row_id": 15}
+            audit = (
+                {"audit_type": "deepp_candidate", "Boleta": 501, "Variedad": "NAVELINA", "matches_group": True},
+                row,
+                {"audit_type": "row_decision", "boleta": "501", "parcel_row_id": 15, "surface": "0.10", "decision": "INCLUDED"},
+                {"audit_type": "row_decision", "boleta": "501", "parcel_row_id": 15, "surface": "0.10", "decision": "DUPLICATE_JOIN_ROW"},
+            ) if member_id == 1 else ()
+            return ProductiveSurfaceResult(self.hectares[member_id], 1, 0, (), audit)
+
+    first = member(1, "NAVELINA", "50000", "1")
+    delivery = SimpleNamespace(boleta=501, fecha="2026-01-02", variedad="NAVELINA", effective_net_kg=Decimal("50000"))
+    first = first.__class__(**{**first.__dict__, "source_deliveries": (delivery,)})
+    report = tmp_path / "group_benchmark_max_member.log"
+    svc = GroupBenchmarkService(AuditRepo(), log_path=tmp_path / "metrics.log",
+                                audit_log_path=tmp_path / "surface.log", max_member_audit_log_path=report)
+    svc.build_benchmarks(header(), (first, member(2, "NAVELINA", "60000", "1")))
+
+    text = report.read_text(encoding="utf-8")
+    assert "BENCHMARK MAXIMUM MEMBER" in text
+    assert "Socio: 1" in text and "Resultado kg/ha: 5.000E+5" in text
+    assert "Boleta: 501\nFecha: 2026-01-02\nVariedad: NAVELINA\nKg: 50000" in text
+    assert "DeeppBoleta: 501" in text and "SupCul: 0.10" in text and "BAJA: None" in text
+    assert "PARCELA DUPLICADA" in text and "IdParcela: 15" in text
+    assert "TOTAL SUPERFICIE = 0.10 ha" in text
+    assert "1 | 50000 | 0.10 | 5.000E+5 | SI" in text
+    assert "2 | 60000 | 2 | 30000 | NO" in text
+    assert "***** POSIBLE ANOMALÍA *****" in text
+    assert "Motivo: kg/ha > 80.000" in text
 
 
 def test_real_case_production_formula_reference():
