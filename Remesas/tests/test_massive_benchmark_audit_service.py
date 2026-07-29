@@ -31,16 +31,14 @@ def doc(number):
     return SimpleNamespace(document_id=number,batch_id=f"b{number}",member_id=1623,remittance_id=number,file_path=Path(f"missing-{number}.pdf"))
 
 
-def test_global_massive_aggregation_uses_unique_surface(monkeypatch,tmp_path):
+def test_each_liquidation_keeps_own_value_and_uses_unique_group_surface(monkeypatch,tmp_path):
     values=iter((vm("42255"),vm("34012"),vm("36478")))
     monkeypatch.setattr(module,"load_snapshot",lambda _:next(values))
     benchmark=Benchmarks(); log=tmp_path/"mass.log"
     result=MassiveBenchmarkAuditService(Repository(),benchmark,audit_log_path=log).audit_selection([doc(1),doc(2),doc(3)])
-    assert len(result.productions)==1
-    row=result.productions[0]
-    assert row.total_net_kg==Decimal("112745")
-    assert row.surface_hectares==Decimal("7.2337")
-    assert abs(row.production_kg_ha-Decimal("15586.07628")) < Decimal("0.00001")
+    assert len(result.productions)==3
+    assert [row.total_net_kg for row in result.productions]==[Decimal("42255"),Decimal("34012"),Decimal("36478")]
+    assert all(row.surface_hectares==Decimal("7.2337") for row in result.productions)
     assert len(benchmark.calls)==1
     assert benchmark.calls[0][2]["parent_run_id"]==result.mass_run_id
     assert benchmark.calls[0][2]["run_source"]=="MASS_PDF_REBUILD"
@@ -70,11 +68,11 @@ def test_incomplete_snapshot_is_reported(monkeypatch,tmp_path):
     assert "status=INCOMPLETE" in (tmp_path/"mass.log").read_text()
 
 
-def test_non_applicable_crop_does_not_create_artificial_benchmark_context(monkeypatch,tmp_path):
+def test_industria_participates_in_varietal_group(monkeypatch,tmp_path):
     monkeypatch.setattr(module,"load_snapshot",lambda _:vm("10",crop="INDUSTRIA"))
     benchmark=Benchmarks()
     log=tmp_path/"mass.log"
     result=MassiveBenchmarkAuditService(Repository(),benchmark,audit_log_path=log).audit_selection([doc(1)])
-    assert result.context_count==0 and result.benchmarks=={}
-    assert benchmark.calls==[]
-    assert "reason=CROP_NOT_INCLUDED_IN_GROUP_BENCHMARK" in log.read_text()
+    assert result.context_count==1 and len(result.benchmarks)==1
+    assert len(benchmark.calls)==1
+    assert "crop=INDUSTRIA" in log.read_text()

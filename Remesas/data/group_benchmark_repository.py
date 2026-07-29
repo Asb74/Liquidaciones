@@ -69,14 +69,27 @@ class GroupBenchmarkRepository:
                 row = self.conn.execute(sql.replace("eepp.MVariedad", "MVariedad"), (crop, variety)).fetchone()
             except sqlite3.Error:
                 row = None
+        # Crop is not a varietal-group boundary.  Some destinations repeat the
+        # variety under another crop while others only define it once.
+        if row is None:
+            fallback = """SELECT CULTIVO, Variedad, GRUPO, SUBGRUPO FROM eepp.MVariedad
+                          WHERE UPPER(TRIM(Variedad))=UPPER(TRIM(?))
+                          ORDER BY UPPER(TRIM(CULTIVO)) LIMIT 1"""
+            try:
+                row = self.conn.execute(fallback, (variety,)).fetchone()
+            except sqlite3.Error:
+                try:
+                    row = self.conn.execute(fallback.replace("eepp.MVariedad", "MVariedad"), (variety,)).fetchone()
+                except sqlite3.Error:
+                    row = None
         if row is None:
             return None
         db_crop, group, subgroup = _norm(row["CULTIVO"]) or _norm(crop), _norm(row["GRUPO"]), _norm(row["SUBGRUPO"])
         rows = self.conn.execute(
             """SELECT DISTINCT Variedad FROM eepp.MVariedad
-               WHERE UPPER(TRIM(CULTIVO))=UPPER(TRIM(?)) AND UPPER(TRIM(GRUPO))=UPPER(TRIM(?))
+               WHERE UPPER(TRIM(GRUPO))=UPPER(TRIM(?))
                  AND UPPER(TRIM(COALESCE(SUBGRUPO,'')))=UPPER(TRIM(?)) AND TRIM(COALESCE(Variedad,''))<>''
-               ORDER BY UPPER(TRIM(Variedad))""", (db_crop, group, subgroup)
+               ORDER BY UPPER(TRIM(Variedad))""", (group, subgroup)
         ).fetchall()
         varieties = tuple(_norm(r["Variedad"]) for r in rows if _norm(r["Variedad"]))
         label = " ".join(p for p in (group, subgroup) if p) or _norm(variety)
@@ -89,7 +102,7 @@ class GroupBenchmarkRepository:
         self._audit(
             "ProductiveSurfaceQuery", member_id=member_id, campaign=campaign, company=company,
             crop=crop, variety_count=len(varieties), varieties_original=varieties,
-            varieties_normalized=normalized_varieties, sql_parameter_count=4 + len(varieties),
+            varieties_normalized=normalized_varieties, sql_parameter_count=3 + len(varieties),
             status="NO_VARIETIES" if not varieties else "EXECUTING",
         )
 
@@ -98,9 +111,8 @@ class GroupBenchmarkRepository:
                            WHERE CAST(IdSocio AS TEXT)=CAST(? AS TEXT)
                              AND UPPER(TRIM(CAMPAÑA))=UPPER(TRIM(?))
                              AND UPPER(TRIM(EMPRESA))=UPPER(TRIM(?))
-                             AND UPPER(TRIM(CULTIVO))=UPPER(TRIM(?))
                            ORDER BY Boleta, Variedad"""
-        candidates = [dict(r) for r in self.conn.execute(candidate_sql, (member_id, campaign, company, crop)).fetchall()]
+        candidates = [dict(r) for r in self.conn.execute(candidate_sql, (member_id, campaign, company)).fetchall()]
         audit: list[dict] = []
         candidate_boletas: set[str] = set()
         matched_boletas: set[str] = set()
@@ -135,7 +147,6 @@ class GroupBenchmarkRepository:
                     WHERE CAST(e.IdSocio AS TEXT)=CAST(? AS TEXT)
                       AND UPPER(TRIM(e.CAMPAÑA))=UPPER(TRIM(?))
                       AND UPPER(TRIM(e.EMPRESA))=UPPER(TRIM(?))
-                      AND UPPER(TRIM(e.CULTIVO))=UPPER(TRIM(?))
                       AND UPPER(TRIM(e.Variedad)) IN ({placeholders})
                   )
                   SELECT m.Boleta AS DeeppBoleta, p.rowid AS ParcelaRowId,
@@ -145,7 +156,7 @@ class GroupBenchmarkRepository:
                   FROM MatchingBoletas m LEFT JOIN eepp.DParcela p
                     ON p.Boleta=m.Boleta
                   ORDER BY m.Boleta, p.rowid"""
-        params = (member_id, campaign, company, crop, *varieties)
+        params = (member_id, campaign, company, *varieties)
         rows = [dict(r) for r in self.conn.execute(sql, params).fetchall()]
         parcel_rows: dict[int, list[dict]] = {}
         joined_boletas: set[str] = set()
@@ -180,8 +191,6 @@ class GroupBenchmarkRepository:
                 decision, reason = "EXCLUDED", "CAMPAIGN_MISMATCH"
             elif _norm(first.get("ParcelaEmpresa")) != _norm(company):
                 decision, reason = "EXCLUDED", "COMPANY_MISMATCH"
-            elif _norm(first.get("ParcelaCultivo")) != _norm(crop):
-                decision, reason = "EXCLUDED", "CROP_MISMATCH"
             elif first.get("BAJA") is not None and str(first.get("BAJA")).strip():
                 decision, reason = "EXCLUDED", "INACTIVE_ROW"
             elif len(distinct_raw) > 1:

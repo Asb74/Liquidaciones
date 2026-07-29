@@ -2,6 +2,13 @@
 
 ## Investigación del fallo
 
+Antes de esta corrección, `group_benchmark_applicability.py` sólo admitía
+`CITRICOS` y `MANDARINA`; la auditoría masiva y la regeneración individual marcaban
+los demás cultivos con `CROP_NOT_INCLUDED_IN_GROUP_BENCHMARK`. A la vez,
+`MassiveBenchmarkAuditService.audit_selection` incluía `crop`, tipo y categoría en
+la clave estadística, y `_resolve_comparison` volvía a filtrar por `crop`, subgrupo
+y variedad. Esos eran los puntos donde el cultivo filtraba o separaba el benchmark.
+
 - **archivo:** `Remesas/services/individual_pdf_refresh_service.py`
 - **función:** `IndividualPdfRefreshService.refresh_documents`
 - **mensaje anterior:** `La auditoría no produjo una comparativa única para el documento.`
@@ -22,8 +29,12 @@ grupos, documentos, liquidaciones o ejecuciones diferentes.
 
 ## Corrección
 
-La auditoría masiva crea un `generation_run_id` nuevo y construye una clave por
-documento con: socio, campaña, empresa, cultivo, grupo, subgrupo, variedad,
+La auditoría masiva crea un `generation_run_id` nuevo y agrupa exclusivamente por
+campaña, empresa y etiqueta normalizada del grupo varietal. Después construye una
+clave de correlación por documento con socio, identificadores documentales y
+ejecución. Cultivo, subgrupo y variedad se conservan para auditoría, pero no dividen
+la población estadística. La clave documental contiene:
+grupo, subgrupo, variedad,
 liquidaciones, documento, lote, snapshot, ejecución, tipo y categoría. La resolución
 descarta primero cualquier candidato de otra ejecución y aplica solamente criterios
 disponibles, dando prioridad a identificadores documentales.
