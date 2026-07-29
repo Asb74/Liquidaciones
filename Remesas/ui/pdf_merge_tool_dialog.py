@@ -14,6 +14,7 @@ from domain.document_models import DocumentType
 from services.path_opener import open_path
 from services.pdf_merge_service import PdfMergeCancelled
 from services.liquidation_csv_export_service import CsvExportCancelled
+from services.massive_benchmark_audit_service import MassivePdfMode
 
 logger=logging.getLogger(__name__)
 
@@ -70,11 +71,12 @@ class PdfMergeToolDialog(tk.Toplevel):
     HEADERS=("Seleccionar","Tipo","Campaña","Empresa","Cultivo","Remesa","N.º socio","Socio","IdLiq","Fecha","Estado","Ruta","Páginas","Tamaño")
     def __init__(self,parent,service,*,output_root=None,regenerate_callback=None,
                  remittance_resolver=None,excel_callback=None,cancel_excel_callback=None,
-                 csv_export_service=None,individual_refresh_service=None):
+                 csv_export_service=None,individual_refresh_service=None,massive_audit_service=None):
         super().__init__(parent); self.service=service; self.regenerate_callback=regenerate_callback
         self.remittance_resolver=remittance_resolver; self.excel_callback=excel_callback; self.cancel_excel_callback=cancel_excel_callback
         self.csv_export_service=csv_export_service
         self.individual_refresh_service=individual_refresh_service
+        self.massive_audit_service=massive_audit_service
         self.output_root=Path(output_root or (r"C:\Liquidaciones\salidas\impresion_masiva" if Path("C:/").exists() else Path.cwd().parent/"salidas"/"impresion_masiva"))
         self.title("Generación masiva de documentos"); self.geometry("1400x720"); self.documents=[]; self.selected=set(); self.validation_status={}; self.cancelled=False
         self._build()
@@ -94,8 +96,8 @@ class PdfMergeToolDialog(tk.Toplevel):
         ttk.Combobox(filters,textvariable=self.state,values=("Todos","Generado","Error","Sustituido"),state="readonly",width=12).grid(row=1,column=8,padx=3)
         self.kind_combo.bind("<<ComboboxSelected>>",self._kind_changed); self.campaign_combo.bind("<<ComboboxSelected>>",self._campaign_changed); self.company_combo.bind("<<ComboboxSelected>>",self._company_changed); self.crop_combo.bind("<<ComboboxSelected>>",self._crop_changed)
         self.voided_check=ttk.Checkbutton(filters,text="Incluir liquidaciones anuladas",variable=self.voided); self.voided_check.grid(row=2,column=0,columnspan=2,sticky="w")
-        self.refresh_individual_pdfs_var=tk.BooleanVar(value=False)
-        ttk.Checkbutton(filters,text="Actualizar comparativas y regenerar PDF individuales antes del combinado",variable=self.refresh_individual_pdfs_var).grid(row=2,column=2,columnspan=6,sticky="w",padx=3)
+        self.refresh_individual_pdfs_var=tk.BooleanVar(value=True)
+        ttk.Checkbutton(filters,text="Reconstruir, validar comparativas y regenerar PDF antes del combinado (obligatorio)",variable=self.refresh_individual_pdfs_var,state="disabled").grid(row=2,column=2,columnspan=6,sticky="w",padx=3)
         self.search_button=ttk.Button(filters,text="Buscar documentos",command=self.search); self.search_button.grid(row=1,column=9,padx=8)
         actions=ttk.Frame(self); actions.pack(fill="x",padx=8)
         for text,cmd in (("Seleccionar todos",self.select_all),("Quitar selección",self.clear_selection),("Invertir selección",self.invert_selection),("Seleccionar visibles",self.select_all),("Quitar no disponibles",self.remove_unavailable)):
@@ -199,12 +201,36 @@ class PdfMergeToolDialog(tk.Toplevel):
         if not docs:
             text="Seleccione los documentos que desea actualizar y combinar." if self.refresh_individual_pdfs_var.get() else "Debe seleccionar al menos un documento."
             messagebox.showwarning("Unificar",text,parent=self); return
+        if not self.massive_audit_service:
+            messagebox.showerror("Unificar","La auditoría masiva obligatoria no está disponible.",parent=self); return
+        self.cancelled=False; self._set_generating(True)
+        try:
+            audit=self.massive_audit_service.audit_selection(
+                docs, {"campaign":self._technical(self.campaign.get(),"Todas"),
+                       "company":self._technical(self.company.get(),"Todas"),
+                       "crop":self._technical(self.crop.get(),"Todos")},
+                mode=MassivePdfMode.REBUILD_AND_VALIDATE,
+                progress_callback=lambda phase,current,total:self.progress.set(f"{phase} ({current}/{total})"))
+        except Exception as exc:
+            self._set_generating(False); logger.exception("Auditoría PDF masiva")
+            messagebox.showerror("Revisión masiva",str(exc),parent=self); return
+        if audit.incidents:
+            counts={}
+            for incident in audit.incidents: counts[incident.code]=counts.get(incident.code,0)+1
+            detail="\n".join(f"- {count} {code}" for code,count in sorted(counts.items()))
+            answer=messagebox.askyesnocancel("Incidencias de revisión masiva","Se han encontrado incidencias en la revisión masiva:\n\n"+detail+"\n\nSí: continuar con advertencias\nNo: cancelar\nCancelar: abrir log de auditoría",parent=self)
+            if answer is None:
+                open_path(self.massive_audit_service.audit_log_path); self._set_generating(False); return
+            if answer is False:
+                self._set_generating(False); return
         if self.refresh_individual_pdfs_var.get():
             if not self.individual_refresh_service:
-                messagebox.showerror("Unificar","La actualización de comparativas no está disponible.",parent=self); return
+                self._set_generating(False); messagebox.showerror("Unificar","La actualización de comparativas no está disponible.",parent=self); return
             scopes=self.individual_refresh_service.scopes_for_documents(docs)
-            if not messagebox.askyesno("Actualizar comparativas",f"Se actualizarán las comparativas y se regenerarán {len(docs)} PDF individuales.\n\nGrupos varietales afectados: {len(scopes)}\nDocumentos seleccionados: {len(docs)}\n\nDespués se generará el PDF combinado.\n\n¿Desea continuar?",parent=self): return
-            self.cancelled=False; self._set_generating(True)
+            if not messagebox.askyesno("Actualizar comparativas",f"Se actualizarán las comparativas y se regenerarán {len(docs)} PDF individuales.\n\nGrupos varietales afectados: {len(scopes)}\nDocumentos seleccionados: {len(docs)}\n\nDespués se generará el PDF combinado.\n\n¿Desea continuar?",parent=self):
+                self._set_generating(False); return
+            self.cancelled=False
+            logger.info("[MassPdfFlowTrace] phase=GENERATING_DOCUMENTS selected_documents=%s selected_remittances=%s selected_members=%s source=RECALCULATION",len(docs),len({d.remittance_id for d in docs}),len({d.member_id for d in docs}))
             refreshed=self.individual_refresh_service.refresh_documents(docs,progress_callback=self._refresh_progress,should_cancel=lambda:self.cancelled)
             if refreshed.cancelled:
                 self._set_generating(False); messagebox.showinfo("Unificar","Operación cancelada.",parent=self); return
@@ -223,6 +249,7 @@ class PdfMergeToolDialog(tk.Toplevel):
         self.cancelled=False
         self._set_generating(True)
         try:
+            logger.info("[MassPdfFlowTrace] phase=COMBINING_PDF selected_documents=%s selected_remittances=%s selected_members=%s source=RECALCULATION",len(docs),len({d.remittance_id for d in docs}),len({d.member_id for d in docs}))
             result=self.service.merge_documents(docs,path,progress_callback=self._progress,should_cancel=lambda:self.cancelled)
             messagebox.showinfo("PDF combinado",f"PDF combinado generado correctamente.\n\nTipo: {self.kind.get()}\nDocumentos seleccionados: {len(docs)}\nDocumentos incluidos: {result.documents_included}\nDocumentos excluidos: {result.documents_excluded}\nPáginas totales: {result.page_count}\nRuta:\n{result.output_path}",parent=self)
             if messagebox.askyesno("Abrir PDF","¿Desea abrir el PDF combinado?",parent=self): open_path(result.output_path)

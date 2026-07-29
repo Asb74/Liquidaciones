@@ -51,12 +51,18 @@ class GroupBenchmarkService:
         self.audit_log_path = record_surface_audit_config(self.audit_log_path)
     def resolve_varietal_group(self, crop: str, variety: str) -> VarietalGroup | None:
         return self.repository.get_varietal_group(crop, variety)
-    def build_benchmarks(self, header: LiquidationHeader, members: tuple[MemberLiquidation, ...]) -> dict[tuple, PremiumGroupBenchmark]:
+    def build_benchmarks(self, header: LiquidationHeader, members: tuple[MemberLiquidation, ...], *,
+                         parent_run_id: str | None = None,
+                         run_source: str = "REMESA_CALCULATION") -> dict[tuple, PremiumGroupBenchmark]:
         started = datetime.now()
         run_id = started.strftime("%Y%m%d_%H%M%S_%f")
         if hasattr(self.repository, "set_audit_run_id"):
             self.repository.set_audit_run_id(run_id)
-        self._surface_audit("GroupBenchmarkAuditRun", run_id=run_id, started_at=started.isoformat(),
+        if hasattr(self.repository, "set_audit_context"):
+            self.repository.set_audit_context(parent_run_id, run_source)
+        self.last_surface_details = {}
+        self._surface_audit("GroupBenchmarkAuditRun", run_id=run_id, parent_run_id=parent_run_id,
+                            run_source=run_source, started_at=started.isoformat(),
                             campaign=header.campana, company=header.empresa, crop=header.cultivo,
                             member_line_count=len(members))
         LOGGER.info("[GroupBenchmarkSurfaceAudit]\nrun_id=%s\npath=%s\nmembers=%s\nstatus=ENABLED",
@@ -74,7 +80,8 @@ class GroupBenchmarkService:
                 x["kg"]+=_d(m.net_kg); x["commercial_kg"]+=_d(m.commercial_kg); x["amount"]+=_d(m.total_amount); x["statuses"].extend(m.statuses.values())
             for mid,x in per.items():
                 member_lines = [m for m in lines if m.member_id == mid]
-                self._surface_audit("GroupBenchmarkMemberAggregation", run_id=run_id, member_id=mid,
+                self._surface_audit("GroupBenchmarkMemberAggregation", run_id=run_id,
+                                    parent_run_id=parent_run_id, run_source=run_source, member_id=mid,
                                     group_label=g.label, member_variety=tuple(m.variety for m in member_lines),
                                     variety_lines=len(member_lines), total_net_kg=x["kg"],
                                     total_commercial_kg=x["commercial_kg"], total_amount=x["amount"],
@@ -86,11 +93,19 @@ class GroupBenchmarkService:
                 x["eur_ha"]=x["amount"]/ha if _positive_decimal(x["amount"]) and _positive_decimal(ha) else None
                 x["price"]=x["amount"]/x["commercial_kg"] if _positive_decimal(x["amount"]) and _positive_decimal(x["commercial_kg"]) else None
                 surface=surfaces[mid]
+                self.last_surface_details[(mid, g.label)] = {
+                    "hectares": ha, "parcel_count": surface.parcel_count,
+                    "excluded_count": surface.excluded_count, "warnings": surface.warnings,
+                    "candidate_boletas": surface.candidate_boletas,
+                    "matched_boletas": surface.matched_boletas,
+                    "included_boletas": surface.included_boletas,
+                }
                 reason = None
                 if x["kg_ha"] is None:
                     valid_kg, valid_ha = _positive_decimal(x["kg"]), _positive_decimal(ha)
                     reason = "BOTH" if not valid_kg and not valid_ha else ("INVALID_KG" if not valid_kg else "INVALID_HECTARES")
-                self._surface_audit("GroupBenchmarkMemberProduction", run_id=run_id, member_id=mid,
+                self._surface_audit("GroupBenchmarkMemberProduction", run_id=run_id,
+                                    parent_run_id=parent_run_id, run_source=run_source, member_id=mid,
                                     group_label=g.label, group_varieties=g.varieties, net_kg=x["kg"],
                                     surface_hectares=ha, production_kg_ha=x["kg_ha"], reason=reason,
                                     parcel_count=surface.parcel_count, excluded_count=surface.excluded_count,
@@ -104,7 +119,8 @@ class GroupBenchmarkService:
                 p=price[0](x["price"]); k=prod[0](x["kg_ha"], "No se ha podido determinar una superficie productiva válida para este grupo varietal." if x["kg_ha"] is None else ""); e=eurha[0](x["eur_ha"], "No se ha podido determinar una superficie productiva válida para este grupo varietal." if x["eur_ha"] is None else "")
                 b=PremiumGroupBenchmark(label,g.crop,g.group,g.subgroup,g.varieties,str(header.campana),header.empresa,header.tipo_liquidacion,header.categoria,p,k,e,warnings+validate_benchmark_metric(p)+validate_benchmark_metric(k)+validate_benchmark_metric(e))
                 out[(mid,label,str(header.campana),header.empresa,header.cultivo,header.tipo_liquidacion,header.categoria)]=b; self._log(b, amount[1])
-        self._surface_audit("GroupBenchmarkAuditRunCompleted", run_id=run_id, group_count=len(grouped),
+        self._surface_audit("GroupBenchmarkAuditRunCompleted", run_id=run_id, parent_run_id=parent_run_id,
+                            run_source=run_source, group_count=len(grouped),
                             benchmark_count=len(out), finished_at=datetime.now().isoformat())
         return out
     def _surface_audit(self, section, **values):

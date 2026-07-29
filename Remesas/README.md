@@ -25,3 +25,25 @@ Las rutas SQLite se leen desde `config.ini`. Las conexiones se abren con `sqlite
 ## Limitaciones de fase 1
 
 No calcula importes económicos, no guarda liquidaciones, no modifica SQLite, no toca Access y no genera PDF final. Los botones de cálculo, guardado, anulación y PDF quedan deshabilitados.
+
+## Flujo de generación PDF masiva
+
+La herramienta **Generación masiva de documentos** se abre desde el menú principal y
+consulta `generated_documents` mediante `PdfMergeService.list_available_documents`.
+Antes de este cambio, el botón combinado validaba los ficheros del disco y los unía;
+la regeneración individual era opcional y utilizaba snapshots persistidos.
+
+El botón **Generar PDF combinado** trabaja ahora obligatoriamente en modo
+`REBUILD_AND_VALIDATE`: valida los snapshots seleccionados, reconstruye y consolida
+sus magnitudes por campaña, empresa, cultivo, grupo varietal, tipo y categoría,
+consulta una única superficie por socio/grupo y ejecuta `GroupBenchmarkService` con
+el identificador padre de la ejecución masiva. Sólo después regenera cada documento
+desde su snapshot y combina los PDF recién generados. La operación independiente de
+`PdfMergeService.merge_documents` continúa siendo el modo técnico
+`MERGE_EXISTING_PDFS`, pero no es el modo usado por ese botón.
+
+La consolidación y sus incidencias se escriben en
+`logs/mass_pdf_benchmark_audit.log`; el detalle de las consultas de parcelas se
+mantiene en `logs/group_benchmark_surface_audit.log`. Los bloques
+`MassPdfFlowTrace` del log general permiten seguir reconstrucción, generación y
+combinación.

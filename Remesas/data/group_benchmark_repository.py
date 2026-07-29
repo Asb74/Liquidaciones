@@ -41,12 +41,20 @@ class GroupBenchmarkRepository:
         self.conn = conn
         self.audit_log_path = Path(audit_log_path).resolve()
         self.audit_run_id: str | None = None
+        self.audit_parent_run_id: str | None = None
+        self.audit_run_source: str = "REMESA_CALCULATION"
 
     def set_audit_run_id(self, run_id: str) -> None:
         self.audit_run_id = run_id
 
+    def set_audit_context(self, parent_run_id: str | None, run_source: str) -> None:
+        self.audit_parent_run_id = parent_run_id
+        self.audit_run_source = run_source
+
     def _audit(self, section: str, **values: object) -> None:
-        append_surface_audit(section, {"run_id": self.audit_run_id, **values}, self.audit_log_path)
+        append_surface_audit(section, {"run_id": self.audit_run_id,
+            "parent_run_id": self.audit_parent_run_id, "run_source": self.audit_run_source,
+            **values}, self.audit_log_path)
 
     def get_varietal_group(self, crop: str, variety: str) -> VarietalGroup | None:
         sql = """SELECT CULTIVO, Variedad, GRUPO, SUBGRUPO FROM eepp.MVariedad
