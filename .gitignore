@@ -1,5 +1,32 @@
+# Python
 __pycache__/
-*.log
+*.py[cod]
+.venv/
+venv/
+
+# Bases de datos
 *.sqlite
+*.db
+*.mdb
+*.accdb
+
+# Logs
+*.log
+logs/
 Remesas/logs/
+
+# Backups
+backup/
 datos/backup/
+
+# Archivos temporales
+*.tmp
+*.bak
+
+# IDE
+.vscode/
+.idea/
+
+# Sistema
+.DS_Store
+Thumbs.db
