@@ -1,5 +1,6 @@
 from decimal import Decimal
 import sqlite3
+import re
 
 from data.group_benchmark_repository import ProductiveSurfaceResult, VarietalGroup
 from domain.calculation_models import LiquidationHeader, MemberLiquidation
@@ -153,7 +154,17 @@ def test_surface_audit_traces_candidates_join_deduplication_and_conflicts(tmp_pa
     assert any(r.get("incident_type") == "VARIEDAD_NO_COINCIDE" and r["boleta"] == "660" for r in result.audit_rows)
     assert any(r.get("incident_type") == "BOLETA_SIN_PARCELAS" and r["boleta"] == "698" for r in result.audit_rows)
     text = log.read_text(encoding="utf-8")
-    assert "[ProductiveSurfaceVarieties]\noriginal=NAVELINA\nnormalized=NAVELINA" in text
+    for section in (
+        "ProductiveSurfaceQuery",
+        "ProductiveSurfaceDeeppCandidate",
+        "ProductiveSurfaceJoinRow",
+        "ProductiveSurfaceDedupe",
+        "ProductiveSurfaceBoletaSummary",
+        "ProductiveSurfaceResult",
+    ):
+        assert f"[{section}]" in text
+    assert "varieties_original=NAVELINA|NEWHALL" in text
+    assert "varieties_normalized=NAVELINA|NEWHALL" in text
     assert "boleta=660\nvariety_original=OTRA\nvariety_normalized=OTRA\nmatches_group=no" in text
     assert "decision=excluded_conflicting_surfaces" in text
     assert "hectares=0.6500" in text
@@ -174,3 +185,34 @@ def test_member_production_audit_contains_kilos_hectares_and_ratio(tmp_path):
 def test_real_case_production_formula_reference():
     production = Decimal("112745") / Decimal("7.2337")
     assert production.quantize(Decimal("0.00001")) == Decimal("15586.07628")
+
+
+def test_audit_configuration_is_absolute_and_independent_of_cwd(tmp_path, monkeypatch):
+    from group_benchmark_surface_audit import AUDIT_LOG_PATH, record_surface_audit_config
+
+    original = AUDIT_LOG_PATH
+    monkeypatch.chdir(tmp_path)
+    assert AUDIT_LOG_PATH == original
+    assert AUDIT_LOG_PATH.is_absolute()
+    log = tmp_path / "nested" / "group_benchmark_surface_audit.log"
+    record_surface_audit_config(log)
+    text = log.read_text(encoding="utf-8")
+    assert "[SurfaceAuditConfig]" in text
+    assert f"resolved_path={log.resolve()}" in text
+    assert f"working_directory={tmp_path}" in text
+
+
+def test_two_benchmark_executions_have_distinct_run_ids_and_completion(tmp_path):
+    log = tmp_path / "group_benchmark_surface_audit.log"
+    svc = GroupBenchmarkService(FakeRepo(), log_path=tmp_path / "metrics.log", audit_log_path=log)
+    rows = (member(1, "NAVELINA", "112745", "1"),)
+    svc.build_benchmarks(header(), rows)
+    svc.build_benchmarks(header(), rows)
+
+    text = log.read_text(encoding="utf-8")
+    run_ids = re.findall(r"\[GroupBenchmarkAuditRun\]\nrun_id=([^\n]+)", text)
+    assert len(run_ids) == 2
+    assert run_ids[0] != run_ids[1]
+    assert text.count("[GroupBenchmarkAuditRunCompleted]") == 2
+    assert "member_variety=NAVELINA" in text
+    assert "group_label=NAVEL TEMPRANA" in text

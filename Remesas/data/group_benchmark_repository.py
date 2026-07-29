@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 import sqlite3
+from group_benchmark_surface_audit import AUDIT_LOG_PATH, append_surface_audit
 
 
 @dataclass(frozen=True)
@@ -36,17 +37,16 @@ def _set_text(values: set[str]) -> str:
 
 
 class GroupBenchmarkRepository:
-    def __init__(self, conn: sqlite3.Connection, audit_log_path: str | Path = "logs/group_benchmark_surface_audit.log") -> None:
+    def __init__(self, conn: sqlite3.Connection, audit_log_path: str | Path = AUDIT_LOG_PATH) -> None:
         self.conn = conn
-        self.audit_log_path = Path(audit_log_path)
+        self.audit_log_path = Path(audit_log_path).resolve()
+        self.audit_run_id: str | None = None
+
+    def set_audit_run_id(self, run_id: str) -> None:
+        self.audit_run_id = run_id
 
     def _audit(self, section: str, **values: object) -> None:
-        self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.audit_log_path.open("a", encoding="utf-8") as stream:
-            stream.write(f"[{section}]\n")
-            for key, value in values.items():
-                stream.write(f"{key}={_display(value)}\n")
-            stream.write("\n")
+        append_surface_audit(section, {"run_id": self.audit_run_id, **values}, self.audit_log_path)
 
     def get_varietal_group(self, crop: str, variety: str) -> VarietalGroup | None:
         sql = """SELECT CULTIVO, Variedad, GRUPO, SUBGRUPO FROM eepp.MVariedad
@@ -76,11 +76,10 @@ class GroupBenchmarkRepository:
         parameter_count = 7 + len(varieties)
         self._audit(
             "ProductiveSurfaceQuery", member_id=member_id, campaign=campaign, company=company,
-            crop=crop, variety_count=len(varieties), varieties="|".join(map(str, varieties)),
-            sql_parameter_count=parameter_count,
+            crop=crop, variety_count=len(varieties), varieties_original=varieties,
+            varieties_normalized=normalized_varieties,
+            sql_parameter_count=parameter_count, status="NO_VARIETIES" if not varieties else "EXECUTING",
         )
-        for original, normalized in zip(varieties, normalized_varieties):
-            self._audit("ProductiveSurfaceVarieties", original=original, normalized=normalized)
 
         candidate_sql = """SELECT IdSocio, Boleta, CAMPAÑA, EMPRESA, CULTIVO, Variedad
                            FROM eepp.DEEPP
@@ -103,17 +102,18 @@ class GroupBenchmarkRepository:
                 matched_boletas.add(boleta)
             item = {"audit_type": "deepp_candidate", **row, "variety_normalized": normalized, "matches_group": matches}
             audit.append(item)
-            self._audit("ProductiveSurfaceDeeppCandidate", boleta=boleta, variety_original=original,
+            self._audit("ProductiveSurfaceDeeppCandidate", member_id=member_id, boleta=boleta, variety_original=original,
                         variety_normalized=normalized, matches_group="yes" if matches else "no")
 
         if not varieties:
             warnings = ("Grupo sin variedades resueltas.",)
-            self._audit("ProductiveSurfaceBoletaSummary", candidate_boletas=_set_text(candidate_boletas),
+            self._audit("ProductiveSurfaceBoletaSummary", member_id=member_id, candidate_boletas=_set_text(candidate_boletas),
                         matched_deepp_boletas="", joined_boletas="", included_boletas="",
                         candidate_without_group_match=_set_text(candidate_boletas), group_match_without_parcels="")
             self._audit("ProductiveSurfaceResult", member_id=member_id, row_count=0, dedupe_key_count=0,
                         included_parcel_count=0, excluded_parcel_count=0, included_boleta_count=0,
-                        hectares=Decimal("0"), warnings="|".join(warnings))
+                        campaign=campaign, company=company, crop=crop, hectares=Decimal("0"),
+                        warnings="|".join(warnings), status="NO_VARIETIES")
             return ProductiveSurfaceResult(Decimal("0"), 0, 0, warnings, tuple(audit), tuple(sorted(candidate_boletas)))
 
         placeholders = ",".join("?" for _ in varieties)
@@ -149,7 +149,7 @@ class GroupBenchmarkRepository:
                 parcel_campaign=row.get("ParcelaCampana"), parcel_company=row.get("ParcelaEmpresa"),
                 parcel_crop=row.get("ParcelaCultivo"), idpm=row.get("IdPM"), polygon=row.get("Pol"),
                 parcel=row.get("Par"), enclosure=row.get("Rec"), surface=row.get("SupCul"),
-                inactive=row.get("BAJA"), dedupe_key="|".join(key),
+                baja=row.get("BAJA"), dedupe_key="|".join(key),
             )
 
         hectares = Decimal("0")
@@ -170,7 +170,7 @@ class GroupBenchmarkRepository:
                 warnings.append(f"Parcela duplicada con superficies distintas excluida: {key}")
             audit.append({"audit_type": "dedupe", "dedupe_key": key, "surface_values": tuple(sorted(surfaces)),
                           "decision": decision, "included_surface": included_surface})
-            self._audit("ProductiveSurfaceDedupe", key="|".join(key), surface_values=surface_values,
+            self._audit("ProductiveSurfaceDedupe", member_id=member_id, key="|".join(key), surface_values=surface_values,
                         decision=decision, included_surface=included_surface)
 
         unmatched = candidate_boletas - matched_boletas
@@ -181,13 +181,16 @@ class GroupBenchmarkRepository:
         for boleta in sorted(without_parcels):
             audit.append({"audit_type": "incident", "member_id": member_id, "boleta": boleta,
                           "incident_type": "BOLETA_SIN_PARCELAS", "detail": "La boleta coincidente no devolvió parcelas en el JOIN real."})
-        self._audit("ProductiveSurfaceBoletaSummary", candidate_boletas=_set_text(candidate_boletas),
+        self._audit("ProductiveSurfaceBoletaSummary", member_id=member_id, candidate_boletas=_set_text(candidate_boletas),
                     matched_deepp_boletas=_set_text(matched_boletas), joined_boletas=_set_text(joined_boletas),
                     included_boletas=_set_text(included_boletas), candidate_without_group_match=_set_text(unmatched),
                     group_match_without_parcels=_set_text(without_parcels))
-        self._audit("ProductiveSurfaceResult", member_id=member_id, row_count=len(rows), dedupe_key_count=len(by_key),
+        status = "NO_ROWS" if not rows else ("NO_VALID_SURFACE" if not hectares else "OK")
+        self._audit("ProductiveSurfaceResult", member_id=member_id, campaign=campaign, company=company, crop=crop,
+                    row_count=len(rows), dedupe_key_count=len(by_key),
                     included_parcel_count=len(by_key) - excluded, excluded_parcel_count=excluded,
-                    included_boleta_count=len(included_boletas), hectares=hectares, warnings="|".join(warnings))
+                    included_boleta_count=len(included_boletas), hectares=hectares,
+                    warnings="|".join(warnings), status=status)
         return ProductiveSurfaceResult(hectares, len(by_key) - excluded, excluded, tuple(warnings), tuple(audit),
                                        tuple(sorted(candidate_boletas)), tuple(sorted(matched_boletas)),
                                        tuple(sorted(included_boletas)))
