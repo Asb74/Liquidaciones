@@ -1,7 +1,7 @@
 """Versioned JSON snapshot for the immutable liquidation PDF model."""
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from decimal import Decimal, InvalidOperation
 import json
 import logging
@@ -40,6 +40,17 @@ def _restore_decimal_fields(payload, model_type):
 
 
 def dump(vm: PremiumLiquidationViewModel) -> str:
+    if vm.national_market_price is None or vm.rotten_leaves_price is None:
+        logger.error("[DocumentSnapshotInvalid] member_id=%s remesa=%s schema_version=%s national_market_price=%s rotten_leaves_price=%s", vm.member_id, vm.remittance_name, SCHEMA_VERSION, vm.national_market_price, vm.rotten_leaves_price)
+        raise ValueError(
+            "No se puede crear un snapshot v4 sin los precios fijos "
+            "de Mercado Nacional y Podrido/Hojas."
+        )
+    vm = replace(vm, destruction_price=vm.national_market_price,
+                 secondary_price=vm.national_market_price,
+                 rotten_price=vm.rotten_leaves_price,
+                 waste_price=vm.rotten_leaves_price)
+    logger.info("[DocumentSnapshotFixedPrices] member_id=%s remesa=%s schema_version=%s national_market_price=%s rotten_leaves_price=%s", vm.member_id, vm.remittance_name, SCHEMA_VERSION, vm.national_market_price, vm.rotten_leaves_price)
     payload = to_json_compatible(vm)
     return json.dumps({"schema_version": SCHEMA_VERSION, "model": payload}, ensure_ascii=False,
                       sort_keys=True, separators=(",", ":"))

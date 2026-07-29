@@ -72,3 +72,19 @@ def test_new_snapshot_without_explicit_fixed_prices_is_rejected_not_derived():
     raw["model"].pop("national_market_price")
     with pytest.raises(ValueError, match="Snapshot nuevo sin precios fijos"):
         load(json.dumps(raw))
+
+
+@pytest.mark.parametrize("field", ["national_market_price", "rotten_leaves_price"])
+def test_dump_rejects_new_snapshot_with_missing_fixed_price(field):
+    vm = from_member_liquidation(header("0.145", "0.145", "-0.129"), member())
+    with pytest.raises(ValueError, match="No se puede crear un snapshot v4"):
+        dump(replace(vm, **{field: None}))
+
+
+def test_dump_normalizes_all_fixed_price_aliases():
+    vm = from_member_liquidation(header("0.145", "0.145", "-0.129"), member())
+    vm = replace(vm, destruction_price=Decimal("9"), secondary_price=Decimal("8"),
+                 rotten_price=Decimal("7"), waste_price=Decimal("6"))
+    restored = load(dump(vm))
+    assert restored.destruction_price == restored.secondary_price == Decimal("0.14500")
+    assert restored.rotten_price == restored.waste_price == Decimal("-0.12900")

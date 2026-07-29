@@ -103,7 +103,14 @@ CREATE INDEX IF NOT EXISTS ix_accounting_export_items_export ON accounting_expor
 CREATE INDEX IF NOT EXISTS ix_accounting_export_items_batch ON accounting_export_items(batch_id);
 CREATE INDEX IF NOT EXISTS ix_accounting_export_items_liquidation ON accounting_export_items(liquidation_id);
 CREATE INDEX IF NOT EXISTS ix_accounting_export_items_recipient ON accounting_export_items(recipient_member_id);
-"""),(13, "active_scope_unique_index", ""))
+"""),(13, "active_scope_unique_index", ""),(14, "document_snapshot_repair_incidents", """
+CREATE TABLE IF NOT EXISTS document_snapshot_repair_incidents(
+ batch_id TEXT NOT NULL, recipient_member_id INTEGER NOT NULL, remesa_id INTEGER,
+ status TEXT NOT NULL, national_market_price TEXT, rotten_leaves_price TEXT,
+ details TEXT, updated_at TEXT NOT NULL,
+ PRIMARY KEY(batch_id,recipient_member_id)
+);
+"""))
 
 
 def _migrate_article_code_as_text(conn: sqlite3.Connection) -> None:
