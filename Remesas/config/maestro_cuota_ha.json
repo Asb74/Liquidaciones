@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "price_per_hectare": "195.00",
+  "eligible_crops": [
+    {
+      "crop": "DIRECTOCHF",
+      "enabled": true
+    },
+    {
+      "crop": "DIRECTO",
+      "enabled": true
+    },
+    {
+      "crop": "MANDARINA",
+      "enabled": true
+    },
+    {
+      "crop": "INDUSTRIA",
+      "enabled": true
+    },
+    {
+      "crop": "CITRICOS",
+      "enabled": true
+    }
+  ]
+}

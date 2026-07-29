@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
+
+from openpyxl import load_workbook
+
+from domain.calculation_models import CalculationStatus, LiquidationHeader, LiquidationResult, LiquidationTotals, MemberLiquidation
+from exporters.excel_exporter import (
+    PRICE_FORMAT,
+    SUMMARY_HEADERS,
+    calculate_export_commercial_price,
+    export_liquidation_summary,
+)
+from exporters.file_lock import FileLockedError
+
+
+class ExcelSummaryExporterTests(unittest.TestCase):
+    def _result(self, *, net=Decimal("105845"), transport=Decimal("0")):
+        header = LiquidationHeader(
+            remesa_id=1,
+            remesa_name="Tango Semana 5 NORMAL",
+            campana="2026",
+            empresa="1",
+            cultivo="DIRECTO",
+            fecha_pago="",
+            periodo_desde="",
+            periodo_hasta="",
+            tipo_liquidacion="NORMAL",
+            categoria="",
+            socio="0",
+            variedades=["TANGO"],
+            options={},
+            prices={},
+        )
+        member = MemberLiquidation(
+            member_id=1561,
+            member_name="SUAREZ SANCHEZ, Mª DEL PILAR",
+            variety="TANGO",
+            delivery_count=1,
+            net_deliveries=net,
+            net_commercial=net,
+            net_waste=Decimal("0"),
+            net_rotten=Decimal("0"),
+            grades=(),
+            commercial_amount=Decimal("90849.35"),
+            gross_amount=Decimal("90849.35"),
+            collection_amount=Decimal("0"),
+            transport_amount=transport,
+            quality_amount=Decimal("0"),
+            globalgap_amount=Decimal("1812.54"),
+            hectare_fee_amount=Decimal("656.01"),
+            taxable_base=Decimal("92005.88"),
+            vat_rate=Decimal("12"),
+            withholding_rate=Decimal("2"),
+            total_amount=Decimal("100985.66"),
+            commercial_average_price=Decimal("0.85832"),
+            final_average_price=Decimal("0.95409"),
+        )
+        totals = LiquidationTotals(
+            net_kg=net,
+            commercial_amount=Decimal("90849.35"),
+            gross_amount=Decimal("90849.35"),
+            detected_collection_amount=Decimal("0"),
+            collection_amount=Decimal("0"),
+            detected_transport_amount=transport,
+            transport_amount=transport,
+            quality_amount=Decimal("0"),
+            globalgap_amount=Decimal("1812.54"),
+            hectare_fee_amount=Decimal("656.01"),
+            taxable_base=Decimal("92005.88"),
+            vat_amount=Decimal("11040.71"),
+            withholding_amount=Decimal("1840.12"),
+            total_amount=Decimal("100985.66"),
+        )
+        return LiquidationResult(header, (member,), totals, ())
+
+    def _export_and_load(self, result=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "resumen_liquidaciones.xlsx"
+        export_liquidation_summary(result or self._result(), path)
+        return path, load_workbook(path, data_only=False)["Resumen"]
+
+    def test_column_order_formulae_totals_and_formats(self):
+        path, ws = self._export_and_load()
+        self.assertEqual([ws.cell(1, col).value for col in range(1, 22)], SUMMARY_HEADERS)
+        self.assertEqual(ws.max_column, 21)
+        self.assertEqual(ws["S2"].value, "=IFERROR(166.386*G2/D2,0)")
+        self.assertEqual(ws["T2"].value, "=IFERROR(166.386*K2/D2,0)")
+        self.assertEqual(ws["U2"].value, "=IFERROR(166.386*J2/D2,0)")
+        expected = (Decimal("166.386") * Decimal("1812.54") / Decimal("105845")).quantize(Decimal("0.01"), ROUND_HALF_UP)
+        self.assertEqual(expected, Decimal("2.85"))
+        self.assertEqual(ws["B3"].value, "TOTAL")
+        self.assertEqual(ws["D3"].value, "=SUM(D2:D2)")
+        self.assertEqual(ws["F3"].value, None)
+        self.assertEqual(ws["M3"].value, "=IFERROR(P3/D3,0)")
+        self.assertEqual(ws["S3"].value, None)
+        self.assertEqual(ws["D2"].number_format, "#,##0;-#,##0;-")
+        self.assertEqual(Decimal(str(ws["F2"].value)).quantize(Decimal("0.00000001")), (Decimal("90849.35") / Decimal("105845")).quantize(Decimal("0.00000001")))
+        self.assertEqual(ws["F2"].number_format, PRICE_FORMAT)
+        self.assertLessEqual(abs(Decimal(str(ws["F2"].value)) * Decimal(str(ws["D2"].value)) - Decimal(str(ws["E2"].value))), Decimal("0.01"))
+        self.assertEqual(ws["G2"].value, 0)
+        self.assertNotEqual(ws["G2"].value, "-")
+        self.assertEqual(ws["G2"].number_format, "#,##0.00;-#,##0.00;-")
+        self.assertEqual(ws["S2"].number_format, "0.00;-0.00;-")
+        self.assertEqual(ws["N2"].value, 12)
+        self.assertEqual(ws["N2"].number_format, '0"%"')
+        self.assertEqual(ws.freeze_panes, "A2")
+        self.assertIsNotNone(ws.auto_filter.ref)
+        self.assertEqual(path.name, "resumen_liquidaciones.xlsx")
+
+    def test_zero_net_uses_iferror_formulae(self):
+        _, ws = self._export_and_load(self._result(net=Decimal("0")))
+        self.assertEqual(ws["S2"].value, "=IFERROR(166.386*G2/D2,0)")
+        self.assertEqual(ws["T2"].value, "=IFERROR(166.386*K2/D2,0)")
+        self.assertEqual(ws["U2"].value, "=IFERROR(166.386*J2/D2,0)")
+
+    def test_negative_transport_sign_is_preserved_by_formula(self):
+        _, ws = self._export_and_load(self._result(transport=Decimal("-10.50")))
+        self.assertEqual(ws["J2"].value, Decimal("-10.50"))
+        self.assertEqual(ws["U2"].value, "=IFERROR(166.386*J2/D2,0)")
+        expected = Decimal("166.386") * Decimal("-10.50") / Decimal("105845")
+        self.assertLess(expected, 0)
+
+    def test_commercial_price_uses_exported_gross_over_exported_net(self):
+        result = self._result(net=Decimal("94563"))
+        member = result.member_results[0]
+        from dataclasses import replace
+        result = replace(result, member_results=(replace(
+            member,
+            gross_amount=Decimal("55843.48"),
+            commercial_average_price=Decimal("0.70931"),
+        ),))
+        _, ws = self._export_and_load(result)
+        self.assertEqual(Decimal(str(ws["F2"].value)).quantize(Decimal("0.00000001")), (Decimal("55843.48") / Decimal("94563")).quantize(Decimal("0.00000001")))
+        self.assertEqual(Decimal(str(ws["F2"].value)).quantize(Decimal("0.00000001")), Decimal("0.59054260"))
+
+    def test_commercial_price_empty_for_zero_net_or_missing_gross(self):
+        from dataclasses import replace
+        result = self._result(net=Decimal("0"))
+        _, zero_net_ws = self._export_and_load(result)
+        self.assertIsNone(zero_net_ws["F2"].value)
+        member = self._result().member_results[0]
+        missing_gross = replace(self._result(), member_results=(replace(member, gross_amount=None),))
+        _, missing_gross_ws = self._export_and_load(missing_gross)
+        self.assertIsNone(missing_gross_ws["F2"].value)
+
+
+def test_calculate_export_commercial_price_uses_decimal_without_rounding():
+    price = calculate_export_commercial_price(Decimal("7324"), Decimal("5342.33"))
+    assert price == Decimal("5342.33") / Decimal("7324")
+    assert isinstance(price, Decimal)
+    assert calculate_export_commercial_price(Decimal("0"), Decimal("1")) is None
+    assert calculate_export_commercial_price(Decimal("1"), None) is None
+    assert calculate_export_commercial_price(1, Decimal("1")) is None
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class ExcelLockedTargetTests(unittest.TestCase):
+    def test_locked_replace_raises_without_timestamp_copy_and_keeps_existing_file(self):
+        result = ExcelSummaryExporterTests()._result()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "resumen_liquidaciones.xlsx"
+            path.write_bytes(b"existing workbook bytes")
+            original = path.read_bytes()
+            import exporters.excel_exporter as exporter
+            old_replace = exporter.os.replace
+            def locked_replace(src, dst):
+                if Path(dst) == path:
+                    raise PermissionError("locked")
+                return old_replace(src, dst)
+            exporter.os.replace = locked_replace
+            try:
+                with self.assertRaises(FileLockedError) as ctx:
+                    export_liquidation_summary(result, path)
+            finally:
+                exporter.os.replace = old_replace
+            self.assertEqual(ctx.exception.path, path)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(Path(tmp).glob("resumen_liquidaciones_*.xlsx")), [])
+            self.assertEqual(list(Path(tmp).glob(".resumen_liquidaciones_*.xlsx")), [])
+
+    def test_error_hectare_fee_leaves_summary_blank_and_adds_diagnostic(self):
+        from dataclasses import replace
+        result = ExcelSummaryExporterTests()._result()
+        member = result.member_results[0]
+        result = replace(result, member_results=(replace(member, hectare_fee_amount=None, hectare_fee_status=CalculationStatus.ERROR, warnings=("sin superficie",)),))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "resumen_liquidaciones.xlsx"
+            export_liquidation_summary(result, path)
+            wb = load_workbook(path, data_only=False)
+            self.assertIsNone(wb["Resumen"]["H2"].value)
+            self.assertIn("04_CuotaHa", wb.sheetnames)
+            self.assertEqual(wb["04_CuotaHa"]["D2"].value, "error")

@@ -1,0 +1,20 @@
+{
+  "DBfruta": {
+    "source_path": "\\\\personal\\C\\BasesSQLite\\DBfruta.sqlite",
+    "source_modified_at": "2026-07-28T17:27:46.602751",
+    "local_modified_at": "2026-07-28T17:27:46.602751",
+    "synced_at": "2026-07-28T15:49:47.596676+00:00",
+    "size_bytes": 75689984,
+    "status": "ok",
+    "error_message": null
+  },
+  "DBEEPPL": {
+    "source_path": "\\\\personal\\C\\BasesSQLite\\DBEEPPL.sqlite",
+    "source_modified_at": "2026-07-28T13:14:26.611998",
+    "local_modified_at": "2026-07-28T13:14:26.611998",
+    "synced_at": "2026-07-28T15:49:47.596676+00:00",
+    "size_bytes": 51920896,
+    "status": "ok",
+    "error_message": null
+  }
+}
