@@ -222,6 +222,9 @@ class MemberLiquidation:
     destruction_amount: Decimal = Decimal("0")
     table_destruction_amount: Decimal = Decimal("0")
     rotten_amount: Decimal = Decimal("0")
+    destruction_price: Decimal | None = None
+    table_destruction_price: Decimal | None = None
+    rotten_price: Decimal | None = None
     gross_amount: Decimal = Decimal("0")
     detected_collection_amount: Decimal = Decimal("0")
     collection_amount: Decimal | None = None

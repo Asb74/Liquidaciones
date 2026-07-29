@@ -43,6 +43,18 @@ def test_snapshot_round_trip_reconstructs_benchmark_decimals():
     assert restored.group_benchmark.price_per_kg.average_value == Decimal("0.35455")
 
 
+def test_legacy_snapshot_without_fixed_prices_remains_loadable(caplog):
+    raw = json.loads(dump(_vm()))
+    raw["schema_version"] = 3
+    raw["model"].pop("destruction_price")
+    raw["model"].pop("rotten_price")
+    raw["model"].update(secondary_kg="1327", secondary_amount="192.42", waste_kg="1327", waste_amount="-171.18")
+    restored = load(json.dumps(raw))
+    assert restored.secondary_price == Decimal("192.42") / Decimal("1327")
+    assert restored.waste_price == Decimal("-171.18") / Decimal("1327")
+    assert "legacy snapshot without fixed remittance price" in caplog.text
+
+
 def test_unknown_snapshot_type_fails_clearly():
     with pytest.raises(TypeError, match="Tipo no compatible con snapshot JSON: object"):
         to_json_compatible(object())

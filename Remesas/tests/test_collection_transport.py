@@ -81,6 +81,16 @@ class CollectionTransportTests(unittest.TestCase):
         self.assertEqual(result.totals.collection_amount, sum((m.collection_amount for m in result.member_results), Decimal("0")))
         self.assertEqual(result.totals.transport_amount, sum((m.transport_amount for m in result.member_results), Decimal("0")))
 
+    def test_remittance_fixed_prices_are_kept_without_changing_amounts(self):
+        d = delivery(neto=Decimal("20"))
+        d.extra.update(Cal0=Decimal("10"), DesLinea=Decimal("3"), DesMesa=Decimal("2"), Podrido=Decimal("5"))
+        remesa = Remesa({"P0": "0.33333", "PDESTRIO": "0.14500", "PDMESA": "0.14500", "PPODRIDO": "-0.12900"})
+        member = LiquidacionCalculator().calculate([d], remesa).result.member_results[0]
+        self.assertEqual((member.destruction_price, member.table_destruction_price, member.rotten_price),
+                         (Decimal("0.14500"), Decimal("0.14500"), Decimal("-0.12900")))
+        self.assertEqual((member.commercial_amount, member.destruction_amount, member.table_destruction_amount, member.rotten_amount, member.gross_amount),
+                         (Decimal("3.33"), Decimal("0.44"), Decimal("0.29"), Decimal("-0.65"), Decimal("3.41")))
+
     def test_no_write_in_sqlite_calculation(self):
         conn = sqlite3.connect(":memory:")
         conn.executescript("CREATE TABLE PesosFres(id INTEGER); CREATE TABLE PagosCIT(id INTEGER); CREATE TABLE DLiquidaciones(id INTEGER); INSERT INTO PesosFres VALUES (1);")
