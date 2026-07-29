@@ -11,6 +11,10 @@ from domain.document_models import DocumentType
 from exporters.persisted_liquidation_pdf_exporter import export_persisted_liquidation_pdf
 from presentation.liquidation_document_snapshot import load as load_snapshot
 from services.persisted_variety_benchmark_service import variety_group_code
+from services.group_benchmark_applicability import (
+    CROP_NOT_INCLUDED_REASON,
+    is_group_benchmark_applicable,
+)
 
 logger=logging.getLogger(__name__)
 PDF_COMPARISON_RESOLUTION_LOG = Path(__file__).resolve().parent.parent / "logs" / "pdf_comparison_resolution.log"
@@ -60,16 +64,16 @@ class IndividualPdfRefreshService:
         metadata["benchmark"]=value
         return metadata
 
-    def _write_resolution(self, context, candidates, selected, status, generation_run_id):
+    def _write_resolution(self, context, candidates, selected, status, generation_run_id, reason=""):
         self.comparison_log_path.parent.mkdir(parents=True,exist_ok=True)
         with self.comparison_log_path.open("a",encoding="utf-8") as stream:
             stream.write("[PdfComparisonResolution]\n")
             values={**context,"candidate_count":len(candidates),
                     "selected_candidate":selected if selected is not None else "",
-                    "resolution_status":status,"generation_run_id":generation_run_id or ""}
+                    "resolution_status":status,"reason":reason,"generation_run_id":generation_run_id or ""}
             for field in ("document_id","liquidation_id","member_id","campaign","company","crop",
                           "group_label","subgroup","variety","batch_id","snapshot_id",
-                          "generation_run_id","candidate_count","selected_candidate","resolution_status"):
+                          "generation_run_id","candidate_count","selected_candidate","resolution_status","reason"):
                 stream.write(f"{field}={values.get(field,'')}\n")
             stream.write("\n")
             if len(candidates)>1:
@@ -97,6 +101,9 @@ class IndividualPdfRefreshService:
                  "group_label":name,"subgroup":str(getattr(getattr(vm,"group_benchmark",None),"subgroup","") or ""),
                  "variety":str(getattr(vm,"variety_name","") or ""),"batch_id":str(doc.batch_id),
                  "snapshot_id":getattr(doc,"snapshot_id",None)}
+        if not is_group_benchmark_applicable(context["crop"], getattr(doc,"document_type",None), name):
+            self._write_resolution(context,(),None,"NOT_APPLICABLE",generation_run_id,CROP_NOT_INCLUDED_REASON)
+            return None, "NOT_APPLICABLE"
         candidates=[self._candidate_metadata(key,value,generation_run_id) for key,value in calculated_benchmarks.items()]
         # A generation identifier is the hard boundary.  Candidates explicitly tied
         # to another execution are never considered, even if every business field matches.
@@ -118,6 +125,9 @@ class IndividualPdfRefreshService:
     def scopes_for_documents(self, documents):
         scopes=[]
         for doc in documents:
+            crop=getattr(doc,"crop",None)
+            if crop and not is_group_benchmark_applicable(crop,getattr(doc,"document_type",None),None):
+                continue
             try:
                 code,_name=_document_group(self.repository.list_document_variety_lines(doc.batch_id,doc.member_id))
                 scopes.append(BenchmarkScope(str(doc.campaign),str(doc.company),code))
@@ -138,7 +148,14 @@ class IndividualPdfRefreshService:
                 snapshot=self.repository.get_document_snapshot(doc.batch_id,doc.member_id)
                 if not snapshot: raise ValueError("El documento no tiene snapshot económico persistido.")
                 vm=load_snapshot(snapshot["payload_json"])
-                code,name=_document_group(self.repository.list_document_variety_lines(doc.batch_id,doc.member_id))
+                applicable=is_group_benchmark_applicable(vm.crop,getattr(doc,"document_type",None),None)
+                if applicable:
+                    code,name=_document_group(self.repository.list_document_variety_lines(doc.batch_id,doc.member_id))
+                else:
+                    lines=self.repository.list_document_variety_lines(doc.batch_id,doc.member_id)
+                    groups={(str(row["variety_group_code"]),str(row["variety_group_name"] or row["variety_group_code"]))
+                            for row in lines if row["variety_group_code"]}
+                    code,name=next(iter(groups),("",str(getattr(vm,"variety_group_name","") or "")))
                 logger.info("[VarietyGroupResolution]\nbatch_id=%s\nrecipient_member_id=%s\nid_liq=%s\nvariety=%s\nnormalized_variety=%s\ngroup_code=%s\ngroup_name=%s\nsource=liquidation\nstatus=RESOLVED",
                     doc.batch_id,doc.member_id,",".join(vm.id_liqs),vm.variety_name or vm.variety_text,
                     vm.variety_code or "",code,name)
@@ -146,17 +163,23 @@ class IndividualPdfRefreshService:
                 if calculated_benchmarks is not None:
                     audited_benchmark,resolution_status=self._resolve_comparison(
                         calculated_benchmarks,doc,vm,code,name,generation_run_id)
-                    # Audit data is diagnostic.  On NOT_FOUND/AMBIGUOUS retain the
-                    # persisted document value rather than cancelling rendering/merge.
-                    group_benchmark=audited_benchmark if audited_benchmark is not None else vm.group_benchmark
+                    # A non-applicable commercial output must never inherit another
+                    # document's persisted varietal comparison. Missing/ambiguous
+                    # applicable comparisons remain diagnostic and retain their value.
+                    group_benchmark=(None if resolution_status=="NOT_APPLICABLE" else
+                                     audited_benchmark if audited_benchmark is not None else vm.group_benchmark)
                     fingerprint=f"AUDITED:{generation_run_id or 'CURRENT'}"
                 else:
-                    scope=BenchmarkScope(str(doc.campaign),str(doc.company),code)
-                    benchmark=benchmarks[scope]
-                    if benchmark.comparable_members and not (benchmark.production_metric.comparable_count or benchmark.final_amount_metric.comparable_count):
-                        raise ValueError("No se recuperó ninguna superficie válida; la actualización de comparativas no puede considerarse completada.")
-                    group_benchmark=self.benchmarks.for_member(benchmark,doc.member_id,template=vm.group_benchmark,group_name=name,campaign=str(doc.campaign))
-                    fingerprint=benchmark.source_fingerprint
+                    if applicable:
+                        scope=BenchmarkScope(str(doc.campaign),str(doc.company),code)
+                        benchmark=benchmarks[scope]
+                        if benchmark.comparable_members and not (benchmark.production_metric.comparable_count or benchmark.final_amount_metric.comparable_count):
+                            raise ValueError("No se recuperó ninguna superficie válida; la actualización de comparativas no puede considerarse completada.")
+                        group_benchmark=self.benchmarks.for_member(benchmark,doc.member_id,template=vm.group_benchmark,group_name=name,campaign=str(doc.campaign))
+                        fingerprint=benchmark.source_fingerprint
+                    else:
+                        group_benchmark=None
+                        fingerprint="NOT_APPLICABLE"
                 vm=replace(vm,group_benchmark=group_benchmark)
                 audit_context={
                     "benchmark_source_fingerprint":fingerprint,

@@ -23,8 +23,8 @@ class Benchmarks:
         return {}
 
 
-def vm(kilos, campaign="2026", company="1", group="NAVEL TEMPRANA"):
-    return SimpleNamespace(member_id=1623,member_name="SOCIO 1623",campaign=campaign,company=company,crop="NARANJA",effective_net_kg=Decimal(kilos),commercial_kg=Decimal(kilos),total_amount=Decimal("100"),variety_name="NAVELINA",varieties=("NAVELINA",),variety_group_name=group,remittance_name="SEMANA",group_benchmark=SimpleNamespace(group_label=group,liquidation_type="NORMAL",category="A"))
+def vm(kilos, campaign="2026", company="1", group="NAVEL TEMPRANA", crop="CITRICOS"):
+    return SimpleNamespace(member_id=1623,member_name="SOCIO 1623",campaign=campaign,company=company,crop=crop,effective_net_kg=Decimal(kilos),commercial_kg=Decimal(kilos),total_amount=Decimal("100"),variety_name="NAVELINA",varieties=("NAVELINA",),variety_group_name=group,remittance_name="SEMANA",group_benchmark=SimpleNamespace(group_label=group,liquidation_type="NORMAL",category="A"))
 
 
 def doc(number):
@@ -68,3 +68,13 @@ def test_incomplete_snapshot_is_reported(monkeypatch,tmp_path):
     assert result.has_severe_incidents
     assert result.incidents[0].code=="INCOMPLETE_SNAPSHOT"
     assert "status=INCOMPLETE" in (tmp_path/"mass.log").read_text()
+
+
+def test_non_applicable_crop_does_not_create_artificial_benchmark_context(monkeypatch,tmp_path):
+    monkeypatch.setattr(module,"load_snapshot",lambda _:vm("10",crop="INDUSTRIA"))
+    benchmark=Benchmarks()
+    log=tmp_path/"mass.log"
+    result=MassiveBenchmarkAuditService(Repository(),benchmark,audit_log_path=log).audit_selection([doc(1)])
+    assert result.context_count==0 and result.benchmarks=={}
+    assert benchmark.calls==[]
+    assert "reason=CROP_NOT_INCLUDED_IN_GROUP_BENCHMARK" in log.read_text()

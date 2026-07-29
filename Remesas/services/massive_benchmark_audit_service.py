@@ -18,6 +18,7 @@ from typing import Callable, Sequence
 
 from domain.calculation_models import LiquidationHeader
 from presentation.liquidation_document_snapshot import load as load_snapshot
+from services.group_benchmark_applicability import CROP_NOT_INCLUDED_REASON, is_group_benchmark_applicable
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,11 @@ class MassiveBenchmarkAuditService:
             if not complete:
                 incomplete_count+=1
                 if not any(x.document_id==getattr(doc,"document_id",None) and x.code=="INCOMPLETE_SNAPSHOT" for x in incidents): incidents.append(MassiveBenchmarkIncident("INCOMPLETE_SNAPSHOT","Faltan campos de negocio obligatorios",True,getattr(doc,"document_id",None),getattr(doc,"member_id",None)))
+                continue
+            if not is_group_benchmark_applicable(vm.crop,getattr(doc,"document_type",None),None):
+                self._write("MassPdfBenchmarkNotApplicable",mass_run_id=run_id,
+                            document_id=getattr(doc,"document_id",None),member_id=vm.member_id,
+                            campaign=vm.campaign,crop=vm.crop,reason=CROP_NOT_INCLUDED_REASON)
                 continue
             benchmark=getattr(vm,"group_benchmark",None)
             group_label=(getattr(vm,"variety_group_name",None) or (benchmark.group_label if benchmark else "")).strip()

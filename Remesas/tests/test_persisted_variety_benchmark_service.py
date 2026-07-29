@@ -219,6 +219,22 @@ def test_audited_comparison_is_resolved_per_document_and_group(tmp_path: Path):
     assert "resolution_status=UNIQUE" in (tmp_path/"resolution.log").read_text()
 
 
+def test_mandarina_with_comparison_remains_unique(tmp_path: Path):
+    vm=from_member_liquidation(module.replace(_header(),cultivo="MANDARINA"),_member(member_id=818,variety="NAVELINA"))
+    repository=RefreshRepository(dump(vm)); rendered=[]
+    document=SimpleNamespace(document_id=8,batch_id="B2",member_id=818,campaign="2026",company="1",
+                             crop="MANDARINA",file_path=str(tmp_path/"mandarina.pdf"),remittance_id=4)
+    selected=PersistedVarietyBenchmarkService.for_member(complete_benchmark(),818,group_name="NAVEL TEMPRANA")
+    log=tmp_path/"mandarina.log"
+    service=IndividualPdfRefreshService(repository,RefreshBenchmarks(),
+        exporter=lambda updated,path:(rendered.append(updated),Path(path).write_bytes(b"pdf")),comparison_log_path=log)
+    result=service.refresh_documents((document,),calculated_benchmarks={
+        _audited_key(document,crop="MANDARINA"):selected,
+    },benchmark_run_id="audit-1")
+    assert not result.failed and rendered[0].group_benchmark is selected
+    assert "resolution_status=UNIQUE" in log.read_text()
+
+
 def test_audited_comparison_ignores_previous_generation(tmp_path: Path):
     vm=from_member_liquidation(_header(),_member(member_id=818,variety="NAVELINA"))
     repository=RefreshRepository(dump(vm)); rendered=[]
@@ -255,6 +271,23 @@ def test_ambiguous_or_missing_audit_does_not_cancel_pdf(tmp_path: Path):
         assert not result.failed and rendered[0].group_benchmark==persisted
         text=log.read_text(); assert f"resolution_status={expected_status}" in text
         if expected_status=="AMBIGUOUS": assert text.count("[PdfComparisonCandidate]")==2
+
+
+def test_directo_and_industria_are_not_applicable_and_never_reuse_persisted_comparison(tmp_path: Path):
+    benchmark=PersistedVarietyBenchmarkService.for_member(complete_benchmark(),818,group_name="NAVEL TEMPRANA")
+    for crop in ("DIRECTO","INDUSTRIA"):
+        vm=from_member_liquidation(module.replace(_header(),cultivo=crop),_member(member_id=818,variety="NAVELINA"),group_benchmark=benchmark)
+        repository=RefreshRepository(dump(vm)); rendered=[]
+        document=SimpleNamespace(document_id=7,batch_id="B1",member_id=818,campaign="2026",company="1",
+                                 crop=crop,file_path=str(tmp_path/f"{crop}.pdf"),remittance_id=3)
+        log=tmp_path/f"{crop}.log"
+        service=IndividualPdfRefreshService(repository,RefreshBenchmarks(),
+            exporter=lambda updated,path:(rendered.append(updated),Path(path).write_bytes(b"pdf")),comparison_log_path=log)
+        result=service.refresh_documents((document,),calculated_benchmarks={_audited_key(document):benchmark},benchmark_run_id="audit-1")
+        assert not result.failed and rendered[0].group_benchmark is None
+        text=log.read_text()
+        assert "candidate_count=0" in text and "resolution_status=NOT_APPLICABLE" in text
+        assert "reason=CROP_NOT_INCLUDED_IN_GROUP_BENCHMARK" in text
 
 
 def test_new_snapshot_persists_explicit_surface_with_schema_four():
