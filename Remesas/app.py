@@ -18,6 +18,9 @@ from data.hectare_repository import HectareRepository
 from services.hectare_fee_report_service import HectareFeeReportService
 from services.persisted_variety_benchmark_service import PersistedVarietyBenchmarkService
 from services.individual_pdf_refresh_service import IndividualPdfRefreshService
+from services.massive_benchmark_audit_service import MassiveBenchmarkAuditService
+from services.group_benchmark_service import GroupBenchmarkService
+from data.group_benchmark_repository import GroupBenchmarkRepository
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +84,8 @@ def main() -> None:
     from services.member_surface_service import MemberSurfaceService
     surface_service = MemberSurfaceService(HectareRepository(frame.conn)) if frame.conn else None
     refresh_service=IndividualPdfRefreshService(repository,PersistedVarietyBenchmarkService(repository, surface_service=surface_service))
+    massive_audit_service = (MassiveBenchmarkAuditService(
+        repository, GroupBenchmarkService(GroupBenchmarkRepository(frame.conn))) if frame.conn else None)
     def open_fee_report():
         if not frame.conn: return messagebox.showwarning("Informe de cuota por hectárea", "Conecte primero las bases de datos.")
         meta=frame.meta; HectareFeeReportDialog(root, HectareFeeReportService(HectareRepository(frame.conn)), meta.campaigns(), meta.empresas, frame.context_panel.campana.get(), frame.context_panel.empresa.get())
@@ -92,6 +97,7 @@ def main() -> None:
             cancel_excel_callback=lambda: setattr(frame, "batch_cancel_requested", True),
             csv_export_service=getattr(frame, "csv_export_service", None),
             individual_refresh_service=refresh_service,
+            massive_audit_service=massive_audit_service,
         )
     root.config(menu=build_main_menu(root, MainMenuHandlers(close=frame.close_application, open_hectare_fee_master=frame.open_hectare_fee_master, open_calibre_master=lambda: CalibreMasterDialog(root), open_production_destination_master=lambda: ProductionDestinationMasterDialog(root), open_liquidation_prefix_master=frame.open_liquidation_prefix_master, open_liquidation_split_master=frame.open_liquidation_split_master, show_about=frame.show_about, refresh_local_databases=lambda: frame.synchronize_local_databases(manual=True), open_data_folder=frame.open_data_folder, open_liquidation_history=frame.open_liquidation_history, open_pdf_merge_tool=open_mass_documents, open_hectare_fee_report=open_fee_report)))
     root.mainloop()
