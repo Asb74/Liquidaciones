@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
@@ -90,13 +91,34 @@ class LiquidationSplitService:
         parts[residual_index]+=total-sum(parts,Decimal(0))
         return parts
 
+    def _audit_field(self, rule_id, field, source, before, quantum, residual_member_id,
+                     adjustment, after, *, status="OK") -> None:
+        self.audit.info(
+            "[SplitFieldConservation]\nrule_id=%s\nfield=%s\nsource_value=%s\n"
+            "allocated_value_before_adjustment=%s\ndifference_before_adjustment=%s\n"
+            "quantum=%s\nresidual_member_id=%s\nresidual_adjustment=%s\n"
+            "allocated_value_after_adjustment=%s\ndifference_after_adjustment=%s\nstatus=%s",
+            rule_id,field,source,before,source-before,quantum,residual_member_id,
+            adjustment,after,source-after,status)
+
     def split(self, member, header, *, cod_art: str | None=None) -> tuple[SplitPreviewLine,...]:
         if is_excluded_member(member.member_id):
             log_system_member_excluded(self.logger, origin="LiquidationSplitService.split", count=1,
                                        net_kg=getattr(member, "net_kg", 0), remesa_id=header.remesa_id)
             return ()
         rule=self.resolve_rule(member,header); pairs=self.factors(rule,member.member_id,member.member_name)
-        residual=next((i for i,(r,_) in enumerate(pairs) if r.is_residual),len(pairs)-1); factors=[f for _,f in pairs]
+        configured_residual=next((i for i,(r,_) in enumerate(pairs) if r.is_residual),None)
+        source_residual=next((i for i,(r,_) in enumerate(pairs) if r.recipient_member_id==member.member_id),None)
+        residual_source="CONFIGURED"
+        if configured_residual is not None:
+            residual=configured_residual
+        elif source_residual is not None:
+            residual=source_residual; residual_source="FALLBACK_SOURCE_MEMBER"
+        else:
+            residual=len(pairs)-1; residual_source="FALLBACK_LAST_PARTICIPANT"
+        factors=[f for _,f in pairs]; residual_member_id=pairs[residual][0].recipient_member_id
+        self.audit.info("[SplitResidual]\nrule_id=%s\nresidual_member_id=%s\nresidual_source=%s",
+                        rule.id if rule else None,residual_member_id,residual_source)
         self.audit.info("[SplitRuleResolved]\nrule_id=%s\nsource_member_id=%s\nsplit_type=%s\nremittance_id=%s\ncampaign=%s\ncrop=%s\nvariety=%s",
             rule.id if rule else None,member.member_id,rule.split_type if rule else None,header.remesa_id,header.campana,header.cultivo,member.variety)
         for recipient,factor in pairs:
@@ -107,6 +129,16 @@ class LiquidationSplitService:
         self.audit.info("[SplitSource]\nsource_member_id=%s\nvariety=%s\nnet_kg=%s\ngross_amount=%s\ntaxable_base=%s\ntotal_amount=%s",
             member.member_id,member.variety,fields["net"][0],fields["gross"][0],fields["base"][0],Decimal(member.total_amount or 0))
         allocated={name:self._allocate(total,factors,q,residual) for name,(total,q) in fields.items()}
+        audit_names={"net":"net_kg","gross":"gross_amount","collection":"collection_amount",
+            "hectare":"hectare_fee_amount","quality":"quality_amount","transport":"transport_amount",
+            "globalgap":"globalgap_amount","base":"taxable_base"}
+        for name,(source,quantum) in fields.items():
+            after=sum(allocated[name],Decimal(0))
+            # _allocate performs the adjustment as part of the residual part; report
+            # what independent rounding would have produced as the pre-adjustment sum.
+            before=sum(((source*f).quantize(quantum,rounding=ROUND_HALF_UP) for f in factors),Decimal(0))
+            self._audit_field(rule.id if rule else None,audit_names[name],source,before,quantum,
+                              residual_member_id,source-before,after)
         lines=[]
         for i,(recipient,factor) in enumerate(pairs):
             lookup=self.fiscal.get_for_member(recipient.recipient_member_id); base=allocated["base"][i]
@@ -115,13 +147,42 @@ class LiquidationSplitService:
             lines.append(SplitPreviewLine(member.member_id,member.member_name,recipient.recipient_member_id,recipient.recipient_member_name or str(recipient.recipient_member_id),member.variety,factor,net,gross,allocated["collection"][i],allocated["hectare"][i],allocated["quality"][i],allocated["transport"][i],allocated["globalgap"][i],base,fiscal.vat_rate,fiscal.withholding_rate,fiscal.vat_amount,fiscal.withholding_amount,fiscal.total_amount,(gross/net).quantize(Decimal("0.0000001")) if net else None,fiscal.final_average_price,cod_art,rule.id if rule else None,rule.split_type if rule else None,lookup.warnings,member.destruction_price,member.table_destruction_price,member.rotten_price,member.national_market_price,member.rotten_leaves_price))
             self.audit.info("[SplitAllocation]\nsource_member_id=%s\nrecipient_member_id=%s\nfactor=%s\nnet_kg=%s\ngross_amount=%s\ntaxable_base=%s\ntotal_amount=%s",
                 member.member_id,recipient.recipient_member_id,factor,net,gross,base,fiscal.total_amount)
-        source_total=Decimal(member.total_amount or 0)
-        totals=(sum((x.net_kg for x in lines),Decimal(0)),sum((x.gross_amount for x in lines),Decimal(0)),
-            sum((x.taxable_base for x in lines),Decimal(0)),sum((x.total_amount for x in lines),Decimal(0)))
-        differences=(fields["net"][0]-totals[0],fields["gross"][0]-totals[1],fields["base"][0]-totals[2],source_total-totals[3])
-        ok=abs(differences[0])<KILOS and all(abs(value)<MONEY for value in differences[1:])
-        self.audit.info("[SplitConservation]\nsource_net_kg=%s\nallocated_net_kg=%s\nnet_difference=%s\nsource_gross_amount=%s\nallocated_gross_amount=%s\ngross_difference=%s\nsource_taxable_base=%s\nallocated_taxable_base=%s\nbase_difference=%s\nsource_total_amount=%s\nallocated_total_amount=%s\ntotal_difference=%s\nstatus=%s",
-            fields["net"][0],totals[0],differences[0],fields["gross"][0],totals[1],differences[1],fields["base"][0],totals[2],differences[2],source_total,totals[3],differences[3],"OK" if ok else "ERROR")
-        if not ok:
-            raise ValueError(f"La regla {rule.id if rule else None} no conserva los kilos o importes de la liquidación")
+        fiscal_sources={"vat_amount":Decimal(getattr(member,"vat_amount",0) or 0),
+                        "withholding_amount":Decimal(getattr(member,"withholding_amount",0) or 0),
+                        "total_amount":Decimal(member.total_amount or 0)}
+        failed=[]
+        # Fiscality is calculated per recipient first. Only a rounding-sized
+        # reconciliation is then posted explicitly to the residual participant.
+        max_fiscal_adjustment=MONEY*Decimal(len(lines))/Decimal(2)
+        for field,source in fiscal_sources.items():
+            before=sum((getattr(x,field) for x in lines),Decimal(0)); adjustment=source-before
+            status="OK"
+            if abs(adjustment)>max_fiscal_adjustment:
+                status="ERROR"; failed.append((field,source,before,adjustment,MONEY))
+                after=before
+            else:
+                lines[residual]=replace(lines[residual],**{field:getattr(lines[residual],field)+adjustment})
+                after=sum((getattr(x,field) for x in lines),Decimal(0))
+                if source-after!=0:
+                    status="ERROR"; failed.append((field,source,after,source-after,MONEY))
+            self._audit_field(rule.id if rule else None,field,source,before,MONEY,
+                              residual_member_id,adjustment if status=="OK" else Decimal(0),after,status=status)
+
+        summary_fields=(("net_kg",fields["net"][0],KILOS),("gross_amount",fields["gross"][0],MONEY),
+            ("taxable_base",fields["base"][0],MONEY),("vat_amount",fiscal_sources["vat_amount"],MONEY),
+            ("withholding_amount",fiscal_sources["withholding_amount"],MONEY),("total_amount",fiscal_sources["total_amount"],MONEY))
+        summary={name:(source,sum((getattr(x,name) for x in lines),Decimal(0))) for name,source,_ in summary_fields}
+        for name,source,quantum in summary_fields:
+            allocated_total=summary[name][1]
+            if source-allocated_total!=0 and not any(item[0]==name for item in failed):
+                failed.append((name,source,allocated_total,source-allocated_total,quantum))
+        failed_fields=",".join(item[0] for item in failed)
+        self.audit.info("[SplitConservation]\nsource_net_kg=%s\nallocated_net_kg=%s\nnet_difference=%s\nsource_gross_amount=%s\nallocated_gross_amount=%s\ngross_difference=%s\nsource_taxable_base=%s\nallocated_taxable_base=%s\nbase_difference=%s\nsource_vat_amount=%s\nallocated_vat_amount=%s\nvat_difference=%s\nsource_withholding_amount=%s\nallocated_withholding_amount=%s\nwithholding_difference=%s\nsource_total_amount=%s\nallocated_total_amount=%s\ntotal_difference=%s\nstatus=%s\nfailed_fields=%s",
+            *(value for name,_,_ in summary_fields for value in (summary[name][0],summary[name][1],summary[name][0]-summary[name][1])),
+            "ERROR" if failed else "OK",failed_fields)
+        if failed:
+            field,source,allocated_total,difference,quantum=failed[0]
+            raise ValueError(f"La regla {rule.id if rule else None} no conserva la liquidación: "
+                f"field={field} source={source} allocated={allocated_total} difference={difference} "
+                f"quantum={quantum} residual_member={residual_member_id}")
         return tuple(lines)
