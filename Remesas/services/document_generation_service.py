@@ -17,6 +17,7 @@ from domain.utils import safe_path_part
 from exporters.persisted_liquidation_pdf_exporter import build_premium_view_model_from_persisted, export_persisted_liquidation_pdf
 from presentation.persisted_liquidation_pdf_view_model import PersistedLiquidationPdfLine, PersistedLiquidationPdfTotals, PersistedLiquidationPdfViewModel
 from services.document_snapshot_diagnostic import diagnostic_logger
+from services.split_document_audit import split_document_logger
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class DocumentGenerationService:
     PHASES=("LOADING_PERSISTED_LINES","GROUPING_RECIPIENTS","BUILDING_VIEWMODEL","GENERATING_PDF","REGISTERING_DOCUMENT","FINISHED","ERROR")
     def __init__(self, repository: LiquidationRepository, output_root: Path, *, exporter=export_persisted_liquidation_pdf, user: str|None=None):
         self.repository=repository; self.output_root=Path(output_root); self.exporter=exporter; self.user=user; self.snapshot_diagnostic=diagnostic_logger()
+        self.split_document_audit=split_document_logger()
     def _emit(self, callback, phase, **data):
         if callback: callback({"phase":phase,**data})
     def _vm(self,batch,rows):
@@ -78,6 +80,19 @@ class DocumentGenerationService:
                     if snapshot
                     else build_premium_view_model_from_persisted(self._vm(batch, member_rows))
                 )
+                persisted_net_kg = sum((Decimal(str(row["neto"] or 0)) for row in member_rows), Decimal("0"))
+                pdf_net_kg = Decimal(str(vm.effective_net_kg))
+                status = "OK" if pdf_net_kg == persisted_net_kg else "MISMATCH"
+                self.split_document_audit.info(
+                    "[SplitPdfRender]\nrecipient_member_id=%s\npdf_net_kg=%s\npdf_total_amount=%s\n"
+                    "snapshot_net_kg=%s\nstatus=%s",
+                    recipient, pdf_net_kg, vm.total_amount, persisted_net_kg, status,
+                )
+                if status != "OK":
+                    raise ValueError(
+                        "Inconsistencia documental post-split para el socio "
+                        f"{recipient}: el PDF contiene {pdf_net_kg} kg y las líneas finales {persisted_net_kg} kg."
+                    )
                 self._emit(progress_callback,"BUILDING_VIEWMODEL",batch_id=batch_id,recipient_index=index,recipient_count=len(groups),recipient_member_id=recipient)
                 suffix=vm.id_liqs[0] if len(vm.id_liqs)==1 else str(batch["remesa_id"])
                 recipient_name=getattr(vm, "recipient_name", getattr(vm, "member_name", ""))

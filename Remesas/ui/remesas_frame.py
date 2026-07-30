@@ -42,7 +42,7 @@ from exporters.excel_consolidation_exporter import export_consolidated_liquidati
 from services.batch_remittance_service import BatchProgress, BatchRemittanceService, RemittanceProcessingError, SelectedRemittance, SingleRemittanceBatchResult
 from exporters.file_lock import FileLockedError
 from exporters.hectare_fee_auditor import export_hectare_fee_audit
-from presentation.premium_liquidation_view_model import from_member_liquidation
+from presentation.premium_liquidation_view_model import from_persistence_preview
 from presentation.liquidation_document_snapshot import SCHEMA_VERSION, dump as dump_document_snapshot
 from data.persistence.database import PersistenceDatabase
 from data.persistence.master_repository import LiquidationMasterRepository
@@ -298,7 +298,7 @@ class RemesasFrame(ttk.Frame):
             ttk.Label(buttons,text="No se escribirá en Access. Los PDF definitivos se generan después del commit.").pack(side="left")
             win.wait_window()
             if not result["confirm"]: return
-            snapshots=self._document_snapshots(self.current_calculation.result)
+            snapshots=self._document_snapshots(self.current_calculation.result, preview)
             batch=self.persistence_service.save(preview, document_snapshots=snapshots)
             documents=self.document_service.generate_for_batch(batch.batch_id,options=DocumentGenerationOptions())
             self.current_calculation_persisted=True
@@ -334,7 +334,7 @@ class RemesasFrame(ttk.Frame):
             dialog=BatchPersistencePreviewDialog(self.winfo_toplevel(),preview,allow_confirm=True)
             if not dialog.show(): return False
             if not messagebox.askyesno("Confirmar guardado",f"Se van a guardar las liquidaciones definitivas de {valid} remesas.\n\nUna vez guardadas se generarán los PDFs definitivos por destinatario.\n\nEl Excel resumen seguirá mostrando las liquidaciones originales sin división.\n\nSe guardarán {valid} de {total} remesas.\n\n¿Desea continuar?"): return False
-            snapshots={int(item.persistence_preview.header.remesa_id): self._document_snapshots(item.calculation_result)
+            snapshots={int(item.persistence_preview.header.remesa_id): self._document_snapshots(item.calculation_result, item.persistence_preview)
                        for item in preview.remittances if item.valid}
             result=self.persistence_service.save_batch(preview, snapshots_by_remittance=snapshots); self.current_batch_save_result=result; self.current_batch_persisted=result.failed==0
             batch_ids=[x.batch.batch_id for x in result.remittance_results if x.saved]
@@ -948,22 +948,21 @@ class RemesasFrame(ttk.Frame):
         result = self.current_calculation.result if self.current_calculation and self.current_calculation.result else None
         if not result:
             return []
-        # MemberLiquidation ya viene agrupado por socio y variedad desde el motor.
-        # No deduplicamos por socio para no ocultar variedades dentro de la misma remesa.
-        return sorted(result.member_results, key=lambda member: (member.member_id, member.variety or ""))
+        preview = self.persistence_service.prepare_preview(result)
+        return sorted(from_persistence_preview(
+            result, preview, benchmark_for_member=self._benchmark_for_member
+        ).values(), key=lambda member: member.member_id)
 
-    def _document_snapshots(self, result):
-        """Build the immutable document payloads before opening the SQL transaction."""
-        snapshots = {}
-        for member in sorted(result.member_results, key=lambda item: (item.member_id, item.variety or "")):
-            if member.member_id != 0:
-                snapshots[member.member_id] = dump_document_snapshot(
-                    from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member))
-                )
-        return snapshots
+    def _document_snapshots(self, result, preview):
+        """Build immutable recipient payloads from the final post-split lines."""
+        models = from_persistence_preview(
+            result, preview, benchmark_for_member=self._benchmark_for_member
+        )
+        return {recipient: dump_document_snapshot(vm) for recipient, vm in models.items()}
 
     def _premium_member_label(self, member) -> str:
-        variety = f" · {member.variety}" if getattr(member, "variety", "") else ""
+        values = getattr(member, "varieties", ())
+        variety = f" · {', '.join(values)}" if values else (f" · {member.variety}" if getattr(member, "variety", "") else "")
         return f"{member.member_id} - {member.member_name}{variety}"
 
 
@@ -977,9 +976,7 @@ class RemesasFrame(ttk.Frame):
         return None
 
     def _premium_member_path(self, member) -> Path:
-        result = self.current_calculation.result
-        vm = from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member))
-        return self._output_dir() / "borradores" / premium_member_filename(vm)
+        return self._output_dir() / "borradores" / premium_member_filename(member)
 
     def _write_premium_trace(self, *, mode: str, available, selected=None, paths=(), errors=0, error_text="") -> None:
         log_dir = Path.cwd() / "logs"
@@ -1012,20 +1009,19 @@ class RemesasFrame(ttk.Frame):
 
     def _generate_premium_preview(self, member) -> Path:
         result = self.current_calculation.result
-        vm = from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member))
         path = self.preview_service.create_preview_path(
             member_id=member.member_id,
             member_name=member.member_name,
             remittance_name=result.header.remesa_name,
         )
-        generate_liquidation_pdf(vm, path, document_mode=LiquidationDocumentMode.DRAFT)
+        generate_liquidation_pdf(member, path, document_mode=LiquidationDocumentMode.DRAFT)
         self.preview_service.open_preview(path)
         return path
 
     def _export_premium_draft(self, member, *, source="MANUAL_DRAFT_EXPORT") -> Path:
         result = self.current_calculation.result
         path=generate_liquidation_pdf(
-            from_member_liquidation(result.header, member, group_benchmark=self._benchmark_for_member(member)),
+            member,
             self._premium_member_path(member), document_mode=LiquidationDocumentMode.DRAFT,
         )
         if getattr(self,"persistence_enabled",False):
