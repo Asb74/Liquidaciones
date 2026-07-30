@@ -81,6 +81,19 @@ class LiquidationRepository:
         with self.database.connect() as conn:
             return conn.execute("SELECT * FROM liquidation_document_snapshots WHERE batch_id=? AND recipient_member_id=?", (batch_id,recipient_member_id)).fetchone()
 
+    def document_snapshot_diagnostic(self, batch_id: str, recipient_member_id: int):
+        """Read all persisted evidence needed to classify a missing snapshot."""
+        with self.database.connect() as conn:
+            return conn.execute("""SELECT b.batch_id,b.created_at AS batch_created_at,
+              s.schema_version,s.created_at AS snapshot_created_at,
+              (SELECT COUNT(*) FROM liquidation_document_snapshots x WHERE x.batch_id=b.batch_id) AS snapshot_count,
+              (SELECT COUNT(*) FROM generated_documents d WHERE d.batch_id=b.batch_id) AS document_count,
+              (SELECT applied_at FROM schema_migrations WHERE version=8) AS snapshots_introduced_at
+              FROM liquidation_batches b
+              LEFT JOIN liquidation_document_snapshots s ON s.batch_id=b.batch_id
+                AND s.recipient_member_id=? WHERE b.batch_id=?""",
+                (int(recipient_member_id), batch_id)).fetchone()
+
     def list_persisted_benchmark_rows(self, campaign: str, company: str):
         """Return active persisted economics and their persisted group snapshot."""
         with self.database.connect() as conn:

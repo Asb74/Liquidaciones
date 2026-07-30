@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from domain.liquidation_conflicts import LiquidationConflictType, LiquidationScope
 from services.liquidation_conflict_service import LiquidationConflictService
 from services.document_snapshot_repair_service import repair_invalid_v4_snapshots
+from services.document_snapshot_diagnostic import diagnostic_logger
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,7 @@ class LiquidationPersistenceService:
         if replace_batch_id and not str(reason or "").strip():
             raise ValueError("El motivo de sustitución es obligatorio")
         h=preview.header; batch_id=str(uuid.uuid4()); now=_now(); persisted=[]
+        snapshot_diagnostic = diagnostic_logger()
         conn=self.database.open_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -212,6 +214,15 @@ class LiquidationPersistenceService:
                 values=values+(replace_batch_id,modification_group_id,variety_code,variety_name,group_code,group_name)
                 conn.execute("INSERT INTO liquidaciones("+columns+") VALUES("+",".join("?" for _ in values)+")",values)
                 persisted.append(PersistedLiquidation(id_liq,line.recipient_member_id,line.total_amount))
+            snapshot_diagnostic.info(
+                "[DocumentSnapshotPersistenceInput]\nbatch_id=%s\n"
+                "document_snapshots parameter is None?=%s\ndocument_snapshots count=%s\n"
+                "recipient ids=%s\nmember_groups count=%s",
+                batch_id, "yes" if document_snapshots is None else "no",
+                len(document_snapshots or {}),
+                ",".join(str(value) for value in sorted((document_snapshots or {}).keys())),
+                len(member_groups),
+            )
             for recipient_member_id, payload_json in (document_snapshots or {}).items():
                 identities = member_groups.get(int(recipient_member_id), set())
                 if len({item[2] for item in identities}) > 1:
