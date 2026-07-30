@@ -101,6 +101,13 @@ class MassiveBenchmarkAuditService:
         try: return value if isinstance(value, Decimal) else Decimal(str(value))
         except (InvalidOperation, TypeError, ValueError): return None
 
+    @staticmethod
+    def _final_average_price(total_amount, effective_net_kg):
+        """Return the canonical final price used by the fiscal PDF."""
+        if total_amount is None or effective_net_kg is None or effective_net_kg <= 0:
+            return None
+        return total_amount / effective_net_kg
+
     def audit_selection(self, liquidations: Sequence, filters=None, *, mode=MassivePdfMode.REBUILD_AND_VALIDATE,
                         progress_callback: Callable[[str, int, int], None] | None = None) -> MassiveBenchmarkAuditResult:
         mode = MassivePdfMode(mode)
@@ -168,11 +175,17 @@ class MassiveBenchmarkAuditService:
             members_for_benchmark=[]
             for key,item in entries:
                 vm=item["vm"]; varieties=tuple(sorted(item["varieties"])); rems=tuple(sorted(item["remittances"]))
+                final_average_price=self._final_average_price(item["amount"],item["net"])
                 self._write("MassBenchmarkMemberAggregation",mass_run_id=run_id,member_id=vm.member_id,member_name=vm.member_name,campaign=campaign,company=company,crop="|".join(sorted(item["crops"])),group_label=group_label,normalized_group_label=normalized_group_label,varieties=varieties,remittance_count=len(rems),remittances=rems,line_count=item["lines"],total_net_kg=item["net"],total_commercial_kg=item["commercial"],total_amount=item["amount"])
+                price_input=dict(member_id=vm.member_id,total_amount=item["amount"],net_kg=item["net"],commercial_kg=item["commercial"],final_average_price=final_average_price,source="TOTAL_AMOUNT_DIV_EFFECTIVE_NET_KG")
+                self._write("MassBenchmarkPriceInput",**price_input)
+                logger.info("[MassBenchmarkPriceInput] %s", " ".join(f"{k}={v}" for k,v in price_input.items()))
                 for variety in (varieties[:1] or (getattr(vm,"variety_name",None),)):
-                    members_for_benchmark.append(SimpleNamespace(member_id=vm.member_id,member_name=vm.member_name,variety=variety,net_kg=item["net"],commercial_kg=item["commercial"],total_amount=item["amount"],statuses={}))
+                    members_for_benchmark.append(SimpleNamespace(member_id=vm.member_id,member_name=vm.member_name,variety=variety,net_kg=item["net"],commercial_kg=item["commercial"],total_amount=item["amount"],final_average_price=final_average_price,statuses={}))
             header=LiquidationHeader(None,"AUDITORIA MASIVA",campaign,company,crop,"","","",liq_type,category,"",[],{},{})
             if progress_callback: progress_callback("4. Validando superficies",context_index,len(by_context))
+            if not all(hasattr(member, "final_average_price") for member in members_for_benchmark):
+                raise AttributeError("Los miembros temporales requieren final_average_price")
             self.benchmark_service.build_benchmarks(header,tuple(members_for_benchmark),parent_run_id=run_id,run_source="MASS_PDF_REBUILD")
             details=getattr(self.benchmark_service,"last_surface_details",{})
             population=[]
@@ -180,7 +193,7 @@ class MassiveBenchmarkAuditService:
                 vm=item["vm"]; detail=details.get((vm.member_id,group_label),{}); ha=detail.get("hectares")
                 kg_ha=item["net"]/ha if ha is not None and ha>0 and item["net"]>0 else None
                 eur_ha=item["amount"]/ha if ha is not None and ha>0 and item["amount"]>0 else None
-                price=item["amount"]/item["commercial"] if item["amount"]>0 and item["commercial"]>0 else None
+                price=self._final_average_price(item["amount"],item["net"])
                 population.append(PopulationValue(getattr(item["documents"][0][0],"document_id",None),int(vm.member_id),kg_ha,eur_ha,price))
             population=tuple(population)
             self._write("GroupBenchmarkPopulation",campaign=campaign,company=company,group_label=group_label,
