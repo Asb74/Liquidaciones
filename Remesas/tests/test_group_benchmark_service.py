@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from data.group_benchmark_repository import ProductiveSurfaceResult, VarietalGroup
 from domain.calculation_models import LiquidationHeader, MemberLiquidation
-from services.group_benchmark_service import GroupBenchmarkService
+from services.group_benchmark_service import BenchmarkMetric, GroupBenchmarkService, PremiumGroupBenchmark
 
 
 def header():
@@ -45,6 +45,55 @@ def test_group_with_several_varieties_aggregates_member_kg_and_weighted_price():
     assert b.kilograms_per_hectare.average_value == Decimal("20000.00000")  # media de kg/ha por socio válido
     assert b.euros_per_hectare.own_value == Decimal("12000.00000")
     assert b.euros_per_hectare.average_value == Decimal("7750.00000")  # media de €/ha por socio válido
+
+
+def test_final_price_uses_official_member_value_never_amount_over_commercial_kilos():
+    benchmarks = service().build_benchmarks(header(), (
+        member(1, "NAVELINA", "100", "900", price="0.45678"),
+        member(2, "NAVELINA", "100", "1", price="0.56789"),
+    ))
+
+    first = benchmarks[(1, "NAVEL TEMPRANA", "2026", "1", "CITRICOS", "Normal", "Primera")]
+    assert first.price_per_kg.own_value == Decimal("0.45678")
+    assert first.price_per_kg.minimum_value == Decimal("0.45678")
+    assert first.price_per_kg.average_value == Decimal("0.51234")
+    assert first.price_per_kg.maximum_value == Decimal("0.56789")
+
+
+def test_several_member_lines_weight_only_official_final_prices():
+    benchmarks = service().build_benchmarks(header(), (
+        member(1, "NAVELINA", "100", "99999", price="0.20000"),
+        member(1, "NEWHALL", "300", "1", price="0.60000"),
+        member(2, "FUKUMOTO", "100", "88888", price="0.50000"),
+    ))
+
+    first = benchmarks[(1, "NAVEL TEMPRANA", "2026", "1", "CITRICOS", "Normal", "Primera")]
+    assert first.price_per_kg.own_value == Decimal("0.50000")
+    assert first.price_per_kg.minimum_value == Decimal("0.50000")
+    assert first.price_per_kg.average_value == Decimal("0.50000")
+    assert first.price_per_kg.maximum_value == Decimal("0.50000")
+
+
+def test_final_price_validation_logs_pdf_precision_mismatch(tmp_path):
+    validation_log = tmp_path / "group_benchmark_price_validation.log"
+    svc = GroupBenchmarkService(FakeRepo(), log_path=tmp_path / "metrics.log",
+                                price_validation_log_path=validation_log)
+    line = member(1, "NAVELINA", "100", "999", price="0.45678")
+    metric = BenchmarkMetric(Decimal("0.45679"), Decimal("0.45679"), Decimal("0.45679"),
+                             Decimal("0.45679"), 1, 0, "ok", metric="FINAL_PRICE")
+    benchmark = PremiumGroupBenchmark("NAVEL TEMPRANA", "CITRICOS", "NAVEL", "TEMPRANA",
+                                      ("NAVELINA",), "2026", "1", "Normal", "Primera",
+                                      metric, metric, metric)
+
+    svc._validate_final_price(header(), FakeRepo.group, {"member": line, "member_lines": [line]}, benchmark)
+
+    text = validation_log.read_text(encoding="utf-8")
+    assert "socio=1 - Socio 1" in text
+    assert "variedad=NAVELINA" in text
+    assert "remesa=1 - REM" in text
+    assert "final_average_price=0.45678" in text
+    assert "benchmark_own_value=0.45679" in text
+    assert "diferencia=0.00001" in text
 
 
 def test_without_surface_keeps_price_available_and_surface_metrics_unavailable():
