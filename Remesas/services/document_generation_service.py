@@ -16,6 +16,7 @@ from domain.member_rules import is_excluded_member, log_system_member_excluded
 from domain.utils import safe_path_part
 from exporters.persisted_liquidation_pdf_exporter import build_premium_view_model_from_persisted, export_persisted_liquidation_pdf
 from presentation.persisted_liquidation_pdf_view_model import PersistedLiquidationPdfLine, PersistedLiquidationPdfTotals, PersistedLiquidationPdfViewModel
+from services.document_snapshot_diagnostic import diagnostic_logger
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class BatchDocumentGenerationResult:
 class DocumentGenerationService:
     PHASES=("LOADING_PERSISTED_LINES","GROUPING_RECIPIENTS","BUILDING_VIEWMODEL","GENERATING_PDF","REGISTERING_DOCUMENT","FINISHED","ERROR")
     def __init__(self, repository: LiquidationRepository, output_root: Path, *, exporter=export_persisted_liquidation_pdf, user: str|None=None):
-        self.repository=repository; self.output_root=Path(output_root); self.exporter=exporter; self.user=user
+        self.repository=repository; self.output_root=Path(output_root); self.exporter=exporter; self.user=user; self.snapshot_diagnostic=diagnostic_logger()
     def _emit(self, callback, phase, **data):
         if callback: callback({"phase":phase,**data})
     def _vm(self,batch,rows):
@@ -112,6 +113,34 @@ class DocumentGenerationService:
     def regenerate_documents(self,batch_id:str,*,recipient_member_id:int|None=None,options:DocumentGenerationOptions=DocumentGenerationOptions()):
         rows = self.repository.list_batch_liquidations(batch_id)
         recipients = {int(row["recipient_member_id"]) for row in rows if recipient_member_id is None or int(row["recipient_member_id"]) == recipient_member_id}
-        if any(self.repository.get_document_snapshot(batch_id, recipient) is None for recipient in recipients):
+        missing = []
+        for recipient in sorted(recipients):
+            evidence = self.repository.document_snapshot_diagnostic(batch_id, recipient)
+            snapshot_found = bool(evidence and evidence["snapshot_created_at"] is not None)
+            snapshot_count = int(evidence["snapshot_count"]) if evidence else 0
+            schema_version = evidence["schema_version"] if snapshot_found else ""
+            created_at = evidence["snapshot_created_at"] if snapshot_found else ""
+            self.snapshot_diagnostic.info(
+                "[SnapshotLookup]\nbatch_id=%s\nrecipient_member_id=%s\nsnapshot_found=%s\n"
+                "snapshot_count=%s\nschema_version=%s\ncreated_at=%s",
+                batch_id, recipient, "yes" if snapshot_found else "no", snapshot_count,
+                schema_version, created_at,
+            )
+            if not snapshot_found:
+                legacy = bool(evidence and evidence["snapshots_introduced_at"] and
+                              evidence["batch_created_at"] < evidence["snapshots_introduced_at"])
+                reason = ("batch_not_found" if evidence is None else
+                          "legacy_batch_before_snapshot_migration" if legacy else
+                          "snapshot_not_persisted_for_new_batch")
+                self.snapshot_diagnostic.info(
+                    "[SnapshotMissing]\nbatch_id=%s\nrecipient_member_id=%s\nreason=%s\n"
+                    "legacy_batch=%s\ndocument_count=%s\nbatch_created_at=%s\nsnapshots_introduced_at=%s",
+                    batch_id, recipient, reason, "yes" if legacy else "no",
+                    evidence["document_count"] if evidence else 0,
+                    evidence["batch_created_at"] if evidence else "",
+                    evidence["snapshots_introduced_at"] if evidence else "",
+                )
+                missing.append(recipient)
+        if missing:
             raise ValueError("No se puede regenerar el documento porque falta el snapshot documental de esta liquidación.")
         self.repository.audit(batch_id,"DOCUMENT_REGENERATED",json.dumps({"recipient_member_id":recipient_member_id})); return self.generate_for_batch(batch_id,options=options,recipient_member_id=recipient_member_id)

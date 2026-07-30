@@ -43,14 +43,40 @@ def test_failure_is_registered_without_changing_persisted_batch(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM generated_documents WHERE status='FAILED'").fetchone()[0]==2
 
 
-def test_regeneration_without_snapshot_explains_the_missing_document_data(tmp_path):
+def test_regeneration_without_snapshot_explains_the_missing_document_data(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     db=_database(tmp_path); seen=[]
     def exporter(vm,path): seen.append(vm.id_liqs); path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(b"pdf"); return path
     service=DocumentGenerationService(LiquidationRepository(db),tmp_path/"out",exporter=exporter)
     service.generate_for_batch("batch",options=DocumentGenerationOptions())
     with pytest.raises(ValueError, match="falta el snapshot documental"):
         service.regenerate_documents("batch")
+    diagnostic=(tmp_path/"logs"/"document_snapshot_diagnostic.log").read_text(encoding="utf-8")
+    assert "[SnapshotLookup]" in diagnostic
+    assert "batch_id=batch" in diagnostic
+    assert "recipient_member_id=5893" in diagnostic
+    assert "snapshot_found=no" in diagnostic
+    assert "snapshot_count=0" in diagnostic
+    assert "[SnapshotMissing]" in diagnostic
+    assert "reason=snapshot_not_persisted_for_new_batch" in diagnostic
+    assert "legacy_batch=no" in diagnostic
+    assert "document_count=2" in diagnostic
     with db.connect() as conn: assert conn.execute("SELECT last_sequence FROM liquidation_sequences").fetchall()==[]
+
+
+def test_missing_snapshot_classifies_batch_older_than_snapshot_migration_as_legacy(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    db=_database(tmp_path)
+    with db.connect() as conn:
+        conn.execute("UPDATE liquidation_batches SET created_at='2000-01-01T00:00:00+00:00' WHERE batch_id='batch'")
+    service=DocumentGenerationService(LiquidationRepository(db),tmp_path/"out")
+
+    with pytest.raises(ValueError, match="falta el snapshot documental"):
+        service.regenerate_documents("batch", recipient_member_id=5893)
+
+    diagnostic=(tmp_path/"logs"/"document_snapshot_diagnostic.log").read_text(encoding="utf-8")
+    assert "reason=legacy_batch_before_snapshot_migration" in diagnostic
+    assert "legacy_batch=yes" in diagnostic
 
 
 def test_regeneration_from_snapshots_reactivates_a_partial_batch(tmp_path):
