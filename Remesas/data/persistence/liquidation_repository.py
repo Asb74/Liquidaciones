@@ -530,7 +530,7 @@ class LiquidationRepository:
             with self.database.connect() as conn: return conn.execute(sql+" ORDER BY campaign,crop,remittance_id,recipient_member_id,generated_at",args).fetchall()
         for key,column in mapping.items():
             if filters.get(key) not in (None, ""): clauses.append(f"{column}=?"); args.append(filters[key])
-        clauses += ["d.document_type='PDF_MEMBER'", "b.status IN (" + ("'ACTIVE','VOIDED'" if include_voided else "'ACTIVE'") + ")"]
+        clauses += ["d.document_type='PDF_MEMBER'", "d.status='GENERATED'", "b.status IN (" + ("'ACTIVE','PARTIAL','VOIDED'" if include_voided else "'ACTIVE','PARTIAL'") + ")"]
         if filters.get("date_from"): clauses.append("substr(d.generated_at,1,10)>=?"); args.append(str(filters["date_from"]))
         if filters.get("date_to"): clauses.append("substr(d.generated_at,1,10)<=?"); args.append(str(filters["date_to"]))
         sql="""SELECT d.*,b.status batch_status,b.campaign,b.company,b.crop,b.remesa_name,
@@ -548,7 +548,7 @@ class LiquidationRepository:
             columns=("campaign","company","crop","remittance_id","remittance_name")
         elif document_kind == "PDF_MEMBER":
             table="generated_documents d JOIN liquidation_batches b ON b.batch_id=d.batch_id"
-            active="d.document_type='PDF_MEMBER' AND d.status='GENERATED' AND b.status='ACTIVE'"
+            active="d.document_type='PDF_MEMBER' AND d.status='GENERATED' AND b.status IN ('ACTIVE','PARTIAL')"
             columns=("b.campaign","b.company","b.crop","b.remesa_id","b.remesa_name")
         else: raise ValueError("Tipo documental no admitido")
         clauses=[active]; args=[]

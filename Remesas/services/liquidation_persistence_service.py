@@ -13,7 +13,8 @@ from data.variety_repository import VarietyRepository
 from data.persistence.database import PersistenceDatabase
 from domain.persistence_models import (BatchPersistenceSaveResult, PendingBatchPersistence,
     PendingRemittancePersistence, PersistedLiquidation, PersistenceBatch,
-    PersistencePreview, RemittancePersistenceSaveResult)
+    PersistencePreview, RemittancePersistenceSaveResult, RemittanceReplacementState,
+    RemittanceSaveStatus, ReplacementRequest)
 from services.liquidation_split_service import LiquidationSplitService
 from services.variety_selection_resolver import VarietySelectionKind, VarietySelectionResolver
 from services.variety_group_service import VarietyGroupService
@@ -120,20 +121,61 @@ class LiquidationPersistenceService:
             sum(len(x.persistence_preview.lines) for x in pending), tuple(warnings),
             any(x.valid for x in pending), tuple(x.remittance for x in result.failed_results))
 
-    def save_batch(self, preview: PendingBatchPersistence, *, snapshots_by_remittance: Mapping[int, Mapping[int, str]] | None = None) -> BatchPersistenceSaveResult:
+    @staticmethod
+    def _active_batch(conn, scope):
+        rows=conn.execute("""SELECT batch_id,status,operation_type FROM liquidation_batches
+            WHERE campaign=? AND company=? AND crop=? AND remesa_id=?
+            AND status IN ('ACTIVE','PARTIAL') AND operation_type IN ('ORIGINAL','REPLACEMENT')
+            ORDER BY created_at,batch_id""",scope).fetchall()
+        if len(rows)>1:
+            raise ValueError("Se han encontrado varias liquidaciones vigentes para esta remesa. Debe corregirse la duplicidad antes de continuar.")
+        return rows[0] if rows else None
+
+    @staticmethod
+    def _is_accounting_exported(conn, batch_id):
+        return bool(conn.execute("""SELECT 1 FROM accounting_exports e
+            LEFT JOIN accounting_export_items i ON i.export_id=e.id
+            WHERE e.status='GENERATED' AND (i.batch_id=? OR (i.id IS NULL AND e.batch_id=?)) LIMIT 1""",
+            (batch_id,batch_id)).fetchone())
+
+    def get_replacement_state(self, *, campaign, company, crop, remittance_id):
+        scope=(str(campaign).strip(),str(company).strip(),str(crop).strip().upper(),int(remittance_id))
+        with self.database.connect() as conn:
+            active=self._active_batch(conn,scope)
+            batch_id=active["batch_id"] if active else None
+            exported=self._is_accounting_exported(conn,batch_id) if batch_id else False
+        reason=("ACCOUNTING_EXPORTED" if exported else ("REQUIRES_CONFIRMATION" if batch_id else None))
+        state=RemittanceReplacementState(int(remittance_id),batch_id,bool(batch_id),exported,bool(batch_id and not exported),reason)
+        logger.info("[LiquidationReplacementCheck]\nremittance_id=%s\nactive_batch_id=%s\nis_exported=%s\ncan_replace=%s\ndecision=%s",state.remittance_id,state.active_batch_id,state.is_accounting_exported,state.can_replace,state.reason or "CREATE")
+        return state
+
+    def save_batch(self, preview: PendingBatchPersistence, *, snapshots_by_remittance: Mapping[int, Mapping[int, str]] | None = None,
+                   replacements_by_remittance: Mapping[int, ReplacementRequest] | None = None, user: str | None = None) -> BatchPersistenceSaveResult:
         """Guarda cada remesa en su propia transacción y continúa tras un fallo."""
         results=[]; warnings=[]
         for item in preview.remittances:
             if not item.valid:
-                continue
+                results.append(RemittancePersistenceSaveResult(item.remittance,False,error="La remesa contiene errores de validación",status=RemittanceSaveStatus.VALIDATION_ERROR,error_type="ValidationError")); continue
+            remittance_id=int(item.persistence_preview.header.remesa_id)
             try:
-                snapshots = (snapshots_by_remittance or {}).get(int(item.persistence_preview.header.remesa_id), {})
-                batch=self.save(item.persistence_preview, document_snapshots=snapshots)
-                results.append(RemittancePersistenceSaveResult(item.remittance,True,batch,None,()))
+                state=self.get_replacement_state(campaign=preview.campaign,company=preview.company,crop=preview.crop,remittance_id=remittance_id)
+                if state.is_accounting_exported:
+                    message="La remesa ya fue exportada a contabilidad. Debe generarse una rectificación contable antes de volver a liquidarla."
+                    logger.warning("[LiquidationReplacementBlocked]\nremittance_id=%s\nbatch_id=%s\nreason=ACCOUNTING_EXPORTED",remittance_id,state.active_batch_id)
+                    results.append(RemittancePersistenceSaveResult(item.remittance,False,error=message,status=RemittanceSaveStatus.BLOCKED_EXPORTED,previous_batch_id=state.active_batch_id,message=message)); continue
+                request=(replacements_by_remittance or {}).get(remittance_id)
+                if state.has_active_liquidation and (not request or request.replace_batch_id != state.active_batch_id):
+                    message="La remesa tiene una liquidación no exportada y requiere confirmación para sustituirla."
+                    results.append(RemittancePersistenceSaveResult(item.remittance,False,error=message,status=RemittanceSaveStatus.REQUIRES_CONFIRMATION,previous_batch_id=state.active_batch_id,message=message)); continue
+                snapshots = (snapshots_by_remittance or {}).get(remittance_id, {})
+                batch=self.save(item.persistence_preview,document_snapshots=snapshots,replace_batch_id=request.replace_batch_id if request else None,reason=request.reason if request else None,user=user)
+                status=RemittanceSaveStatus.REPLACED if request else RemittanceSaveStatus.CREATED
+                results.append(RemittancePersistenceSaveResult(item.remittance,True,batch,None,(),status,state.active_batch_id,status.value))
             except Exception as exc:
                 warnings.append(f"Remesa {item.remittance.remittance_id}: {exc}")
-                results.append(RemittancePersistenceSaveResult(item.remittance,False,None,str(exc)))
+                results.append(RemittancePersistenceSaveResult(item.remittance,False,None,str(exc),(),RemittanceSaveStatus.SAVE_ERROR,None,str(exc),type(exc).__name__))
         saved=sum(x.saved for x in results)
+        logger.info("[MassivePersistenceSummary]\ntotal=%s\ncreated=%s\nreplaced=%s\nblocked_exported=%s\nrequires_confirmation=%s\nvalidation_errors=%s\nsave_errors=%s",len(results),sum(x.status is RemittanceSaveStatus.CREATED for x in results),sum(x.status is RemittanceSaveStatus.REPLACED for x in results),sum(x.status is RemittanceSaveStatus.BLOCKED_EXPORTED for x in results),sum(x.status is RemittanceSaveStatus.REQUIRES_CONFIRMATION for x in results),sum(x.status is RemittanceSaveStatus.VALIDATION_ERROR for x in results),sum(x.status is RemittanceSaveStatus.SAVE_ERROR for x in results))
         return BatchPersistenceSaveResult(len(results),saved,len(results)-saved,tuple(results),tuple(warnings))
 
     def _next_id(self, conn, crop: str, campaign: str, company: str, user: str | None, batch_id: str) -> str:
@@ -174,23 +216,17 @@ class LiquidationPersistenceService:
         try:
             conn.execute("BEGIN IMMEDIATE")
             scope=(str(h.campana).strip(),str(h.empresa).strip(),str(h.cultivo).strip().upper(),int(h.remesa_id))
-            active=conn.execute("""SELECT batch_id,status,operation_type FROM liquidation_batches
-                WHERE campaign=? AND company=? AND crop=? AND remesa_id=?
-                AND status IN ('ACTIVE','PARTIAL') AND operation_type IN ('ORIGINAL','REPLACEMENT')
-                ORDER BY created_at,batch_id""", scope).fetchall()
-            if len(active)>1:
-                raise ValueError("Se han encontrado varias liquidaciones vigentes para esta remesa. Debe corregirse la duplicidad antes de continuar.")
+            active=self._active_batch(conn,scope)
             operation_type="ORIGINAL"; modification_group_id=None
             if active:
-                existing=active[0]["batch_id"]
+                existing=active["batch_id"]
                 if replace_batch_id != existing:
                     raise ValueError(f"La remesa ya tiene una liquidación activa ({existing}). No puede guardarse como una nueva liquidación independiente.")
-                exported=conn.execute("""SELECT 1 FROM accounting_exports e
-                    LEFT JOIN accounting_export_items i ON i.export_id=e.id
-                    WHERE e.status='GENERATED' AND (i.batch_id=? OR (i.id IS NULL AND e.batch_id=?)) LIMIT 1""",(existing,existing)).fetchone()
+                exported=self._is_accounting_exported(conn,existing)
                 if exported:
                     raise ValueError("La remesa ya fue exportada a contabilidad. Debe generarse una rectificación contable.")
                 modification_group_id=str(uuid.uuid4()); operation_type="REPLACEMENT"
+                logger.info("[LiquidationReplacementConfirmed]\nremittance_id=%s\nprevious_batch_id=%s\nreason=%s\nuser=%s",h.remesa_id,existing,str(reason).strip(),user)
                 conn.execute("UPDATE liquidation_batches SET status='SUPERSEDED',replacement_batch_id=?,modification_reason=? WHERE batch_id=? AND status IN ('ACTIVE','PARTIAL')",(batch_id,str(reason).strip(),existing))
                 conn.execute("UPDATE liquidaciones SET status='SUPERSEDED',replacement_batch_id=? WHERE batch_id=? AND status IN ('ACTIVE','PARTIAL')",(batch_id,existing))
                 conn.execute("UPDATE generated_documents SET status='SUPERSEDED' WHERE batch_id=? AND status='GENERATED'",(existing,))
@@ -249,6 +285,8 @@ class LiquidationPersistenceService:
                 conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, "DOCUMENT_SNAPSHOT_SAVED", "DOCUMENT", str(recipient_member_id), json.dumps({"recipient_member_id": recipient_member_id, "schema_version": SCHEMA_VERSION, "calculation_fingerprint": preview.fingerprint}), now, user))
                 logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=%s\nstatus=SAVED", batch_id, recipient_member_id, SCHEMA_VERSION)
             conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)",(batch_id,"SAVE","BATCH",batch_id,json.dumps({"lines":len(persisted)}),_now(),user)); conn.commit()
+            if replace_batch_id:
+                logger.info("[LiquidationReplacementCompleted]\nremittance_id=%s\nprevious_batch_id=%s\nnew_batch_id=%s\nold_status=SUPERSEDED\nnew_status=ACTIVE\nsnapshot_count=%s\ndocument_count=0",h.remesa_id,replace_batch_id,batch_id,len(document_snapshots or {}))
             logger.info("[PersistenceTransaction]\nbatch_id=%s\nstatus=COMMITTED", batch_id)
         except Exception as exc:
             conn.rollback()

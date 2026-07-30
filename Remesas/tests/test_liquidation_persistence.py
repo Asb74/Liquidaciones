@@ -6,6 +6,7 @@ from data.persistence.migrations import _migrate_article_code_as_text
 from data.persistence.master_repository import LiquidationMasterRepository
 from domain.persistence_models import SplitRecipient, SplitRule
 from services.liquidation_split_service import LiquidationSplitService
+from services.liquidation_persistence_service import LiquidationPersistenceService
 
 
 class _FiscalRepository:
@@ -168,3 +169,29 @@ def test_delete_rule_removes_recipients_before_parent(tmp_path):
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM split_rule_recipients WHERE rule_id=?",(rule_id,)).fetchone()[0]==0
         assert conn.execute("SELECT COUNT(*) FROM split_rules WHERE id=?",(rule_id,)).fetchone()[0]==0
+
+
+def test_replacement_state_only_accounting_export_closes_batch(tmp_path):
+    db=PersistenceDatabase(str(tmp_path/"liq.sqlite")); db.initialize()
+    service=object.__new__(LiquidationPersistenceService); service.database=db
+    with db.connect() as conn:
+        conn.execute("""INSERT INTO liquidation_batches
+            (batch_id,remesa_id,remesa_name,campaign,company,crop,payment_date,
+             calculation_fingerprint,original_line_count,final_line_count,status,created_at,operation_type)
+            VALUES('old',7,'Remesa siete','2026','1','CITRICOS','2026-01-01','old-fp',1,1,'ACTIVE','2026-01-01','ORIGINAL')""")
+        conn.execute("""INSERT INTO generated_documents
+            (batch_id,remittance_id,recipient_member_id,document_type,file_path,status)
+            VALUES('old',7,10,'PDF_MEMBER','old.pdf','GENERATED')""")
+
+    state=service.get_replacement_state(campaign="2026",company="1",crop="citricos",remittance_id=7)
+    assert state.has_active_liquidation and state.can_replace
+    assert not state.is_accounting_exported
+
+    with db.connect() as conn:
+        export_id=conn.execute("""INSERT INTO accounting_exports
+            (batch_id,export_type,file_path,status,created_at) VALUES('old','CSV','accounting.csv','GENERATED','2026-01-02')""").lastrowid
+        conn.execute("INSERT INTO accounting_export_items(export_id,batch_id,created_at) VALUES(?,?,?)",(export_id,"old","2026-01-02"))
+
+    state=service.get_replacement_state(campaign="2026",company="1",crop="CITRICOS",remittance_id=7)
+    assert state.is_accounting_exported and not state.can_replace
+    assert state.reason == "ACCOUNTING_EXPORTED"

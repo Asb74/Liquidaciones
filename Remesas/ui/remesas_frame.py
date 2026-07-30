@@ -19,6 +19,7 @@ from data.group_benchmark_repository import GroupBenchmarkRepository
 from data.remesas_repository import RemesasRepository
 from domain.models import DeliveryFilter, Period, Remesa
 from domain.document_models import LiquidationDocumentMode
+from domain.persistence_models import ReplacementRequest
 from domain.varieties import STATUS_AMBIGUOUS, STATUS_EMPTY_GROUP, STATUS_GROUP, STATUS_NOT_FOUND, STATUS_VARIETY, normalize_variety_text
 from domain.hectare_fee_master import HectareFeeMasterRepository
 from domain.validators import parse_user_date, validate_context, validate_period
@@ -298,8 +299,18 @@ class RemesasFrame(ttk.Frame):
             ttk.Label(buttons,text="No se escribirá en Access. Los PDF definitivos se generan después del commit.").pack(side="left")
             win.wait_window()
             if not result["confirm"]: return
+            state=self.persistence_service.get_replacement_state(campaign=preview.header.campana,company=preview.header.empresa,crop=preview.header.cultivo,remittance_id=preview.header.remesa_id)
+            replace_batch_id=None; replacement_reason=None
+            if state.is_accounting_exported:
+                messagebox.showerror("Guardar liquidación","La remesa ya fue exportada a contabilidad. Debe generarse una rectificación contable antes de volver a liquidarla."); return
+            if state.has_active_liquidation:
+                label=f"{preview.header.remesa_id} - {preview.header.remesa_name}"
+                if not messagebox.askyesno("Sustituir liquidación",f"La remesa {label} ya tiene una liquidación guardada y todavía no ha sido exportada a contabilidad. ¿Desea sustituirla por el nuevo cálculo?"): return
+                replacement_reason=simpledialog.askstring("Motivo de sustitución","Motivo:",initialvalue="Recalculada antes de exportación contable",parent=self)
+                if not replacement_reason: return
+                replace_batch_id=state.active_batch_id
             snapshots=self._document_snapshots(self.current_calculation.result, preview)
-            batch=self.persistence_service.save(preview, document_snapshots=snapshots)
+            batch=self.persistence_service.save(preview,document_snapshots=snapshots,replace_batch_id=replace_batch_id,reason=replacement_reason)
             documents=self.document_service.generate_for_batch(batch.batch_id,options=DocumentGenerationOptions())
             self.current_calculation_persisted=True
             self.current_persisted_batch_ids=(batch.batch_id,)
@@ -331,12 +342,21 @@ class RemesasFrame(ttk.Frame):
             preview=self._ensure_batch_preview()
             if not preview or not preview.valid: raise ValueError("El lote no contiene remesas guardables")
             valid=sum(x.valid for x in preview.remittances); total=valid+len(preview.excluded_remittances)
+            states={int(x.persistence_preview.header.remesa_id):self.persistence_service.get_replacement_state(campaign=preview.campaign,company=preview.company,crop=preview.crop,remittance_id=x.persistence_preview.header.remesa_id) for x in preview.remittances if x.valid}
+            replaceable=[x for x in preview.remittances if x.valid and states[int(x.persistence_preview.header.remesa_id)].can_replace]
+            blocked=[x for x in preview.remittances if x.valid and states[int(x.persistence_preview.header.remesa_id)].is_accounting_exported]
+            new_count=valid-len(replaceable)-len(blocked)
             dialog=BatchPersistencePreviewDialog(self.winfo_toplevel(),preview,allow_confirm=True)
             if not dialog.show(): return False
-            if not messagebox.askyesno("Confirmar guardado",f"Se van a guardar las liquidaciones definitivas de {valid} remesas.\n\nUna vez guardadas se generarán los PDFs definitivos por destinatario.\n\nEl Excel resumen seguirá mostrando las liquidaciones originales sin división.\n\nSe guardarán {valid} de {total} remesas.\n\n¿Desea continuar?"): return False
+            replace_list="\n".join(f"  - {x.remittance.remittance_id} - {x.remittance.name}" for x in replaceable) or "  - Ninguna"
+            blocked_list="\n".join(f"  - {x.remittance.remittance_id} - {x.remittance.name}" for x in blocked) or "  - Ninguna"
+            summary=(f"Se van a procesar {total} remesas:\n- {new_count} nuevas\n- {len(replaceable)} sustituirán liquidaciones no exportadas\n- {len(blocked)} no pueden guardarse porque ya fueron exportadas\n- {len(preview.excluded_remittances)} contienen errores\n\nSustituibles:\n{replace_list}\n\nBloqueadas:\n{blocked_list}\n\n¿Desea continuar y autorizar conjuntamente las sustituciones?")
+            if not messagebox.askyesno("Confirmar guardado masivo",summary): return False
+            reason="Recalculada antes de exportación contable"
+            replacements={int(x.persistence_preview.header.remesa_id):ReplacementRequest(states[int(x.persistence_preview.header.remesa_id)].active_batch_id,reason) for x in replaceable}
             snapshots={int(item.persistence_preview.header.remesa_id): self._document_snapshots(item.calculation_result, item.persistence_preview)
                        for item in preview.remittances if item.valid}
-            result=self.persistence_service.save_batch(preview, snapshots_by_remittance=snapshots); self.current_batch_save_result=result; self.current_batch_persisted=result.failed==0
+            result=self.persistence_service.save_batch(preview,snapshots_by_remittance=snapshots,replacements_by_remittance=replacements); self.current_batch_save_result=result; self.current_batch_persisted=result.failed==0
             batch_ids=[x.batch.batch_id for x in result.remittance_results if x.saved]
             documents=self.document_service.generate_for_batches(batch_ids,options=DocumentGenerationOptions(),progress_callback=self._document_progress,cancel_requested=lambda:self.batch_cancel_requested)
             self.current_persisted_batch_ids=tuple(batch_ids)
