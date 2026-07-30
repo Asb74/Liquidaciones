@@ -1,10 +1,40 @@
 from decimal import Decimal
+from types import SimpleNamespace
 
 from data.persistence.database import PersistenceDatabase
 from data.persistence.migrations import _migrate_article_code_as_text
 from data.persistence.master_repository import LiquidationMasterRepository
 from domain.persistence_models import SplitRecipient, SplitRule
 from services.liquidation_split_service import LiquidationSplitService
+
+
+class _FiscalRepository:
+    def get_for_member(self, member_id):
+        return SimpleNamespace(regime=SimpleNamespace(vat_rate=Decimal("12"),withholding_rate=Decimal("2")),warnings=())
+
+
+def _split_service(rule):
+    service=object.__new__(LiquidationSplitService)
+    service.fiscal=_FiscalRepository()
+    service.audit=SimpleNamespace(info=lambda *args,**kwargs: None)
+    service.logger=SimpleNamespace()
+    service.resolve_rule=lambda member,header: rule
+    return service
+
+
+def _member(**changes):
+    values=dict(member_id=453,member_name="Origen",variety="WASHINGTON",net_kg=Decimal("12947"),
+        gross_amount=Decimal("3651.05"),collection_amount=Decimal("0"),hectare_fee_amount=Decimal("0"),
+        quality_amount=Decimal("0"),transport_amount=Decimal("0"),globalgap_amount=Decimal("0"),
+        taxable_base=Decimal("3551.50"),vat_amount=Decimal("426.18"),withholding_amount=Decimal("79.55"),
+        total_amount=Decimal("3898.13"),destruction_price=None,table_destruction_price=None,rotten_price=None,
+        national_market_price=None,rotten_leaves_price=None)
+    values.update(changes)
+    return SimpleNamespace(**values)
+
+
+def _header():
+    return SimpleNamespace(remesa_id=2285,campana="2026",cultivo="CITRICOS")
 
 
 def test_migrations_seed_confirmed_prefixes(tmp_path):
@@ -73,6 +103,56 @@ def test_crossed_half_rules_conserve_total_kilos():
     totals=[first[1]+second[0],first[0]+second[1]]
     assert totals == [Decimal("18.927"),Decimal("18.926")]
     assert sum(totals)==Decimal("37.853")
+
+
+def test_real_half_split_reconciles_fiscal_cent_into_configured_residual():
+    rule=SplitRule(5,453,"PERCENTAGE",(
+        SplitRecipient(1462,"Destino",Decimal("50"),True),
+        SplitRecipient(453,"Origen",Decimal("50"),False)))
+
+    lines=_split_service(rule).split(_member(),_header())
+
+    assert sum((x.net_kg for x in lines),Decimal(0)) == Decimal("12947.000")
+    assert sum((x.gross_amount for x in lines),Decimal(0)) == Decimal("3651.05")
+    assert sum((x.taxable_base for x in lines),Decimal(0)) == Decimal("3551.50")
+    assert sum((x.vat_amount for x in lines),Decimal(0)) == Decimal("426.18")
+    assert sum((x.withholding_amount for x in lines),Decimal(0)) == Decimal("79.55")
+    assert [x.total_amount for x in lines] == [Decimal("1949.07"),Decimal("1949.06")]
+    assert sum((x.total_amount for x in lines),Decimal(0)) == Decimal("3898.13")
+
+
+def test_split_without_rounding_difference_does_not_adjust_total():
+    rule=SplitRule(6,453,"PERCENTAGE",(
+        SplitRecipient(1462,"Destino",Decimal("50"),True),SplitRecipient(453,"Origen",Decimal("50"))))
+    member=_member(taxable_base=Decimal("100.00"),gross_amount=Decimal("100.00"),vat_amount=Decimal("12.00"),
+        withholding_amount=Decimal("2.24"),total_amount=Decimal("109.76"))
+
+    assert [x.total_amount for x in _split_service(rule).split(member,_header())] == [Decimal("54.88"),Decimal("54.88")]
+
+
+def test_real_fiscal_loss_is_not_hidden_by_residual_reconciliation():
+    import pytest
+    rule=SplitRule(7,453,"PERCENTAGE",(
+        SplitRecipient(1462,"Destino",Decimal("50"),True),SplitRecipient(453,"Origen",Decimal("50"))))
+
+    with pytest.raises(ValueError,match=r"field=total_amount.*difference=2.01.*quantum=0.01"):
+        _split_service(rule).split(_member(total_amount=Decimal("3900.13")),_header())
+
+
+def test_multiple_recipients_conserve_quantized_values():
+    factors=[Decimal("0.3333"),Decimal("0.3333"),Decimal("0.3334")]
+    for source,quantum in ((Decimal("8.881"),Decimal("0.001")),(Decimal("100.01"),Decimal("0.01"))):
+        parts=LiquidationSplitService._allocate(source,factors,quantum,2)
+        assert sum(parts,Decimal(0)) == source
+
+
+def test_missing_residual_falls_back_to_source_member():
+    rule=SplitRule(8,453,"PERCENTAGE",(
+        SplitRecipient(1462,"Destino",Decimal("50")),SplitRecipient(453,"Origen",Decimal("50"))))
+
+    lines=_split_service(rule).split(_member(),_header())
+
+    assert [x.total_amount for x in lines] == [Decimal("1949.06"),Decimal("1949.07")]
 
 
 def test_prefix_crud_normalizes_and_rejects_duplicates(tmp_path):

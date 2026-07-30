@@ -152,6 +152,10 @@ class BatchRemittanceService:
                 try:
                     self._emit(progress_callback, total, index, remittance, "LOADING", "Cargando remesa")
                     result = self.single_processor(remittance, self._child_callback(progress_callback, total, index, remittance))
+                    if result.delivery_count == 0 and result.member_count == 0:
+                        raise RemittanceProcessingError(
+                            "La remesa no contiene entregas válidas para el periodo y filtros seleccionados.",
+                            phase="NO_DELIVERIES", error_type="EXCLUDED_NO_DELIVERIES")
                     successful.append(result)
                     calculated=result.calculation_result.result if hasattr(result.calculation_result,"result") else result.calculation_result
                     logger.info("[BatchExcelRemittance] remittance_id=%s member_count=%s delivery_count=%s net_kg=%s total_amount=%s status=success", remittance.remittance_id, result.member_count, result.delivery_count, getattr(calculated.totals,"net_kg",None), getattr(calculated.totals,"total_amount",None))

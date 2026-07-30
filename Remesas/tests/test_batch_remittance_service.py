@@ -168,6 +168,20 @@ def test_detail_accumulated_empty_successful_remittance_keeps_table_header_witho
     assert wb["Incidencias"][2][6].value == "WARNING"
 
 
+def test_batch_classifies_empty_remittance_as_no_deliveries(tmp_path):
+    r = remittance(2286)
+    empty_calc = SimpleNamespace(result=SimpleNamespace(member_results=(), totals=SimpleNamespace()), member_count=0, delivery_count=0)
+    empty = SingleRemittanceBatchResult(r, empty_calc, 0, 0, tmp_path / "2286", ())
+    service = BatchRemittanceService(single_processor=lambda *_: empty, output_base=tmp_path, log_dir=tmp_path / "logs")
+
+    result = service.process([r])
+
+    assert result.remittances_completed == 0
+    assert result.failed_results[0].error_type == "EXCLUDED_NO_DELIVERIES"
+    assert result.failed_results[0].phase == "NO_DELIVERIES"
+    assert result.failed_results[0].error_message == "La remesa no contiene entregas válidas para el periodo y filtros seleccionados."
+
+
 def test_independent_consolidated_exporter_handles_multiple_remittances(tmp_path):
     output = tmp_path / "consolidated.xlsx"
     export_consolidated_liquidation_summary(
