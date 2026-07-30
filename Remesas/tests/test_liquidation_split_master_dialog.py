@@ -60,17 +60,34 @@ class LiquidationSplitMasterDialogTests(unittest.TestCase):
 
     def test_validation_collects_duplicate_unknown_and_bad_percentage(self):
         dialog = self.make_dialog()
-        dialog.recipients = [(2, "Destino", "40", False), (2, "Destino", "40", False), (3, "", "5", False)]
+        dialog.recipients = [(2, "Destino", "60", False), (2, "Destino", "40", False), (3, "", "5", False)]
         errors = dialog._validation_errors()
         self.assertTrue(any("duplicados" in error for error in errors))
         self.assertTrue(any("no existen" in error.lower() for error in errors))
-        self.assertTrue(any("suma debe ser 100" in error for error in errors))
+        self.assertTrue(any("más de 100" in error for error in errors))
+
+    def test_percentage_below_one_hundred_is_valid(self):
+        dialog = self.make_dialog()
+        dialog.recipients = [(2, "Destino", "50", False)]
+        self.assertFalse(any("porcentajes" in error.lower() for error in dialog._validation_errors()))
 
     def test_residual_percentage_requires_exactly_one_residual(self):
         dialog = self.make_dialog()
         dialog.kind_label.set(dialog.TYPE_LABELS["PERCENTAGE_WITH_RESIDUAL"])
         dialog.recipients = [(2, "Destino", Decimal("90"), False)]
         self.assertTrue(any("único destinatario residual" in error for error in dialog._validation_errors()))
+
+    def test_delete_repository_error_is_shown_and_not_propagated(self):
+        dialog = self.make_dialog(mode="view")
+        dialog.rules = Mock()
+        dialog.rules.selection.return_value = ("41",)
+        dialog.repository.delete_rule.side_effect = RuntimeError("foreign key")
+        dialog._clear = Mock(); dialog._set_mode = Mock()
+        with patch("ui.liquidation_split_master_dialog.messagebox.askyesno",return_value=True), \
+             patch("ui.liquidation_split_master_dialog.messagebox.showerror") as showerror:
+            dialog._delete()
+        showerror.assert_called_once()
+        dialog._reload.assert_not_called()
 
 
 if __name__ == "__main__":

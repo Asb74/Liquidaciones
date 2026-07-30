@@ -43,6 +43,14 @@ class LiquidationMasterRepository:
         kind=split_type.strip().upper()
         if kind not in {"PERCENTAGE","PERCENTAGE_WITH_RESIDUAL","EQUAL_PARTS","WEIGHTS"}: raise ValueError("Tipo de reparto no soportado")
         if not recipients: raise ValueError("Debe indicar destinatarios")
+        values=[Decimal(str(item[2]).replace(",",".")) for item in recipients]
+        if any(value<0 for value in values): raise ValueError("Los valores no pueden ser negativos")
+        if kind in {"PERCENTAGE","PERCENTAGE_WITH_RESIDUAL"} and sum(values)>Decimal("100"):
+            raise ValueError("Los porcentajes no pueden sumar más de 100. La parte no asignada permanecerá en el socio origen.")
+        residuals=sum(bool(item[3]) for item in recipients)
+        if residuals>1: raise ValueError("Solo puede existir un destinatario residual")
+        if kind=="PERCENTAGE_WITH_RESIDUAL" and residuals!=1:
+            raise ValueError("El reparto porcentual con residual debe tener un único destinatario residual")
         now=_now()
         with self.database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -58,4 +66,12 @@ class LiquidationMasterRepository:
             conn.commit(); return saved_id
 
     def delete_rule(self,rule_id: int) -> None:
-        with self.database.connect() as conn: conn.execute("DELETE FROM split_rules WHERE id=?",(rule_id,))
+        with self.database.connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM split_rule_recipients WHERE rule_id=?",(rule_id,))
+                conn.execute("DELETE FROM split_rules WHERE id=?",(rule_id,))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise

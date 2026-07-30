@@ -10,7 +10,7 @@ class LiquidationSplitMasterDialog(tk.Toplevel):
 
     TYPE_LABELS = {
         "PERCENTAGE": "Por porcentaje",
-        "PERCENTAGE_WITH_RESIDUAL": "Por porcentaje (ajuste automático del resto)",
+        "PERCENTAGE_WITH_RESIDUAL": "Por porcentaje (residual de redondeo)",
         "EQUAL_PARTS": "A partes iguales",
         "WEIGHTS": "Por ponderaciones",
     }
@@ -67,6 +67,9 @@ class LiquidationSplitMasterDialog(tk.Toplevel):
         self.kind_combo = ttk.Combobox(form, textvariable=self.kind_label,
                                        values=tuple(self.TYPE_LABELS.values()), state="readonly", width=43)
         self.kind_combo.grid(row=5, column=4, sticky="w")
+        ttk.Label(form, text="La parte no asignada permanecerá en el socio origen.\n"
+                  "El destinatario residual solo absorberá diferencias de redondeo.",
+                  foreground="#555555").grid(row=6, column=4, columnspan=2, sticky="w", pady=(2, 4))
         self.active_check = ttk.Checkbutton(form, text="Activa", variable=self.active)
         self.active_check.grid(row=5, column=5, sticky="w")
 
@@ -220,10 +223,10 @@ class LiquidationSplitMasterDialog(tk.Toplevel):
         residuals = sum(bool(recipient[3]) for recipient in self.recipients)
         if residuals > 1: errors.append("Solo puede existir un destinatario residual.")
         kind = self._split_type()
-        if kind == "PERCENTAGE" and len(values) == len(self.recipients) and sum(values) != Decimal("100"):
-            errors.append("En el reparto por porcentaje, la suma debe ser 100.")
+        if kind == "PERCENTAGE" and len(values) == len(self.recipients) and sum(values) > Decimal("100"):
+            errors.append("Los porcentajes no pueden sumar más de 100. La parte no asignada permanecerá en el socio origen.")
         if kind == "PERCENTAGE_WITH_RESIDUAL" and len(values) == len(self.recipients):
-            if sum(values) > Decimal("100"): errors.append("Los porcentajes no pueden sumar más de 100.")
+            if sum(values) > Decimal("100"): errors.append("Los porcentajes no pueden sumar más de 100. La parte no asignada permanecerá en el socio origen.")
             if residuals != 1: errors.append("El reparto con ajuste automático debe tener un único destinatario residual.")
         if kind == "WEIGHTS" and len(values) == len(self.recipients) and sum(values) <= 0:
             errors.append("La suma de las ponderaciones debe ser mayor que cero.")
@@ -249,7 +252,12 @@ class LiquidationSplitMasterDialog(tk.Toplevel):
 
     def _delete(self):
         if self.rules.selection() and messagebox.askyesno("Eliminar", "¿Eliminar la regla?", parent=self):
-            self.repository.delete_rule(int(self.rules.selection()[0])); self._clear(); self._reload(); self._set_mode("view"); self.on_saved and self.on_saved()
+            try:
+                self.repository.delete_rule(int(self.rules.selection()[0]))
+            except Exception as exc:
+                messagebox.showerror("Divisiones", str(exc), parent=self)
+                return
+            self._clear(); self._reload(); self._set_mode("view"); self.on_saved and self.on_saved()
 
     def _toggle(self):
         if self._mode == "view" and self.rules.selection(): self.active.set(not self.active.get())
