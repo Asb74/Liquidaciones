@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, is_dataclass, replace
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from hashlib import sha256
@@ -158,6 +158,8 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
         for g in member.grades
         if (g.kilograms or g.amount)
     )
+
+
     dest = ProductionDestinationMasterService().get_for_crop(header.cultivo)
     secondary_kg = member.destruction_kg + member.table_destruction_kg
     secondary_amount = member.destruction_amount + member.table_destruction_amount
@@ -209,6 +211,82 @@ def from_member_liquidation(header: LiquidationHeader, member: MemberLiquidation
         surface_fingerprint=surface_fingerprint,
     )
 
+def from_persistence_preview(result, preview, *, benchmark_for_member=None) -> dict[int, PremiumLiquidationViewModel]:
+    """Build recipient documents from the already allocated persistence lines.
+
+    ``preview.lines`` is deliberately the economic source of truth here.  The
+    calculated members are consulted only for the production breakdown which
+    is not represented in :class:`SplitPreviewLine`; that breakdown is scaled
+    once by the line's allocation factor and never drives fiscal totals.
+    """
+    from services.split_document_audit import split_document_logger
+
+    audit = split_document_logger()
+    sources = {(int(m.member_id), str(m.variety or "")): m for m in result.member_results}
+    grouped: dict[int, list[tuple[object, PremiumLiquidationViewModel]]] = {}
+    for line in preview.lines:
+        audit.info(
+            "[SplitDocumentInput]\nremittance_id=%s\nsource_member_id=%s\nrecipient_member_id=%s\n"
+            "split_rule_id=%s\nsplit_factor=%s\nnet_kg=%s\ngross_amount=%s\ntaxable_base=%s\ntotal_amount=%s",
+            preview.header.remesa_id, line.source_member_id, line.recipient_member_id,
+            line.split_rule_id, line.split_factor, line.net_kg, line.gross_amount,
+            line.taxable_base, line.total_amount,
+        )
+        source = sources.get((int(line.source_member_id), str(line.variety or "")))
+        if source is None:
+            raise ValueError(
+                f"No existe el resultado origen {line.source_member_id}/{line.variety} para construir el documento post-split."
+            )
+        benchmark = benchmark_for_member(source) if benchmark_for_member else None
+        grouped.setdefault(int(line.recipient_member_id), []).append(
+            (line, from_member_liquidation(result.header, source, group_benchmark=benchmark))
+        )
+
+    money_fields = (
+        "gross_amount", "collection_amount", "hectare_fee_amount", "quality_amount",
+        "transport_amount", "globalgap_amount", "taxable_base", "vat_amount",
+        "withholding_amount", "total_amount",
+    )
+    scaled_fields = (
+        "commercial_net_kg", "waste_net_kg", "rotten_net_kg", "commercial_amount",
+        "destruction_amount", "rotten_amount", "primary_kg", "primary_amount",
+        "secondary_kg", "secondary_amount", "waste_kg", "waste_amount", "commercial_kg",
+    )
+    documents: dict[int, PremiumLiquidationViewModel] = {}
+    for recipient, entries in grouped.items():
+        first_line, first_vm = entries[0]
+        total = lambda attr: sum((Decimal(getattr(line, attr)) for line, _ in entries), Decimal("0"))
+        scaled = lambda attr: sum(
+            (Decimal(getattr(vm, attr) or 0) * Decimal(line.split_factor) for line, vm in entries),
+            Decimal("0"),
+        )
+        breakdown: dict[tuple[str, Decimal | None], list[Decimal]] = {}
+        for line, vm in entries:
+            for row in vm.commercial_breakdown:
+                key = (row.category, row.price)
+                values = breakdown.setdefault(key, [Decimal("0"), Decimal("0")])
+                values[0] += row.kilograms * Decimal(line.split_factor)
+                values[1] += Decimal(row.amount or 0) * Decimal(line.split_factor)
+        changes = {
+            "member_id": recipient,
+            "member_name": first_line.recipient_name,
+            "varieties": tuple(dict.fromkeys(str(line.variety) for line, _ in entries if line.variety)),
+            "effective_net_kg": total("net_kg"),
+            "commercial_average_price": (total("gross_amount") / total("net_kg") if total("net_kg") else None),
+            "gross_average_price": (total("gross_amount") / total("net_kg") if total("net_kg") else None),
+            "final_average_price": total("total_amount") / total("net_kg") if total("net_kg") else None,
+            "final_average_price_pts": None,
+            "commercial_breakdown": tuple(
+                CommercialBreakdownRow(category, values[0], price, values[1])
+                for (category, price), values in breakdown.items()
+            ),
+        }
+        changes.update({field: total(field) for field in money_fields})
+        changes.update({field: scaled(field) for field in scaled_fields})
+        # Fiscal identity always belongs to the final recipient.
+        changes.update(vat_rate=first_line.vat_rate, withholding_rate=first_line.withholding_rate)
+        documents[recipient] = replace(first_vm, **changes)
+    return documents
 
 def format_kg(value: Decimal | None) -> str:
     return "—" if value is None else f"{format_decimal_es(value, 0)} kg"

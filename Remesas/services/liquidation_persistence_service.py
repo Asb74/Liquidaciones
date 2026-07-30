@@ -29,6 +29,7 @@ from domain.liquidation_conflicts import LiquidationConflictType, LiquidationSco
 from services.liquidation_conflict_service import LiquidationConflictService
 from services.document_snapshot_repair_service import repair_invalid_v4_snapshots
 from services.document_snapshot_diagnostic import diagnostic_logger
+from services.split_document_audit import split_document_logger
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +169,7 @@ class LiquidationPersistenceService:
             raise ValueError("El motivo de sustitución es obligatorio")
         h=preview.header; batch_id=str(uuid.uuid4()); now=_now(); persisted=[]
         snapshot_diagnostic = diagnostic_logger()
+        split_document_audit = split_document_logger()
         conn=self.database.open_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -239,6 +241,11 @@ class LiquidationPersistenceService:
                 logger.info("[DocumentSnapshotFixedPrices] member_id=%s remesa=%s schema_version=%s national_market_price=%s rotten_leaves_price=%s", recipient_member_id, h.remesa_id, SCHEMA_VERSION, vm.national_market_price, vm.rotten_leaves_price)
                 logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=%s\nstatus=STARTED", batch_id, recipient_member_id, SCHEMA_VERSION)
                 conn.execute("INSERT OR REPLACE INTO liquidation_document_snapshots(batch_id,recipient_member_id,payload_json,schema_version,calculation_fingerprint,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, int(recipient_member_id), payload_json, SCHEMA_VERSION, preview.fingerprint, now, user))
+                split_document_audit.info(
+                    "[SplitSnapshotCreated]\nbatch_id=%s\nrecipient_member_id=%s\n"
+                    "snapshot_net_kg=%s\nsnapshot_total_amount=%s\nsource=POST_SPLIT_PREVIEW",
+                    batch_id, recipient_member_id, vm.effective_net_kg, vm.total_amount,
+                )
                 conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)", (batch_id, "DOCUMENT_SNAPSHOT_SAVED", "DOCUMENT", str(recipient_member_id), json.dumps({"recipient_member_id": recipient_member_id, "schema_version": SCHEMA_VERSION, "calculation_fingerprint": preview.fingerprint}), now, user))
                 logger.info("[DocumentSnapshot]\nbatch_id=%s\nrecipient_member_id=%s\nschema_version=%s\nstatus=SAVED", batch_id, recipient_member_id, SCHEMA_VERSION)
             conn.execute("INSERT INTO liquidation_audit(batch_id,action,entity_type,entity_id,details_json,created_at,created_by) VALUES(?,?,?,?,?,?,?)",(batch_id,"SAVE","BATCH",batch_id,json.dumps({"lines":len(persisted)}),_now(),user)); conn.commit()
