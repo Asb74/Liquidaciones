@@ -14,6 +14,7 @@ from services.pdf_benchmark_value_trace import write_value_trace
 
 LOGGER = logging.getLogger(__name__)
 MAX_MEMBER_AUDIT_LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "group_benchmark_max_member.log"
+PRICE_VALIDATION_LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "group_benchmark_price_validation.log"
 
 @dataclass(frozen=True)
 class BenchmarkMetric:
@@ -52,10 +53,12 @@ class GroupBenchmarkService:
     """Benchmarks current-remittance MemberLiquidation rows; no external final amounts are invented."""
     def __init__(self, repository: GroupBenchmarkRepository, log_path: str | Path = "logs/group_benchmark.log", audit_log_path: str | Path | None = None,
                  max_member_audit_log_path: str | Path = MAX_MEMBER_AUDIT_LOG_PATH,
+                 price_validation_log_path: str | Path = PRICE_VALIDATION_LOG_PATH,
                  diagnostic_member_ids: tuple[int, ...] | None = None,
                  diagnostic_logs_dir: str | Path | None = None) -> None:
         self.repository=repository; self.log_path=Path(log_path)
         self.max_member_audit_log_path = Path(max_member_audit_log_path).resolve()
+        self.price_validation_log_path = Path(price_validation_log_path).resolve()
         self.audit_log_path = Path(audit_log_path) if audit_log_path is not None else Path(getattr(repository, "audit_log_path", AUDIT_LOG_PATH))
         self.audit_log_path = record_surface_audit_config(self.audit_log_path)
         if diagnostic_member_ids is None:
@@ -108,7 +111,11 @@ class GroupBenchmarkService:
                 ha=surfaces[mid].hectares; x["ha"]=ha
                 x["kg_ha"]=kilograms_per_hectare(x["kg"], ha)
                 x["eur_ha"]=kilograms_per_hectare(x["amount"], ha)
-                x["price"]=x["amount"]/x["commercial_kg"] if _positive_decimal(x["amount"]) and _positive_decimal(x["commercial_kg"]) else None
+                # The final-price benchmark must consume the economic engine's
+                # official result.  In particular, commercial kilos are not the
+                # denominator used by the fiscal calculation and must never be
+                # used to reconstruct this metric.
+                x["price"]=self._aggregate_final_average_price(x["member_lines"])
                 surface=surfaces[mid]
                 self.last_surface_details[(mid, g.label)] = {
                     "hectares": ha, "parcel_count": surface.parcel_count,
@@ -148,6 +155,7 @@ class GroupBenchmarkService:
             for mid,x in per.items():
                 p=price[0](x["price"]); k=prod[0](x["kg_ha"], "No se ha podido determinar una superficie productiva válida para este grupo varietal." if x["kg_ha"] is None else ""); e=eurha[0](x["eur_ha"], "No se ha podido determinar una superficie productiva válida para este grupo varietal." if x["eur_ha"] is None else "")
                 b=PremiumGroupBenchmark(label,g.crop,g.group,g.subgroup,g.varieties,str(header.campana),header.empresa,header.tipo_liquidacion,header.categoria,p,k,e,warnings+validate_benchmark_metric(p)+validate_benchmark_metric(k)+validate_benchmark_metric(e))
+                self._validate_final_price(header, g, x, b)
                 write_value_trace("PdfBenchmarkDtoCreated", dict(member_id=mid, user_value=k.own_value,
                     max_value=k.maximum_value, average_value=k.average_value, min_value=k.minimum_value,
                     comparable_count=k.valid_member_count, constructor_function="GroupBenchmarkService.build_benchmarks",
@@ -157,6 +165,51 @@ class GroupBenchmarkService:
                             run_source=run_source, group_count=len(grouped),
                             benchmark_count=len(out), finished_at=datetime.now().isoformat())
         return out
+
+    @staticmethod
+    def _aggregate_final_average_price(member_lines) -> Decimal | None:
+        """Aggregate official line prices with the economic net-kilo weighting.
+
+        A single member/variety line is returned verbatim.  When a varietal
+        group contains several lines for one member, their already-calculated
+        ``final_average_price`` values are weighted by the same effective net
+        kilos represented by each liquidation line.  No monetary amount is
+        divided by kilos here.
+        """
+        priced = []
+        for member in member_lines:
+            price = _positive_decimal(member.final_average_price)
+            weight = _positive_decimal(getattr(member, "effective_net_kg", None) or member.net_kg)
+            if price is not None and weight is not None:
+                priced.append((price, weight))
+        if not priced:
+            return None
+        if len(priced) == 1:
+            return priced[0][0]
+        total_weight = sum((weight for _, weight in priced), Decimal("0"))
+        return sum((price * weight for price, weight in priced), Decimal("0")) / total_weight
+
+    def _validate_final_price(self, header, group, aggregate, benchmark) -> None:
+        """Log any PDF-precision divergence before exposing the benchmark DTO."""
+        official = self._aggregate_final_average_price(aggregate["member_lines"])
+        own = benchmark.price_per_kg.own_value
+        official_pdf, own_pdf = _q(official), _q(own)
+        if official_pdf == own_pdf:
+            return
+        difference = None if official_pdf is None or own_pdf is None else own_pdf - official_pdf
+        member = aggregate["member"]
+        varieties = ", ".join(dict.fromkeys(str(line.variety) for line in aggregate["member_lines"]))
+        self.price_validation_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.price_validation_log_path.open("a", encoding="utf-8") as stream:
+            stream.write(
+                "[GroupBenchmarkPriceValidation]\n"
+                f"socio={member.member_id} - {member.member_name}\n"
+                f"variedad={varieties or group.label}\n"
+                f"remesa={header.remesa_id} - {header.remesa_name}\n"
+                f"final_average_price={official_pdf}\n"
+                f"benchmark_own_value={own_pdf}\n"
+                f"diferencia={difference}\n\n"
+            )
 
     @staticmethod
     def _delivery_rows(member_lines):
