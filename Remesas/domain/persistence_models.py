@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import Enum
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,26 @@ class RemittancePersistenceSaveResult:
     batch: object | None = None
     error: str | None = None
     pdf_paths: tuple[object, ...] = ()
+    status: RemittanceSaveStatus | None = None
+    previous_batch_id: str | None = None
+    message: str | None = None
+    error_type: str | None = None
+
+    @property
+    def remittance_id(self) -> int:
+        return int(self.remittance.remittance_id)
+
+    @property
+    def remittance_name(self) -> str:
+        return str(getattr(self.remittance, "remittance_name", getattr(self.remittance, "name", "")))
+
+    @property
+    def new_batch_id(self) -> str | None:
+        return self.batch.batch_id if self.batch else None
+
+    @property
+    def error_message(self) -> str | None:
+        return self.error
 
 @dataclass(frozen=True)
 class BatchPersistenceSaveResult:
@@ -118,6 +139,9 @@ class BatchPersistenceSaveResult:
     failed: int
     remittance_results: tuple[RemittancePersistenceSaveResult, ...]
     warnings: tuple[str, ...] = ()
+
+    def count(self, status: RemittanceSaveStatus) -> int:
+        return sum(item.status is status for item in self.remittance_results)
 
 @dataclass(frozen=True)
 class PersistedLiquidation:
@@ -140,3 +164,24 @@ class SequenceState:
     last_sequence: int
     initialized_from: str
     legacy_last_idliq: str | None = None
+class RemittanceSaveStatus(str, Enum):
+    CREATED = "CREATED"
+    REPLACED = "REPLACED"
+    REQUIRES_CONFIRMATION = "REQUIRES_CONFIRMATION"
+    BLOCKED_EXPORTED = "BLOCKED_EXPORTED"
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    SAVE_ERROR = "SAVE_ERROR"
+
+@dataclass(frozen=True)
+class ReplacementRequest:
+    replace_batch_id: str
+    reason: str
+
+@dataclass(frozen=True)
+class RemittanceReplacementState:
+    remittance_id: int
+    active_batch_id: str | None
+    has_active_liquidation: bool
+    is_accounting_exported: bool
+    can_replace: bool
+    reason: str | None = None
